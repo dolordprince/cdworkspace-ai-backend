@@ -1,0 +1,22 @@
+{
+  "name": "workspace",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Custom Zulip web client - Lerna monorepo (web + mock-server)",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "bootstrap": "lerna bootstrap",
+    "dev": "lerna run dev --parallel",
+    "dev:web": "lerna run dev --scope web --stream",
+    "dev:mock": "lerna run dev --scope mock-server --stream"
+  },
+  "devDependencies": {
+    "lerna": "^7.3.0"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js"
+}
