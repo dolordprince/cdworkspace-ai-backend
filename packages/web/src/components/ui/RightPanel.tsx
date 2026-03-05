@@ -2,11 +2,14 @@ import React from "react";
 import { Icon } from "./Icon";
 import { Avatar } from "./Avatar";
 import { ScrollArea } from "./ScrollArea";
+import { getRealmBaseUrl } from "../../lib/zulipClient";
 
 /** Данные пользователя для шторки информации в личном чате */
 export interface RightPanelUserInfo {
   name: string;
   lastSeen?: string;
+  /** Полный URL аватарки (или относительный путь — будет дополнен realm) */
+  avatarUrl?: string | null;
   phone?: string;
   username?: string;
   role?: string;
@@ -37,9 +40,9 @@ const CALLS = [
 ];
 
 const PARTICIPANTS = [
-  { name: "Имя Фамилия", status: "Был 35 минут назад", isOwner: true },
-  { name: "Имя Фамилия", status: "Был 35 минут назад", isOwner: false },
-  { name: "Имя Фамилия", status: "Был 35 минут назад", isOwner: false },
+  { name: "Участник", status: "Был 35 минут назад", isOwner: true },
+  { name: "Участник", status: "Был 35 минут назад", isOwner: false },
+  { name: "Участник", status: "Был 35 минут назад", isOwner: false },
 ];
 
 const USER_ACTIONS = [
@@ -48,6 +51,15 @@ const USER_ACTIONS = [
   { label: "Удалить контакт", icon: "close" as const },
   { label: "Заблокировать", icon: "bell" as const },
 ] as const;
+
+function resolveAvatarSrc(url: string | undefined | null): string | undefined {
+  if (!url?.trim()) return undefined;
+  const s = url.trim();
+  if (s.startsWith("http://") || s.startsWith("https://")) return s;
+  const base = getRealmBaseUrl();
+  if (!base) return undefined;
+  return `${base.replace(/\/+$/, "")}${s.startsWith("/") ? s : `/${s}`}`;
+}
 
 function RightPanelUser({ user }: { user: RightPanelUserInfo }) {
   const media = user.media ?? {};
@@ -61,19 +73,24 @@ function RightPanelUser({ user }: { user: RightPanelUserInfo }) {
     user.role && { label: "Роль", value: user.role, icon: "profile" as const },
     user.birthday && { label: "День рождения", value: user.birthday, icon: "calendar" as const },
   ].filter(Boolean) as { label: string; value: string; icon: "phone" | "profile" | "calendar" }[];
+  const avatarSrc = resolveAvatarSrc(user.avatarUrl);
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden text-white">
       <header className="flex-shrink-0 px-4 pt-0 pb-3 border-b border-white/10">
         <h2 className="text-sm font-semibold text-white mb-3">Информация</h2>
         <div className="flex items-center gap-3">
-          <Avatar size="lg" className="text-white/80 bg-white/20">
+          <Avatar size="lg" className="text-white/80 bg-white/20" src={avatarSrc ?? undefined}>
             {user.name.slice(0, 1)}
           </Avatar>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-white truncate">{user.name}</p>
             {user.lastSeen && (
-              <p className="text-[11px] text-white/70">был(а) {user.lastSeen}</p>
+              <p className="text-[11px] text-white/70">
+                {user.lastSeen === "онлайн"
+                  ? "В сети"
+                  : `был(а) ${user.lastSeen}`}
+              </p>
             )}
           </div>
         </div>

@@ -9,20 +9,26 @@ const SIZE_CLASS = {
 
 interface AvatarProps {
   size?: keyof typeof SIZE_CLASS;
+  /** URL картинки аватарки. Если задан, отображается изображение; иначе — children (например, буква). */
+  src?: string | null;
   children: React.ReactNode;
   className?: string;
 }
 
 export const Avatar: React.FC<AvatarProps> = ({
   size = "md",
+  src,
   children,
   className = "",
 }) => {
-  return (
-    <div
-      className={`flex-shrink-0 rounded-full bg-bg border border-border-subtle flex items-center justify-center overflow-hidden font-semibold text-text-primary ${SIZE_CLASS[size]} ${className}`.trim()}
-    >
-      {children}
-    </div>
-  );
+  const sizeClass = SIZE_CLASS[size];
+  const baseClass = `flex-shrink-0 rounded-full bg-bg border border-border-subtle flex items-center justify-center overflow-hidden font-semibold text-text-primary ${sizeClass} ${className}`.trim();
+  if (src) {
+    return (
+      <div className={baseClass}>
+        <img src={src} alt="" className="w-full h-full object-cover" />
+      </div>
+    );
+  }
+  return <div className={baseClass}>{children}</div>;
 };

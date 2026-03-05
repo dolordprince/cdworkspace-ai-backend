@@ -41,6 +41,8 @@ import ImagesIcon from "../../assets/icons/images.svg?react";
 import VideosIcon from "../../assets/icons/videos.svg?react";
 import FilesIcon from "../../assets/icons/files.svg?react";
 import LinksIcon from "../../assets/icons/links.svg?react";
+import FullscreenIcon from "../../assets/icons/fullscreen.svg?react";
+import FullscreenExitIcon from "../../assets/icons/fullscreen_exit.svg?react";
 
 type SvgComponent = React.FC<React.SVGProps<SVGSVGElement>>;
 
@@ -86,6 +88,8 @@ const ICONS: Record<string, SvgComponent> = {
   videos: VideosIcon,
   files: FilesIcon,
   links: LinksIcon,
+  fullscreen: FullscreenIcon,
+  fullscreen_exit: FullscreenExitIcon,
 };
 
 export type IconName = keyof typeof ICONS;

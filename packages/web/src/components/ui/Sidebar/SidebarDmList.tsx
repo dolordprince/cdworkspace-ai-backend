@@ -26,7 +26,7 @@ export const SidebarDmList: React.FC<SidebarDmListProps> = ({ activeDmId }) => {
             to={`/dm/${chat.id}`}
             className={`flex items-start gap-3 px-2.5 py-2.5 rounded-lg transition-colors ${sidebarRowClass(isActive)}`}
           >
-            <Avatar size="md">{chat.name.slice(0, 1)}</Avatar>
+            <Avatar size="md">11{chat.name.slice(0, 1)}</Avatar>
             <div className="flex-1 min-w-0 flex flex-col justify-center">
               <span className="text-sm font-medium text-text-primary truncate block">
                 {chat.name}

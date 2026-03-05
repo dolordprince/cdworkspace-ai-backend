@@ -1,7 +1,14 @@
 import React, { useState, useRef } from "react";
-import EmojiPicker, { type EmojiClickData } from "emoji-picker-react";
+import EmojiPicker, { Theme, type EmojiClickData } from "emoji-picker-react";
 import { SCROLL_AREA_CLASS } from "../../lib/constants";
+import { stripHtml } from "../../lib/html";
 import { Icon } from "./Icon";
+
+export interface ReplyQuote {
+  id: number;
+  content: string;
+  sender_full_name: string;
+}
 
 interface MessageComposerProps {
   onSend?: (content: string, subject?: string, files?: File[]) => void;
@@ -9,13 +16,20 @@ interface MessageComposerProps {
   placeholder?: string;
   /** Тема берётся из выбора в боковом меню, в композере не выбирается */
   activeTopic?: string;
+  /** Цитата для ответа (показывается над полем ввода, подставляется в тело при отправке) */
+  replyQuote?: ReplyQuote | null;
+  onClearReply?: () => void;
 }
+
+const QUOTE_PREVIEW_MAX = 80;
 
 export const MessageComposer: React.FC<MessageComposerProps> = ({
   onSend,
   disabled = false,
   placeholder = "Написать сообщение...",
   activeTopic,
+  replyQuote,
+  onClearReply,
 }) => {
   const [value, setValue] = useState("");
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -25,7 +39,13 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   const handleSend = () => {
     if (!value.trim() || disabled) return;
     const subject = activeTopic ?? "general";
-    onSend?.(value.trim(), subject, files.length > 0 ? files : undefined);
+    let body = value.trim();
+    if (replyQuote) {
+      const quoteBlock = `> **${replyQuote.sender_full_name}:**\n\n${replyQuote.content}\n\n`;
+      body = quoteBlock + body;
+      onClearReply?.();
+    }
+    onSend?.(body, subject, files.length > 0 ? files : undefined);
     setValue("");
     setFiles([]);
   };
@@ -76,6 +96,27 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
         </div>
       )}
 
+      {replyQuote && (
+        <div className="flex items-start gap-2 px-4 py-2 border-b border-border-subtle bg-bg/50">
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] text-text-muted">Ответ на: {replyQuote.sender_full_name}</p>
+            <p className="text-sm text-text-primary line-clamp-2 mt-0.5">
+              {stripHtml(replyQuote.content).trim().length <= QUOTE_PREVIEW_MAX
+                ? stripHtml(replyQuote.content).trim()
+                : stripHtml(replyQuote.content).trim().slice(0, QUOTE_PREVIEW_MAX) + "…"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClearReply}
+            className="flex-shrink-0 p-1 rounded text-text-muted hover:bg-bg-elevated hover:text-text-primary"
+            aria-label="Отменить ответ"
+          >
+            <Icon name="close" size={16} />
+          </button>
+        </div>
+      )}
+
       {/* Строка ввода по макету Input field.svg: внешняя обводка #333, внутреннее поле #1B1B1D, иконки #707070, кнопка отправки оранжевая */}
       <div className="px-3 pb-3 pt-0">
         <div className="flex items-stretch rounded-xl overflow-hidden bg-bg min-h-[56px]">
@@ -118,7 +159,7 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
                 <div className="absolute bottom-full left-0 mb-1 z-20 shadow-xl rounded-xl overflow-hidden border border-border-subtle bg-bg-elevated">
                   <EmojiPicker
                     onEmojiClick={handleEmojiClick}
-                    theme={document.documentElement.dataset.theme === "light" ? "light" : "dark"}
+                    theme={document.documentElement.dataset.theme === "light" ? Theme.LIGHT : Theme.DARK}
                     width={320}
                     height={360}
                     searchDisabled={false}

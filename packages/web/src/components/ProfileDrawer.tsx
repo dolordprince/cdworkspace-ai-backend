@@ -1,4 +1,5 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
 import { Icon } from "./ui/Icon";
 import type { IconName } from "./ui/Icon";
@@ -15,9 +16,12 @@ interface MenuItem {
   right?: React.ReactNode;
   highlighted?: boolean;
   destructive?: boolean;
+  /** При клике — переход по маршруту и закрытие шторки */
+  navigateTo?: string;
 }
 
 const PROFILE_ITEMS: MenuItem[] = [
+  { label: "Добавить сервер Zulip", icon: "add", navigateTo: "/login" },
   { label: "Личная информация", icon: "profile" },
   { label: "Версия приложения", icon: "grid", subtitle: "1.9.2" },
   {
@@ -66,6 +70,15 @@ const PROFILE_ITEMS: MenuItem[] = [
 ];
 
 export const ProfileDrawer: React.FC<ProfileDrawerProps> = ({ open, onOpenChange }) => {
+  const navigate = useNavigate();
+
+  const handleItemClick = (item: MenuItem) => {
+    if (item.navigateTo) {
+      navigate(item.navigateTo);
+      onOpenChange(false);
+    }
+  };
+
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -93,6 +106,7 @@ export const ProfileDrawer: React.FC<ProfileDrawerProps> = ({ open, onOpenChange
               <li key={i}>
                 <button
                   type="button"
+                  onClick={() => handleItemClick(item)}
                   className={`w-full flex items-center gap-3 px-3 py-3 rounded-lg text-left transition-colors ${
                     item.highlighted
                       ? "bg-white/10 hover:bg-white/15"

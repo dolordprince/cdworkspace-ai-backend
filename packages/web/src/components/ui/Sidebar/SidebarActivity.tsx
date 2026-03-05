@@ -1,6 +1,6 @@
 import React from "react";
+import { Link, useLocation } from "react-router-dom";
 import { Icon } from "../Icon";
-import { Badge } from "../Badge";
 import { MY_ACTIVITY } from "./data";
 import type { IconName } from "../Icon";
 
@@ -17,10 +17,15 @@ interface SidebarActivityProps {
   onToggle: () => void;
 }
 
+const rowClass =
+  "w-full h-[46px] flex items-center rounded-[100px] p-[8px] gap-3 text-left text-sm text-text-primary hover:bg-sidebar-hover transition-colors";
+
 export const SidebarActivity: React.FC<SidebarActivityProps> = ({
   open,
   onToggle,
 }) => {
+  const location = useLocation();
+
   return (
     <div className="px-3 pt-4 pb-2">
       <button
@@ -39,12 +44,11 @@ export const SidebarActivity: React.FC<SidebarActivityProps> = ({
       </button>
       {open && (
         <ul className="mt-0.5 space-y-0.5">
-          {MY_ACTIVITY.map((item) => (
-            <li key={item.key}>
-              <button
-                type="button"
-                className="w-full h-[46px] flex items-center rounded-[100px] p-[8px] gap-3 text-left text-sm text-text-primary hover:bg-sidebar-hover transition-colors"
-              >
+          {MY_ACTIVITY.map((item) => {
+            const route = "route" in item ? item.route : undefined;
+            const isActive = route !== undefined && location.pathname === route;
+            const content = (
+              <>
                 <span
                   className="flex shrink-0 w-[30px] h-[30px] rounded-full items-center justify-center"
                   style={item.iconBg ? { backgroundColor: item.iconBg } : undefined}
@@ -56,12 +60,25 @@ export const SidebarActivity: React.FC<SidebarActivityProps> = ({
                   />
                 </span>
                 <span className="flex-1 truncate">{item.label}</span>
-                {"badge" in item && item.badge !== undefined && (
-                  <Badge count={item.badge} variant="muted" />
+              </>
+            );
+            return (
+              <li key={item.key}>
+                {route ? (
+                  <Link
+                    to={route}
+                    className={`${rowClass} ${isActive ? "bg-sidebar-hover" : ""}`}
+                  >
+                    {content}
+                  </Link>
+                ) : (
+                  <button type="button" className={rowClass}>
+                    {content}
+                  </button>
                 )}
-              </button>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

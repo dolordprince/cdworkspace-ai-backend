@@ -4,6 +4,13 @@ import { getStreamIdByName } from "./streams";
 
 const formParser = multer();
 
+interface MockReaction {
+  emoji_name: string;
+  emoji_code: string;
+  reaction_type: string;
+  user_id: number;
+}
+
 interface MockMessage {
   id: number;
   sender_id: number;
@@ -13,6 +20,7 @@ interface MockMessage {
   subject: string;
   content: string;
   timestamp: number;
+  reactions?: MockReaction[];
 }
 
 const now = Math.floor(Date.now() / 1000);
@@ -94,6 +102,11 @@ const messages: MockMessage[] = [
     subject: "Welcome",
     content: "Добро пожаловать в кастомный клиент Zulip 👋",
     timestamp: now - 3600,
+    reactions: [
+      { emoji_name: "thumbs_up", emoji_code: "1f44d", reaction_type: "unicode_emoji", user_id: 999 },
+      { emoji_name: "thumbs_up", emoji_code: "1f44d", reaction_type: "unicode_emoji", user_id: 1 },
+      { emoji_name: "heart", emoji_code: "2764-fe0f", reaction_type: "unicode_emoji", user_id: 2 },
+    ],
   },
   {
     id: 1002,
@@ -105,6 +118,9 @@ const messages: MockMessage[] = [
     content:
       "Залил новый макет в Figma: версия с информацией о канале справа. Нужно сверстать максимально близко.",
     timestamp: now - 3500,
+    reactions: [
+      { emoji_name: "heart", emoji_code: "2764-fe0f", reaction_type: "unicode_emoji", user_id: 4 },
+    ],
   },
   {
     id: 1003,
@@ -334,6 +350,9 @@ const dmMessages: Record<number, MockMessage[]> = {
       subject: "",
       content: "Отлично, тогда к концу недели посмотрим первый вариант.",
       timestamp: now - 6800,
+      reactions: [
+        { emoji_name: "thumbs_up", emoji_code: "1f44d", reaction_type: "unicode_emoji", user_id: 999 },
+      ],
     },
   ],
   102: [
@@ -412,6 +431,12 @@ function nextId(): number {
   return ids.length ? Math.max(...ids) + 1 : 1;
 }
 
+function nextDmId(): number {
+  const allDm = Object.values(dmMessages).flat();
+  const ids = allDm.map((m) => m.id);
+  return ids.length ? Math.max(...ids) + 1 : 3000;
+}
+
 export function getTopicsByStream(streamName: string): string[] {
   const seen = new Set<string>();
   messages
@@ -433,6 +458,7 @@ function toZulipMessage(m: MockMessage): Record<string, unknown> {
     type: m.stream_id !== null ? "stream" : "private",
     stream_id: m.stream_id ?? undefined,
     channel: m.channel,
+    reactions: m.reactions ?? [],
   };
 }
 
@@ -582,7 +608,34 @@ export function registerMessagesRoutes(app: Express, apiBase: string) {
     }
 
     if (type === "direct" || type === "private") {
-      res.status(400).json({ result: "error", msg: "Sending direct messages not implemented in mock" });
+      const toArr = Array.isArray(to)
+        ? (to as unknown[]).map((x) => (typeof x === "number" ? x : parseInt(String(x), 10))).filter((n) => !Number.isNaN(n))
+        : typeof to === "number"
+          ? [to]
+          : [parseInt(String(to), 10)].filter((n) => !Number.isNaN(n));
+      if (toArr.length === 0) {
+        res.status(400).json({ result: "error", msg: "private message requires to (user id or array)" });
+        return;
+      }
+      const dmId = toArr[0];
+      if (!dmMessages[dmId]) {
+        dmMessages[dmId] = [];
+      }
+      const newMsg: MockMessage = {
+        id: nextDmId(),
+        sender_id: 999,
+        sender_full_name: "Вы",
+        stream_id: null,
+        subject: "",
+        content: content.trim(),
+        timestamp: Math.floor(Date.now() / 1000),
+      };
+      dmMessages[dmId].push(newMsg);
+      res.status(201).json({
+        result: "success",
+        msg: "",
+        id: newMsg.id,
+      });
       return;
     }
 

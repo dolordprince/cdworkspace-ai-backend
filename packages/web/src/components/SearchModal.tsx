@@ -3,8 +3,41 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { Icon } from "./ui/Icon";
 import { ScrollArea } from "./ui/ScrollArea";
 import { fetchMessages, type MockMessage } from "../lib/zulipClient";
+import { stripHtml } from "../lib/html";
+import { useUsersStore } from "../stores/usersStore";
 
 const DEBOUNCE_MS = 300;
+
+function SearchResultItem({
+  msg,
+  onSelect,
+}: {
+  msg: MockMessage;
+  onSelect: () => void;
+}) {
+  const senderName = useUsersStore((s) => s.getDisplayName(msg.sender_id));
+  const displayName = senderName !== "Unknown" ? senderName : msg.sender_full_name;
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onSelect}
+        className="w-full text-left px-3 py-2 rounded-lg hover:bg-bg/60 text-sm"
+      >
+        <div className="flex items-center gap-2 text-[11px] text-text-muted mb-0.5">
+          <span>{displayName}</span>
+          <span>·</span>
+          <span>
+            #{msg.channel ?? "?"} › #{msg.subject}
+          </span>
+        </div>
+        <p className="text-text-primary line-clamp-2 truncate">
+          {stripHtml(msg.content)}
+        </p>
+      </button>
+    </li>
+  );
+}
 
 interface SearchModalProps {
   open: boolean;
@@ -29,6 +62,12 @@ export const SearchModal: React.FC<SearchModalProps> = ({
     setLoading(true);
     try {
       const list = await fetchMessages(undefined, undefined, q);
+      for (const msg of list) {
+        useUsersStore.getState().mergeUser({
+          user_id: msg.sender_id,
+          full_name: msg.sender_full_name ?? "",
+        });
+      }
       setResults(list);
     } finally {
       setLoading(false);
@@ -86,24 +125,11 @@ export const SearchModal: React.FC<SearchModalProps> = ({
             {!loading && results.length > 0 && (
               <ul className="space-y-0.5">
                 {results.map((msg) => (
-                  <li key={msg.id}>
-                    <button
-                      type="button"
-                      onClick={() => handleSelect(msg)}
-                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-bg/60 text-sm"
-                    >
-                      <div className="flex items-center gap-2 text-[11px] text-text-muted mb-0.5">
-                        <span>{msg.sender_full_name}</span>
-                        <span>·</span>
-                        <span>
-                          #{msg.channel ?? "?"} › #{msg.subject}
-                        </span>
-                      </div>
-                      <p className="text-text-primary line-clamp-2 truncate">
-                        {msg.content}
-                      </p>
-                    </button>
-                  </li>
+                  <SearchResultItem
+                    key={msg.id}
+                    msg={msg}
+                    onSelect={() => handleSelect(msg)}
+                  />
                 ))}
               </ul>
             )}

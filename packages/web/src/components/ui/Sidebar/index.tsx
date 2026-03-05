@@ -3,52 +3,62 @@ import { Icon } from "../Icon";
 import { ScrollArea } from "../ScrollArea";
 import { SidebarActivity } from "./SidebarActivity";
 import { SidebarFolderChatList } from "./SidebarFolderChatList";
-import { SidebarGroupList } from "./SidebarGroupList";
 import { SidebarStreamList } from "./SidebarStreamList";
 import { getStreamChats, getChatsInFolder } from "./data";
+import { useSidebarConfigStore } from "../../../stores/sidebarConfigStore";
 import type { SidebarProps } from "./types";
-
-export type { SidebarChat, SidebarProps } from "./types";
 
 export const Sidebar: React.FC<SidebarProps> = ({
   streams,
   selectedFolderId,
-  activeStream,
+  activeStreamSlug = null,
   activeTopic = null,
-  activeDmId = null,
+  activeDmIdParam = null,
+  sidebarDms,
+  sidebarChats,
   onSelectStream,
   onSelectDm,
 }) => {
-  const [activityOpen, setActivityOpen] = useState(true);
-  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<number>>(
-    new Set([201])
-  );
-  const [expandedStreamName, setExpandedStreamName] = useState<string | null>(
-    null
-  );
+  const { activityOpen, setActivityOpen } = useSidebarConfigStore();
+  const [expandedStreamSlug, setExpandedStreamSlug] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
-    if (activeTopic && activeStream) setExpandedStreamName(activeStream);
-  }, [activeTopic, activeStream]);
+    if (activeTopic && activeStreamSlug) setExpandedStreamSlug(activeStreamSlug);
+  }, [activeTopic, activeStreamSlug]);
 
   const streamChats = useMemo(() => getStreamChats(streams), [streams]);
   const chatsInFolder = useMemo(
-    () => getChatsInFolder(selectedFolderId, streams),
-    [selectedFolderId, streams]
+    () => getChatsInFolder(selectedFolderId, streams, sidebarDms),
+    [selectedFolderId, streams, sidebarDms]
   );
 
-  const toggleGroup = (id: number) => {
-    setExpandedGroupIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const listChats = sidebarChats ?? chatsInFolder;
 
-  const toggleStream = (name: string) => {
-    setExpandedStreamName((prev) => (prev === name ? null : name));
-  };
+  const filterByQuery = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return () => true;
+    return (chat: (typeof listChats)[number]) => {
+      if (chat.type === "stream") {
+        const nameMatch = chat.name.toLowerCase().includes(q);
+        const topicMatch = chat.topics?.some((t) =>
+          t.subject.toLowerCase().includes(q)
+        );
+        return nameMatch || (topicMatch ?? false);
+      }
+      return chat.name.toLowerCase().includes(q);
+    };
+  }, [searchQuery]);
+
+  const filteredChats = useMemo(
+    () => listChats.filter(filterByQuery),
+    [listChats, filterByQuery]
+  );
+
+  const filteredStreamChats = useMemo(
+    () => streamChats.filter(filterByQuery),
+    [streamChats, filterByQuery]
+  );
 
   return (
     <aside className="flex flex-col w-[300px] md:w-[340px] min-w-[280px] max-w-[380px] flex-shrink-0 min-h-0 bg-sidebar-bg rounded-[12px] overflow-hidden">
@@ -62,6 +72,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <input
                   type="search"
                   placeholder="Найти"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
                   className="flex-1 min-w-0 h-full bg-transparent text-sm text-text-primary placeholder:text-text-muted outline-none"
                   aria-label="Поиск чатов и каналов"
                 />
@@ -80,22 +92,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="h-px bg-white/10" />
             </div>
             <SidebarFolderChatList
-              chats={chatsInFolder}
-              activeStream={activeStream}
-              activeDmId={activeDmId}
-            />
-            <SidebarGroupList
-              activeDmId={activeDmId}
-              expandedGroupIds={expandedGroupIds}
-              onToggleGroup={toggleGroup}
-            />
-            <SidebarStreamList
-              streamChats={streamChats}
-              activeStream={activeStream}
+              chats={filteredChats}
+              activeStreamSlug={activeStreamSlug}
+              activeDmIdParam={activeDmIdParam}
               activeTopic={activeTopic}
-              expandedStreamName={expandedStreamName}
-              onToggleStream={toggleStream}
+              expandedStreamSlug={expandedStreamSlug}
+              onToggleStream={(slug) => setExpandedStreamSlug((prev) => (prev === slug ? null : slug))}
             />
+            {!sidebarChats && (
+              <SidebarStreamList
+                streamChats={filteredStreamChats}
+                activeStreamSlug={activeStreamSlug}
+                activeTopic={activeTopic}
+                expandedStreamSlug={expandedStreamSlug}
+                onToggleStream={(slug) => setExpandedStreamSlug((prev) => (prev === slug ? null : slug))}
+              />
+            )}
           </ScrollArea>
 
           <div className="flex-shrink-0 p-3 border-t border-border-subtle bg-sidebar-bg">
