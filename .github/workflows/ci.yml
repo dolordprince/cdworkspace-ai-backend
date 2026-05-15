@@ -59,8 +59,8 @@ jobs:
             cmd: package:electron:linux -- --linux rpm deb AppImage
           - os: windows-latest
             cmd: package:electron:win
-          - os: macos-latest
-            cmd: package:electron:mac
+          # - os: macos-latest
+          #   cmd: package:electron:mac
 
     steps:
       - uses: actions/checkout@v6
@@ -78,12 +78,12 @@ jobs:
       #   working-directory: packages/electron
 
       # macOS: import signing certificate from secrets
-      - name: Import macOS signing certificate
-        if: matrix.os == 'macos-latest' && env.CSC_LINK != ''
-        env:
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-        run: echo "Certificate imported from secrets"
+      # - name: Import macOS signing certificate
+      #   if: matrix.os == 'macos-latest' && env.CSC_LINK != ''
+      #   env:
+      #     CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+      #     CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      #   run: echo "Certificate imported from secrets"
 
       - name: Build web
         run: npm run build --workspace=web
@@ -92,17 +92,17 @@ jobs:
 
       - name: Build & Package
         run: npm run ${{ matrix.cmd }}
-        env:
-          # macOS code signing (set secrets in GitHub repo settings)
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          # macOS notarization
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows code signing (future)
-          # CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          # CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        # env:
+        #   # macOS code signing (set secrets in GitHub repo settings)
+        #   CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+        #   CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        #   # macOS notarization
+        #   APPLE_ID: ${{ secrets.APPLE_ID }}
+        #   APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        #   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        #   # Windows code signing (future)
+        #   # CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+        #   # CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
