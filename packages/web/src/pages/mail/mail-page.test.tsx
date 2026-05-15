@@ -8,15 +8,15 @@ describe("MailPage", () => {
     vi.resetModules();
   });
 
-  it("renders embeddable mail placeholder page by default", async () => {
+  it("renders unavailable fallback by default when embed URL is not allowed", async () => {
     vi.resetModules();
     const { MailPage } = await import("./mail-page.ui");
 
     renderWithProviders(<MailPage />);
 
-    const frame = screen.getByTitle(/mail/i);
-    expect(frame).toBeInTheDocument();
-    expect(frame).toHaveAttribute("src", expect.stringContaining("/embeds/mail-placeholder.html"));
+    expect(screen.queryByTitle(/mail/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /mail/i })).toBeInTheDocument();
+    expect(screen.getByText(/temporarily unavailable in web mode/i)).toBeInTheDocument();
   });
 
   it("uses configurable mail embed URL", async () => {
