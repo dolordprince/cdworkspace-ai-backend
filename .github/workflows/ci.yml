@@ -106,6 +106,7 @@ jobs:
 
       - name: Collect release files
         id: collect
+        shell: bash
         run: |
           mkdir -p upload
           cp "packages/electron/release"/Genesis\ Workspace* upload/ 2>/dev/null || true
