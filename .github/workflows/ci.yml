@@ -104,12 +104,18 @@ jobs:
         #   # CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
         #   # CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
+      - name: Collect release files
+        id: collect
+        run: |
+          mkdir -p upload
+          cp "packages/electron/release"/Genesis\ Workspace* upload/ 2>/dev/null || true
+          ls -la upload/
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: electron-${{ matrix.os }}
-          path: |
-            packages/electron/release/*
+          path: upload/*
           retention-days: 14
 
   release:
@@ -136,7 +142,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: artifacts/Genesis Workspace*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
