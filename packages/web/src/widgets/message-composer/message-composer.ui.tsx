@@ -159,8 +159,10 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
     }
 
     if (activeEditMessageIdRef.current === editSession.messageId) return;
-    // Входим в edit-mode: фиксируем текущий draft и подменяем значение текстом редактируемого сообщения.
-    editModeDraftSnapshotRef.current = value;
+    // Входим в edit-mode: фиксируем draft только при первом входе и подменяем значение текстом редактируемого сообщения.
+    if (activeEditMessageIdRef.current == null) {
+      editModeDraftSnapshotRef.current = value;
+    }
     activeEditMessageIdRef.current = editSession.messageId;
     setValue(editSession.initialMarkdown);
     setAiMenuOpen(false);

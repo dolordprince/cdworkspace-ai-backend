@@ -1127,6 +1127,46 @@ describe("MessageComposer edit session", () => {
     );
     expect(textbox).toHaveValue("draft text");
   });
+
+  it("restores original draft after switching edit target within one edit flow", () => {
+    const onCancelEdit = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MessageComposer onSend={vi.fn()} initialValue="draft text" onCancelEdit={onCancelEdit} />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    expect(textbox).toHaveValue("draft text");
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        initialValue="draft text"
+        onCancelEdit={onCancelEdit}
+        editSession={{ messageId: 7, initialMarkdown: "message A" }}
+      />,
+    );
+    expect(textbox).toHaveValue("message A");
+
+    fireEvent.change(textbox, { target: { value: "edited message A" } });
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        initialValue="draft text"
+        onCancelEdit={onCancelEdit}
+        editSession={{ messageId: 8, initialMarkdown: "message B" }}
+      />,
+    );
+    expect(textbox).toHaveValue("message B");
+
+    fireEvent.keyDown(textbox, { key: "Escape" });
+    expect(onCancelEdit).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <MessageComposer onSend={vi.fn()} initialValue="draft text" onCancelEdit={onCancelEdit} />,
+    );
+    expect(textbox).toHaveValue("draft text");
+  });
 });
 
 describe("MessageComposer send shortcuts", () => {
