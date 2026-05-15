@@ -8,7 +8,21 @@ describe("MailPage", () => {
     vi.resetModules();
   });
 
-  it("renders unavailable fallback by default when embed URL is not allowed", async () => {
+  it("renders same-origin placeholder embed when no external URL is configured", async () => {
+    vi.resetModules();
+    const { MailPage } = await import("./mail-page.ui");
+
+    renderWithProviders(<MailPage />);
+
+    expect(screen.getByTitle(/mail/i)).toHaveAttribute(
+      "src",
+      expect.stringContaining("embeds/mail-placeholder.html"),
+    );
+    expect(screen.queryByText(/temporarily unavailable in web mode/i)).not.toBeInTheDocument();
+  });
+
+  it("renders unavailable fallback when embed URL origin is not allowed", async () => {
+    vi.stubEnv("VITE_MAIL_EMBED_URL", "https://evil.example.com/mail.html");
     vi.resetModules();
     const { MailPage } = await import("./mail-page.ui");
 

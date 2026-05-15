@@ -8,7 +8,21 @@ describe("CalendarPage", () => {
     vi.resetModules();
   });
 
-  it("renders unavailable fallback by default when embed URL is not allowed", async () => {
+  it("renders same-origin placeholder embed when no external URL is configured", async () => {
+    vi.resetModules();
+    const { CalendarPage } = await import("./calendar-page.ui");
+
+    renderWithProviders(<CalendarPage />);
+
+    expect(screen.getByTitle(/calendar/i)).toHaveAttribute(
+      "src",
+      expect.stringContaining("embeds/calendar-placeholder.html"),
+    );
+    expect(screen.queryByText(/temporarily unavailable in web mode/i)).not.toBeInTheDocument();
+  });
+
+  it("renders unavailable fallback when embed URL origin is not allowed", async () => {
+    vi.stubEnv("VITE_CALENDAR_EMBED_URL", "https://evil.example.com/calendar.html");
     vi.resetModules();
     const { CalendarPage } = await import("./calendar-page.ui");
 
