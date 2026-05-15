@@ -8,12 +8,14 @@ import { getCurrentInstance } from "./client";
 import { fetchUserTopics, registerQueue } from "./zulip-queue";
 import {
   addMembersToStream,
+  deleteTopic,
   deleteStream,
   fetchStreamMembers,
   fetchStreams,
   fetchSubscriptions,
   fetchTopics,
   removeMembersFromStream,
+  unarchiveStream,
   updateStream,
 } from "./zulip-streams";
 
@@ -27,16 +29,16 @@ describe("fetchSubscriptions", () => {
       status: 200,
       data: {
         subscriptions: [
-          { stream_id: 1, name: "general", is_muted: true },
-          { stream_id: 2, name: "dev", in_home_view: false },
+          { stream_id: 1, name: "general", is_muted: true, is_archived: false },
+          { stream_id: 2, name: "dev", in_home_view: false, is_archived: true },
         ],
       },
       raw: { statusText: "OK" },
     });
 
     await expect(fetchSubscriptions()).resolves.toEqual([
-      { stream_id: 1, name: "general", is_muted: true },
-      { stream_id: 2, name: "dev", is_muted: true },
+      { stream_id: 1, name: "general", is_muted: true, is_archived: false },
+      { stream_id: 2, name: "dev", is_muted: true, is_archived: true },
     ]);
     expect(mockZulipApi.get).toHaveBeenCalledWith("/users/me/subscriptions", undefined);
   });
@@ -479,6 +481,23 @@ describe("updateStream", () => {
     });
   });
 
+  it("serializes is_archived=false when updating archive flag", async () => {
+    mockZulipApi.patch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success" },
+      raw: { statusText: "OK" },
+    });
+
+    await expect(updateStream(10, { isArchived: false })).resolves.toBe(true);
+    expect(mockZulipApi.patch).toHaveBeenCalledWith("/streams/10", { is_archived: "false" });
+  });
+
+  it("short-circuits when PATCH body would be empty", async () => {
+    await expect(updateStream(10, {})).resolves.toBe(true);
+    expect(mockZulipApi.patch).not.toHaveBeenCalled();
+  });
+
   it("returns false when stream update API is not ok", async () => {
     mockZulipApi.patch.mockResolvedValue({
       ok: false,
@@ -488,6 +507,56 @@ describe("updateStream", () => {
     });
 
     await expect(updateStream(10, { name: "platform" })).resolves.toBe(false);
+  });
+});
+
+describe("unarchiveStream", () => {
+  it("PATCHes is_archived=false and succeeds on healthy response", async () => {
+    mockZulipApi.patch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success" },
+      raw: { statusText: "OK" },
+    });
+
+    await expect(unarchiveStream(10)).resolves.toEqual({ ok: true });
+    expect(mockZulipApi.patch).toHaveBeenCalledWith("/streams/10", { is_archived: "false" });
+  });
+
+  it("returns unsupported when server ignores is_archived parameter", async () => {
+    mockZulipApi.patch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: {
+        result: "success",
+        ignored_parameters_unsupported: ["is_archived"],
+      },
+      raw: { statusText: "OK" },
+    });
+
+    await expect(unarchiveStream(10)).resolves.toEqual(
+      expect.objectContaining({
+        ok: false,
+        kind: "unsupported",
+      }),
+    );
+  });
+
+  it("maps HTTP failures to transient/forbidden kinds", async () => {
+    mockZulipApi.patch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      data: { result: "error", msg: "Not allowed", code: "FORBIDDEN" },
+      raw: { statusText: "Forbidden" },
+    });
+
+    await expect(unarchiveStream(88)).resolves.toEqual({
+      ok: false,
+      kind: "forbidden",
+      status: 403,
+      message: "Not allowed",
+      code: "FORBIDDEN",
+    });
   });
 });
 
@@ -513,6 +582,127 @@ describe("deleteStream", () => {
     });
 
     await expect(deleteStream(10)).resolves.toBe(false);
+  });
+});
+
+describe("deleteTopic", () => {
+  it("deletes topic in one request when complete=true", async () => {
+    mockZulipApi.post.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success", complete: true },
+      raw: { statusText: "OK" },
+    });
+
+    await expect(deleteTopic(10, "incident")).resolves.toEqual({
+      ok: true,
+      complete: true,
+      attempts: 1,
+    });
+    expect(mockZulipApi.post).toHaveBeenCalledWith("/streams/10/delete_topic", {
+      topic_name: "incident",
+    });
+  });
+
+  it("allows deleting empty topic name", async () => {
+    mockZulipApi.post.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success", complete: true },
+      raw: { statusText: "OK" },
+    });
+
+    await expect(deleteTopic(10, "   ")).resolves.toEqual({
+      ok: true,
+      complete: true,
+      attempts: 1,
+    });
+    expect(mockZulipApi.post).toHaveBeenCalledWith("/streams/10/delete_topic", {
+      topic_name: "",
+    });
+  });
+
+  it("retries on complete=false and succeeds on second attempt", async () => {
+    mockZulipApi.post
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        data: { result: "success", complete: false },
+        raw: { statusText: "OK" },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        data: { result: "success", complete: true },
+        raw: { statusText: "OK" },
+      });
+
+    await expect(deleteTopic(10, "incident")).resolves.toEqual({
+      ok: true,
+      complete: true,
+      attempts: 2,
+    });
+    expect(mockZulipApi.post).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns incomplete_after_retries when complete stays false", async () => {
+    mockZulipApi.post.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success", complete: false },
+      raw: { statusText: "OK" },
+    });
+
+    await expect(deleteTopic(10, "incident", 3)).resolves.toEqual({
+      ok: false,
+      complete: false,
+      attempts: 3,
+      errorCode: "incomplete_after_retries",
+    });
+    expect(mockZulipApi.post).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns authorization error from API payload", async () => {
+    mockZulipApi.post.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "error", code: "UNAUTHORIZED_PRINCIPAL" },
+      raw: { statusText: "OK" },
+    });
+
+    await expect(deleteTopic(10, "incident")).resolves.toEqual({
+      ok: false,
+      complete: false,
+      attempts: 1,
+      errorCode: "UNAUTHORIZED_PRINCIPAL",
+    });
+  });
+
+  it("returns http error for non-ok response", async () => {
+    mockZulipApi.post.mockResolvedValue({
+      ok: false,
+      status: 400,
+      data: { msg: "Bad Request" },
+      raw: { statusText: "Bad Request" },
+    });
+
+    await expect(deleteTopic(10, "incident")).resolves.toEqual({
+      ok: false,
+      complete: false,
+      attempts: 1,
+      errorCode: "http_400",
+    });
+  });
+
+  it("returns network_error on request failure", async () => {
+    mockZulipApi.post.mockRejectedValue(new Error("offline"));
+
+    await expect(deleteTopic(10, "incident")).resolves.toEqual({
+      ok: false,
+      complete: false,
+      attempts: 1,
+      errorCode: "network_error",
+    });
   });
 });
 

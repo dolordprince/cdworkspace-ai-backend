@@ -96,6 +96,7 @@ describe("chatListStore", () => {
       expect(state.streamsMap.size).toBe(0);
       expect(state.dmsMap.size).toBe(0);
       expect(state.sidebarDataHydrated).toBe(false);
+      expect(state.streamMetadataHydrated).toBe(false);
       expect(state.currentUserId).toBeNull();
       expect(state.lastAppliedMessages).toBeNull();
       expect(state.messageIdToLocation.size).toBe(0);
@@ -136,6 +137,243 @@ describe("chatListStore", () => {
       expect(useChatListStore.getState().sidebarDataHydrated).toBe(false);
       useChatListStore.getState().hydrateFromIndexedDbSnapshot(snapshot);
       expect(useChatListStore.getState().sidebarDataHydrated).toBe(true);
+    });
+  });
+
+  describe("streamMetadataHydrated", () => {
+    it("starts false, can be set from authoritative metadata, and resets on clear", () => {
+      expect(useChatListStore.getState().streamMetadataHydrated).toBe(false);
+      useChatListStore.getState().setStreamMetadataHydrated(true);
+      expect(useChatListStore.getState().streamMetadataHydrated).toBe(true);
+      useChatListStore.getState().clear();
+      expect(useChatListStore.getState().streamMetadataHydrated).toBe(false);
+    });
+
+    it("stays false after IndexedDB hydrate until authoritative metadata arrives", () => {
+      useChatListStore.getState().setFromMessages([streamMsg()], 10);
+      const snapshot = buildChatListSnapshotSerialized(useChatListStore.getState());
+      useChatListStore.getState().clear();
+
+      useChatListStore.getState().hydrateFromIndexedDbSnapshot(snapshot);
+      expect(useChatListStore.getState().streamMetadataHydrated).toBe(false);
+    });
+  });
+
+  describe("reconcileUnreadFromMessages", () => {
+    it("clears stale unread count for a cached stream topic when server unread snapshot is empty", () => {
+      useChatListStore.getState().setFromMessages(
+        [
+          streamMsg({
+            id: 101,
+            stream_id: 12,
+            display_recipient: "engineering",
+            subject: "channel events",
+            sender_id: OTHER_SENDER_ID,
+            flags: [],
+          }),
+          streamMsg({
+            id: 102,
+            stream_id: 12,
+            display_recipient: "engineering",
+            subject: "channel events",
+            sender_id: OTHER_SENDER_ID,
+            flags: [],
+            timestamp: 2000,
+          }),
+        ],
+        10,
+      );
+
+      expect(
+        useChatListStore.getState().streamsMap.get(12)?.topics.get("channel events")?.unreadCount,
+      ).toBe(2);
+
+      useChatListStore.getState().reconcileUnreadFromMessages([], 10);
+
+      const topic = useChatListStore.getState().streamsMap.get(12)?.topics.get("channel events");
+      expect(topic?.unreadCount).toBe(0);
+    });
+
+    it("creates a missing unread DM with real timestamp and sorts it above older cached DMs", () => {
+      useChatListStore.getState().setFromMessages(
+        [
+          dmMsg({
+            id: 50,
+            timestamp: 1000,
+            display_recipient: [
+              { id: 10, full_name: "Me", email: "me@t.com" },
+              { id: 20, full_name: "Older", email: "older@t.com" },
+            ],
+            sender_id: OTHER_SENDER_ID,
+            flags: ["read"],
+          }),
+        ],
+        10,
+      );
+
+      useChatListStore.getState().reconcileUnreadFromMessages(
+        [
+          dmMsg({
+            id: 60,
+            timestamp: 5000,
+            sender_id: 30,
+            sender_full_name: "Newer Sender",
+            content: "fresh unread dm",
+            display_recipient: [
+              { id: 10, full_name: "Me", email: "me@t.com" },
+              { id: 30, full_name: "Newer", email: "newer@t.com" },
+            ],
+            flags: [],
+          }),
+        ],
+        10,
+      );
+
+      const dms = useChatListStore.getState().dms();
+      expect(dms[0]!.id).toBe(30);
+      expect(dms[0]!.ts).toBe(5000);
+      expect(dms[0]!.lastMessage).toContain("fresh unread dm");
+      expect(dms[0]!.badge).toBe(1);
+    });
+
+    it("refreshes existing DM metadata from a newer unread snapshot message", () => {
+      useChatListStore.getState().setFromMessages(
+        [
+          dmMsg({
+            id: 50,
+            timestamp: 1000,
+            sender_id: OTHER_SENDER_ID,
+            sender_full_name: "Older Sender",
+            content: "older dm preview",
+            flags: ["read"],
+          }),
+        ],
+        10,
+      );
+
+      useChatListStore.getState().reconcileUnreadFromMessages(
+        [
+          dmMsg({
+            id: 61,
+            timestamp: 7000,
+            sender_id: OTHER_SENDER_ID,
+            sender_full_name: "Fresh Sender",
+            content: "fresh unread dm preview",
+            flags: [],
+          }),
+        ],
+        10,
+      );
+
+      const dm = useChatListStore.getState().dmsMap.get("10,20");
+      expect(dm?.ts).toBe(7000);
+      expect(dm?.lastMessage).toContain("fresh unread dm preview");
+      expect(dm?.lastMessageId).toBe(61);
+      expect(dm?.unreadCount).toBe(1);
+    });
+
+    it("creates a missing unread topic with real metadata and promotes its stream", () => {
+      useChatListStore.getState().setFromMessages(
+        [
+          streamMsg({
+            id: 101,
+            stream_id: 12,
+            display_recipient: "engineering",
+            subject: "older topic",
+            content: "older stream preview",
+            timestamp: 1000,
+            sender_id: OTHER_SENDER_ID,
+            flags: ["read"],
+          }),
+          streamMsg({
+            id: 102,
+            stream_id: 30,
+            display_recipient: "design",
+            subject: "baseline",
+            content: "baseline stream preview",
+            timestamp: 3000,
+            sender_id: OTHER_SENDER_ID,
+            flags: ["read"],
+          }),
+        ],
+        10,
+      );
+
+      useChatListStore.getState().reconcileUnreadFromMessages(
+        [
+          streamMsg({
+            id: 103,
+            stream_id: 12,
+            display_recipient: "engineering",
+            subject: "fresh topic",
+            content: "fresh unread topic preview",
+            timestamp: 9000,
+            sender_id: OTHER_SENDER_ID,
+            sender_full_name: "Fresh Stream Sender",
+            flags: [],
+          }),
+        ],
+        10,
+      );
+
+      const stream = useChatListStore.getState().streamsMap.get(12);
+      const topic = stream?.topics.get("fresh topic");
+      const streams = useChatListStore.getState().streams();
+
+      expect(topic?.ts).toBe(9000);
+      expect(topic?.lastMessage).toContain("fresh unread topic preview");
+      expect(topic?.lastMessageId).toBe(103);
+      expect(topic?.unreadCount).toBe(1);
+      expect(stream?.ts).toBe(9000);
+      expect(stream?.lastMessage).toContain("fresh unread topic preview");
+      expect(streams[0]!.stream_id).toBe(12);
+    });
+
+    it("refreshes existing topic metadata from a newer unread snapshot message", () => {
+      useChatListStore.getState().setFromMessages(
+        [
+          streamMsg({
+            id: 104,
+            stream_id: 12,
+            display_recipient: "engineering",
+            subject: "channel events",
+            content: "old topic preview",
+            timestamp: 1000,
+            sender_id: OTHER_SENDER_ID,
+            sender_full_name: "Old Sender",
+            flags: ["read"],
+          }),
+        ],
+        10,
+      );
+
+      useChatListStore.getState().reconcileUnreadFromMessages(
+        [
+          streamMsg({
+            id: 105,
+            stream_id: 12,
+            display_recipient: "engineering",
+            subject: "channel events",
+            content: "new unread topic preview",
+            timestamp: 8000,
+            sender_id: OTHER_SENDER_ID,
+            sender_full_name: "New Sender",
+            flags: [],
+          }),
+        ],
+        10,
+      );
+
+      const stream = useChatListStore.getState().streamsMap.get(12);
+      const topic = stream?.topics.get("channel events");
+
+      expect(topic?.ts).toBe(8000);
+      expect(topic?.lastMessage).toContain("new unread topic preview");
+      expect(topic?.lastMessageSenderName).toBe("New Sender");
+      expect(topic?.lastMessageId).toBe(105);
+      expect(topic?.unreadCount).toBe(1);
+      expect(stream?.ts).toBe(8000);
+      expect(stream?.lastMessage).toContain("new unread topic preview");
     });
   });
 
@@ -859,6 +1097,7 @@ describe("chatListStore", () => {
         {
           streamId: 11,
           name: "engineering",
+          isArchived: true,
           creatorId: 77,
           inviteOnly: true,
           canAddSubscribersGroup: { direct_members: [42], direct_subgroups: [] },
@@ -868,6 +1107,7 @@ describe("chatListStore", () => {
       ]);
 
       const stream = useChatListStore.getState().streamsMap.get(11);
+      expect(stream?.isArchived).toBe(true);
       expect(stream?.creatorId).toBe(77);
       expect(stream?.inviteOnly).toBe(true);
       expect(stream?.canAddSubscribersGroup).toEqual({
@@ -876,6 +1116,55 @@ describe("chatListStore", () => {
       });
       expect(stream?.canRemoveSubscribersGroup).toBe(7002);
       expect(stream?.canAdministerChannelGroup).toBe(5001);
+    });
+
+    it("updates archived flag from metadata updates", () => {
+      useChatListStore
+        .getState()
+        .upsertStreamMetadataRows([{ streamId: 11, name: "engineering", isArchived: false }]);
+      expect(useChatListStore.getState().streamsMap.get(11)?.isArchived).toBe(false);
+
+      useChatListStore
+        .getState()
+        .upsertStreamMetadataRows([{ streamId: 11, name: "engineering", isArchived: true }]);
+      expect(useChatListStore.getState().streamsMap.get(11)?.isArchived).toBe(true);
+    });
+
+    it("keeps archived flag after setFromMessages rebuild", () => {
+      useChatListStore
+        .getState()
+        .upsertStreamMetadataRows([{ streamId: 11, name: "engineering", isArchived: true }]);
+
+      useChatListStore.getState().setFromMessages(
+        [
+          streamMsg({
+            id: 1,
+            stream_id: 11,
+            display_recipient: "engineering",
+            timestamp: 1000,
+          }),
+        ],
+        10,
+      );
+
+      expect(useChatListStore.getState().streamsMap.get(11)?.isArchived).toBe(true);
+    });
+
+    it("keeps archived flag after addMessages merge", () => {
+      useChatListStore
+        .getState()
+        .upsertStreamMetadataRows([{ streamId: 11, name: "engineering", isArchived: true }]);
+
+      useChatListStore.getState().addMessages([
+        streamMsg({
+          id: 2,
+          stream_id: 11,
+          display_recipient: "engineering",
+          timestamp: 2000,
+        }),
+      ]);
+
+      expect(useChatListStore.getState().streamsMap.get(11)?.isArchived).toBe(true);
     });
 
     it("adds personal DM rows from metadata with unread count", () => {
@@ -945,6 +1234,27 @@ describe("chatListStore", () => {
       expect(state.messageIdToLocation.get(50)?.type).toBe("dm");
     });
 
+    it("optimistically sets and rolls back stream archived flag", () => {
+      useChatListStore
+        .getState()
+        .upsertStreamMetadataRows([{ streamId: 10, name: "engineering", isArchived: false }]);
+
+      useChatListStore.getState().setStreamArchived(10, true);
+      expect(useChatListStore.getState().streamsMap.get(10)?.isArchived).toBe(true);
+
+      useChatListStore.getState().setStreamArchived(10, false);
+      expect(useChatListStore.getState().streamsMap.get(10)?.isArchived).toBe(false);
+    });
+
+    it("can rollback archived flag to undefined", () => {
+      useChatListStore
+        .getState()
+        .upsertStreamMetadataRows([{ streamId: 10, name: "engineering", isArchived: true }]);
+
+      useChatListStore.getState().setStreamArchived(10, undefined);
+      expect(useChatListStore.getState().streamsMap.get(10)?.isArchived).toBeUndefined();
+    });
+
     it("moves stream topic and removes old topic key", () => {
       useChatListStore.getState().setFromMessages(
         [
@@ -979,6 +1289,94 @@ describe("chatListStore", () => {
       const stream = useChatListStore.getState().streamsMap.get(10);
       expect(stream?.topics.has("incident")).toBe(false);
       expect(stream?.topics.has("\u2714 incident")).toBe(true);
+    });
+
+    it("removes stream topic row and message index entries for that topic", () => {
+      useChatListStore.getState().setFromMessages(
+        [
+          streamMsg({
+            id: 1,
+            stream_id: 10,
+            display_recipient: "engineering",
+            subject: "incident",
+            timestamp: 1000,
+          }),
+          streamMsg({
+            id: 2,
+            stream_id: 10,
+            display_recipient: "engineering",
+            subject: "release",
+            timestamp: 2000,
+          }),
+          dmMsg({ id: 50 }),
+        ],
+        10,
+      );
+
+      useChatListStore.getState().removeStreamTopic(10, "incident");
+
+      const state = useChatListStore.getState();
+      const stream = state.streamsMap.get(10);
+      expect(stream?.topics.has("incident")).toBe(false);
+      expect(stream?.topics.has("release")).toBe(true);
+      expect(state.messageIdToLocation.get(1)).toBeUndefined();
+      expect(state.messageIdToLocation.get(2)?.type).toBe("stream");
+      expect(state.messageIdToLocation.get(50)?.type).toBe("dm");
+    });
+
+    it("recomputes stream preview fields from remaining topics", () => {
+      useChatListStore.getState().setFromMessages(
+        [
+          streamMsg({
+            id: 1,
+            stream_id: 10,
+            display_recipient: "engineering",
+            subject: "incident",
+            timestamp: 1000,
+            sender_full_name: "Alice",
+          }),
+          streamMsg({
+            id: 2,
+            stream_id: 10,
+            display_recipient: "engineering",
+            subject: "release",
+            timestamp: 2000,
+            sender_full_name: "Bob",
+          }),
+        ],
+        10,
+      );
+
+      useChatListStore.getState().removeStreamTopic(10, "release");
+
+      const stream = useChatListStore.getState().streamsMap.get(10);
+      expect(stream?.ts).toBe(1000);
+      expect(stream?.lastMessageSenderName).toBe("Alice");
+      expect(stream?.lastMessage).toBe("hello");
+    });
+
+    it("keeps stream row and resets preview when removing last topic", () => {
+      useChatListStore.getState().setFromMessages(
+        [
+          streamMsg({
+            id: 1,
+            stream_id: 10,
+            display_recipient: "engineering",
+            subject: "incident",
+            timestamp: 1000,
+          }),
+        ],
+        10,
+      );
+
+      useChatListStore.getState().removeStreamTopic(10, "incident");
+
+      const stream = useChatListStore.getState().streamsMap.get(10);
+      expect(stream).toBeDefined();
+      expect(stream?.topics.size).toBe(0);
+      expect(stream?.lastMessage).toBe("");
+      expect(stream?.time).toBe("");
+      expect(stream?.ts).toBe(0);
     });
 
     it("merges topic metadata when move target already exists", () => {

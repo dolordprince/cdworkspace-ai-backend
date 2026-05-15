@@ -29,6 +29,7 @@ import { useLayoutOnlineStatus } from "./layout-online-status.hook";
 import { useLayoutPresencePolling } from "./layout-presence-polling.hook";
 import { useLayoutPushClickRouting } from "./layout-push-click-routing.hook";
 import { useLayoutPushPermission } from "./layout-push-permission.hook";
+import { useLayoutResetRightDrawerOnInstanceChange } from "./layout-reset-right-drawer-on-instance-change.hook";
 import { useLayoutRightPanelShell } from "./layout-right-panel-shell.hook";
 import { useLayoutShortcuts } from "./layout-shortcuts.hook";
 import { useSyncChatContextFromLocation } from "./layout-sync-chat-context.hook";
@@ -58,6 +59,7 @@ export const Layout: React.FC = () => {
   const setFromMessages = useChatListStore((s) => s.setFromMessages);
   const setCurrentUserId = useChatListStore((s) => s.setCurrentUserId);
   const currentUserId = useChatListStore((s) => s.currentUserId);
+  const streamMetadataHydrated = useChatListStore((s) => s.streamMetadataHydrated);
   const streamsFromStore = useChatListStore((s) => s.streams());
   const dmsFromStore = useChatListStore((s) => s.dms());
   const streamsMap = useChatListStore((s) => s.streamsMap);
@@ -80,6 +82,7 @@ export const Layout: React.FC = () => {
       sortChatsByLastMessage(streamsMap, dmsMap, chatSorting, mutedStreamIds, {
         prioritizePersonalUnread,
         prioritizeUnmutedUnreadChannels,
+        hideUnknownArchivedStreams: !streamMetadataHydrated,
       }),
     [
       streamsMap,
@@ -88,6 +91,7 @@ export const Layout: React.FC = () => {
       mutedStreamIds,
       prioritizePersonalUnread,
       prioritizeUnmutedUnreadChannels,
+      streamMetadataHydrated,
     ],
   );
   const {
@@ -122,6 +126,7 @@ export const Layout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const rightDrawerOpen = useRightDrawerStore((s) => s.open);
   const setRightDrawerOpen = useRightDrawerStore((s) => s.setOpen);
+  const closeRightDrawer = useRightDrawerStore((s) => s.close);
   const rightDrawerMode = useRightDrawerStore((s) => s.mode);
   const rightDrawerUserIdOverride = useRightDrawerStore((s) => s.userIdOverride);
   const openRightDrawerUserProfile = useRightDrawerStore((s) => s.openUserProfile);
@@ -176,6 +181,7 @@ export const Layout: React.FC = () => {
     dmsMapSize: dmsMap.size,
     usersMapForChatInfo,
     currentUserId,
+    hideUnknownArchivedStreams: !streamMetadataHydrated,
     selectedFolderId,
     selectedFolderChatIds,
     bootstrapFolderSync,
@@ -187,8 +193,8 @@ export const Layout: React.FC = () => {
 
   const openSearch = useSearchModalStore((s) => s.openModal);
   const handleCloseRightDrawer = useCallback(() => {
-    setRightDrawerOpen(false);
-  }, [setRightDrawerOpen]);
+    closeRightDrawer();
+  }, [closeRightDrawer]);
 
   useLayoutZulipEventLoop({
     currentInstanceId,
@@ -203,6 +209,7 @@ export const Layout: React.FC = () => {
   // иначе в IDB уйдёт пустой снимок под ключ новой организации (см. layout-chat-list-snapshot-sync.lib).
   useLayoutChatListSnapshotSync(currentInstanceId);
   useLayoutMuteSnapshotSync(currentInstanceId);
+  useLayoutResetRightDrawerOnInstanceChange({ currentInstanceId, closeRightDrawer });
 
   // Allow main shell while auth/history sync runs if sidebar was hydrated from IndexedDB.
   const showFullscreenLoader =

@@ -8,18 +8,15 @@ describe("CalendarPage", () => {
     vi.resetModules();
   });
 
-  it("renders embeddable calendar placeholder page by default", async () => {
+  it("renders unavailable fallback by default when embed URL is not allowed", async () => {
     vi.resetModules();
     const { CalendarPage } = await import("./calendar-page.ui");
 
     renderWithProviders(<CalendarPage />);
 
-    const frame = screen.getByTitle(/calendar/i);
-    expect(frame).toBeInTheDocument();
-    expect(frame).toHaveAttribute(
-      "src",
-      expect.stringContaining("/embeds/calendar-placeholder.html"),
-    );
+    expect(screen.queryByTitle(/calendar/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /calendar/i })).toBeInTheDocument();
+    expect(screen.getByText(/temporarily unavailable in web mode/i)).toBeInTheDocument();
   });
 
   it("uses configurable calendar embed URL", async () => {

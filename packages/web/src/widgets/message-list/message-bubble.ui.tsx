@@ -9,6 +9,7 @@ import type { MessageReactionPayload, MockMessage } from "~/shared/api/zulip.typ
 import { buildAuthHeader } from "~/shared/lib/auth-guard";
 import { formatMessageTime, getPresenceState } from "~/shared/lib/format";
 import { getJitsiMeetingUrl, type JitsiLinkOptions } from "~/shared/lib/jitsi";
+import { MESSAGE_BUBBLE_BODY_CLASS_NAME } from "~/shared/lib/message-body-rich-text-classes";
 import { messageBodyToUnsanitizedDisplayHtml } from "~/shared/lib/message-markdown-display.lib";
 import { prepareProtectedMessageHtml } from "~/shared/lib/protected-message-media";
 import { useProtectedMessageHtml } from "~/shared/lib/protected-message-media.hook";
@@ -25,6 +26,11 @@ import {
   MESSAGE_BUBBLE_ATTACHMENT_LINK_BASE_CLASSES,
   MESSAGE_BUBBLE_ATTACHMENT_LINK_STATUS_CLASSES,
 } from "./message-bubble-attachment-styles.lib";
+import {
+  computeMessageContextMenuPosition,
+  MESSAGE_CONTEXT_MENU_EST_HEIGHT_PX,
+  MESSAGE_CONTEXT_MENU_EST_WIDTH_PX,
+} from "./message-bubble-context-menu-position.lib";
 import { MessageBubbleContextMenu } from "./message-bubble-context-menu.ui";
 import {
   BASE_CONTEXT_SECTIONS,
@@ -41,6 +47,10 @@ import { getMessageImagesBaseUrl } from "./message-bubble-realm-html.lib";
 import { resolveJitsiLocationName } from "./message-jitsi-location.lib";
 import { normalizeMediaUrl } from "./message-list-media.lib";
 import { MessageMentionPopover } from "./message-mention-popover.ui";
+import type {
+  MessageBubbleContextMenuAnchor,
+  MessageBubbleContextMenuSource,
+} from "./message-bubble-context-menu.types";
 import type {
   MessageBubbleAttachmentDownloadStatus,
   MessageBubbleProps,
@@ -67,7 +77,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
     resolveCustomEmojiShortcodeImageUrl,
     callbacks,
   }) => {
-    const [open, setOpen] = useState(false);
+    const [menuOpen, setMenuOpen] = useState(false);
+    // Источник открытия нужен, чтобы разделить поведение ПКМ и троеточия.
+    const [menuSource, setMenuSource] = useState<MessageBubbleContextMenuSource>("trigger");
+    // Якорь заполняется только для ПКМ-открытия (позиция рядом с курсором).
+    const [contextMenuAnchor, setContextMenuAnchor] =
+      useState<MessageBubbleContextMenuAnchor | null>(null);
     const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
     const [mentionPopover, setMentionPopover] = useState<{
       userId: number;
@@ -240,8 +255,42 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
         focusNode != null &&
         messageBody.contains(anchorNode.parentElement ?? anchorNode) &&
         messageBody.contains(focusNode.parentElement ?? focusNode);
+      // Сохраняем выделенный текст для reply/forward только если выделение внутри текущего сообщения.
       replySelectionRef.current = hasSelectionInsideMessageBody ? selectedText : undefined;
-      setOpen(true);
+      if (event instanceof MouseEvent) {
+        const currentTarget = event.currentTarget;
+        const feedRoot =
+          currentTarget instanceof HTMLElement
+            ? currentTarget.closest<HTMLElement>('[role="feed"]')
+            : null;
+        const feedRect = feedRoot?.getBoundingClientRect();
+        const fallbackBounds = {
+          left: 0,
+          top: 0,
+          right: window.innerWidth,
+          bottom: window.innerHeight,
+        };
+        // Основные границы — область чата; fallback нужен для редких edge-case сценариев.
+        const bounds = feedRect ?? fallbackBounds;
+        const nextPosition = computeMessageContextMenuPosition({
+          clientX: event.clientX,
+          clientY: event.clientY,
+          bounds,
+          menuWidth: MESSAGE_CONTEXT_MENU_EST_WIDTH_PX,
+          menuHeight: MESSAGE_CONTEXT_MENU_EST_HEIGHT_PX,
+        });
+        setContextMenuAnchor({
+          left: nextPosition.menuLeft,
+          top: nextPosition.menuTop,
+          side: nextPosition.side,
+        });
+        setMenuSource("context");
+      } else {
+        // Клавиатурный вызов и другие не-mouse события оставляем в старом режиме от trigger.
+        setContextMenuAnchor(null);
+        setMenuSource("trigger");
+      }
+      setMenuOpen(true);
     }, []);
 
     const handleKeyboardContextMenu = useCallback(
@@ -266,7 +315,10 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
     const handleNativeTouchStart = useCallback(() => {
       clearLongPressTimer();
       longPressTimerRef.current = setTimeout(() => {
-        setOpen(true);
+        // Long press должен вести себя как обычное меню от троеточия.
+        setContextMenuAnchor(null);
+        setMenuSource("trigger");
+        setMenuOpen(true);
       }, 500);
     }, [clearLongPressTimer]);
 
@@ -315,7 +367,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
           callbacks?.onOpenJitsiCall?.(jitsiUrl, jitsiLocationName);
         }
         replySelectionRef.current = undefined;
-        setOpen(false);
+        setMenuOpen(false);
         return;
       }
       if (label === "copyCallLink") {
@@ -323,21 +375,21 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
           callbacks.onCopy({ ...message, content: jitsiUrl });
         }
         replySelectionRef.current = undefined;
-        setOpen(false);
+        setMenuOpen(false);
         return;
       }
       if (label === "reply") {
         const selectedReplyText = replySelectionRef.current;
         replySelectionRef.current = undefined;
         callbacks?.onReply?.(message, selectedReplyText);
-        setOpen(false);
+        setMenuOpen(false);
         return;
       }
       if (label === "forward") {
         const selectedForwardText = replySelectionRef.current;
         replySelectionRef.current = undefined;
         callbacks?.onForward?.(message, selectedForwardText);
-        setOpen(false);
+        setMenuOpen(false);
         return;
       }
 
@@ -346,21 +398,33 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
         (callbacks[action] as (msg: MockMessage) => void)(message);
       }
       replySelectionRef.current = undefined;
-      setOpen(false);
+      setMenuOpen(false);
     };
+
+    const handleContextMenuSourceChange = useCallback(
+      (nextSource: MessageBubbleContextMenuSource) => {
+        setMenuSource(nextSource);
+        if (nextSource === "trigger") {
+          // При переходе в trigger-режим позиция ПКМ больше не актуальна.
+          setContextMenuAnchor(null);
+        }
+      },
+      [],
+    );
 
     const handleContextMenuOpenChange = useCallback((nextOpen: boolean) => {
       if (!nextOpen) {
         replySelectionRef.current = undefined;
+        setContextMenuAnchor(null);
       }
-      setOpen(nextOpen);
+      setMenuOpen(nextOpen);
     }, []);
 
     const handleReaction = useCallback(
       (payload: MessageReactionPayload) => {
         callbacks?.onAddReaction?.(message.id, payload);
         setEmojiPickerOpen(false);
-        setOpen(false);
+        setMenuOpen(false);
       },
       [callbacks, message.id],
     );
@@ -572,7 +636,10 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
 
     const contextMenu = (
       <MessageBubbleContextMenu
-        open={open}
+        open={menuOpen}
+        source={menuSource}
+        contextAnchor={contextMenuAnchor}
+        onSourceChange={handleContextMenuSourceChange}
         onOpenChange={handleContextMenuOpenChange}
         isOwn={isOwn}
         emojiPickerOpen={emojiPickerOpen}
@@ -622,10 +689,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
               : `${peerBubbleTailClass} ${peerBubbleBackgroundClass} text-text-primary`
           }`}
         >
-          <div
-            ref={messageBodyRef}
-            className="message-body min-w-0 max-w-full select-text break-words [&_a]:text-accent [&_a]:underline hover:[&_a]:opacity-90 [&_blockquote]:border-l-2 [&_blockquote]:border-border-subtle [&_blockquote]:pl-2 [&_blockquote]:italic [&_blockquote]:text-text-muted [&_img]:my-1 [&_img]:h-auto [&_img]:max-h-[160px] [&_img]:w-auto [&_img]:max-w-full [&_img]:cursor-pointer [&_img]:rounded [&_img]:object-contain [&_p:last-child]:mb-0 [&_p]:mb-1 [&_pre]:my-1 [&_pre]:min-w-0 [&_pre]:max-w-full [&_pre]:whitespace-pre-wrap [&_pre]:border-l-2 [&_pre]:border-border-subtle [&_pre]:py-2 [&_pre]:pl-2 [&_pre]:pr-2 [&_pre]:font-mono [&_pre]:text-sm [&_pre]:italic [&_pre]:text-text-muted [&_pre]:[overflow-wrap:anywhere] [&_pre_code]:min-w-0 [&_pre_code]:max-w-full [&_pre_code]:whitespace-pre-wrap [&_pre_code]:[overflow-wrap:anywhere] [&_span.user-mention]:cursor-pointer [&_span.user-mention]:text-accent hover:[&_span.user-mention]:opacity-90 [&_table]:my-2 [&_table]:w-full [&_table]:border-collapse [&_table]:text-sm [&_td]:border [&_td]:border-border-subtle [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-border-subtle [&_th]:px-2 [&_th]:py-1 [&_th]:text-left"
-          />
+          <div ref={messageBodyRef} className={MESSAGE_BUBBLE_BODY_CLASS_NAME} />
           {hasReactions ? (
             <div className="mt-1 min-w-0">
               <MessageBubbleReactionsRow

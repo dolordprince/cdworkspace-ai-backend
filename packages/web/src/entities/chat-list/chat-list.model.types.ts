@@ -14,6 +14,8 @@ export interface ChatListStreamMetadataRow {
   streamId: number;
   // Что делает: текущее имя канала.
   name: string;
+  // Что делает: признак архивированного канала.
+  isArchived?: boolean;
   // Что делает: id создателя канала (если сервер вернул creator_id).
   creatorId?: number;
   // Что делает: признак приватности канала.
@@ -49,16 +51,27 @@ export interface ChatListState {
    * metadata upserts that changed maps, or IDB hydrate with non-empty maps. False after clear.
    */
   sidebarDataHydrated: boolean;
+  /** True after authoritative subscriptions metadata is applied (bootstrap/register). */
+  streamMetadataHydrated: boolean;
   currentUserId: number | null;
   lastAppliedMessages: ZulipRawMessage[] | null;
   messageIdToLocation: Map<number, MessageLocation>;
   setFromMessages: (messages: ZulipRawMessage[], currentUserId: number | null) => void;
   /** Restore sidebar maps from IndexedDB snapshot (no raw `lastAppliedMessages`). */
   hydrateFromIndexedDbSnapshot: (snapshot: ChatListSnapshotSerialized) => void;
+  /** Authoritative unread reconcile from server snapshot (e.g. `is:unread`). */
+  reconcileUnreadFromMessages: (
+    messages: readonly ZulipRawMessage[],
+    currentUserId: number | null,
+  ) => void;
   addMessage: (message: ZulipRawMessage) => void;
   addMessages: (messages: ZulipRawMessage[]) => void;
   // Что делает: добавляет каналы в список из metadata, даже если сообщений по ним нет в памяти.
   upsertStreamMetadataRows: (rows: ChatListStreamMetadataRow[]) => void;
+  /** Marks stream metadata readiness from authoritative subscriptions sources. */
+  setStreamMetadataHydrated: (value: boolean) => void;
+  /** Optimistically toggles archived state for a stream; `undefined` clears local override. */
+  setStreamArchived: (streamId: number, isArchived: boolean | undefined) => void;
   // Что делает: добавляет/обновляет DM-строки из metadata и локального DM-индекса.
   upsertDmMetadataRows: (rows: ChatListDmMetadataRow[]) => void;
   setCurrentUserId: (id: number | null) => void;
@@ -70,6 +83,7 @@ export interface ChatListState {
     messageIds?: number[];
     anchorMessageId?: number;
   }) => void;
+  removeStreamTopic: (streamId: number, topic: string) => void;
   removeStream: (streamId: number) => void;
   /** After a user profile is fetched, refresh personal DM row titles that still use placeholders. */
   patchPersonalDmRowLabelsForUser: (userId: number) => void;

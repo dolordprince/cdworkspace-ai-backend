@@ -43,6 +43,62 @@ export interface RemoveStreamMembersResult {
   errorCode?: string;
 }
 
+export interface DeleteTopicResult {
+  ok: boolean;
+  complete: boolean;
+  attempts: number;
+  errorCode?: string;
+}
+
+/** Ответ PATCH /streams/{id} с полями, важными для разархивирования и совместимости серверов. */
+interface StreamPatchResponsePayload {
+  result?: string;
+  msg?: string;
+  code?: string;
+  ignored_parameters_unsupported?: unknown;
+}
+
+export type StreamUnarchiveErrorKind = "unsupported" | "transient" | "forbidden" | "invalid";
+
+export type UnarchiveStreamResult =
+  | { ok: true }
+  | {
+      ok: false;
+      kind: StreamUnarchiveErrorKind;
+      message: string;
+      status: number;
+      code?: string;
+    };
+
+function mapStreamPatchErrorKind(status: number): StreamUnarchiveErrorKind {
+  if (status === 403) return "forbidden";
+  if (status === 400) return "invalid";
+  if (status === 404 || status === 405) return "unsupported";
+  return "transient";
+}
+
+function readStreamPatchErrorMessage(
+  data: StreamPatchResponsePayload,
+  status: number,
+  fallback: string,
+): string {
+  if (typeof data.msg === "string" && data.msg.trim().length > 0) {
+    return data.msg;
+  }
+  if (typeof data.code === "string" && data.code.trim().length > 0) {
+    return data.code;
+  }
+  if (status > 0) {
+    return `${fallback} (HTTP ${status})`;
+  }
+  return fallback;
+}
+
+function includesUnsupportedIsArchivedParameter(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.some((entry) => entry === "is_archived");
+}
+
 function parsePrincipalKeyToUserId(value: string): number | null {
   const numeric = Number(value);
   if (!Number.isInteger(numeric) || numeric <= 0) {
@@ -95,6 +151,7 @@ export async function fetchSubscriptions(): Promise<ZulipSubscription[]> {
       stream_id: number;
       name: string;
       is_muted?: boolean;
+      is_archived?: boolean;
       in_home_view?: boolean;
       creator_id?: unknown;
       invite_only?: boolean;
@@ -124,6 +181,9 @@ export async function fetchSubscriptions(): Promise<ZulipSubscription[]> {
       stream_id: subscription.stream_id,
       name: subscription.name,
       is_muted: subscription.is_muted ?? !(subscription.in_home_view ?? true),
+      ...(typeof subscription.is_archived === "boolean"
+        ? { is_archived: subscription.is_archived }
+        : {}),
       ...(creatorId != null ? { creator_id: creatorId } : {}),
       ...(typeof subscription.invite_only === "boolean"
         ? { invite_only: subscription.invite_only }
@@ -370,7 +430,7 @@ export async function fetchTopics(stream: string): Promise<string[]> {
 /** Updates stream metadata (PATCH /api/v1/streams/{stream_id}). */
 export async function updateStream(
   streamId: number,
-  params: { name?: string; description?: string },
+  params: { name?: string; description?: string; isArchived?: boolean },
 ): Promise<boolean> {
   guard.streamId(streamId, "updateStream.streamId");
   const body: Record<string, string> = {};
@@ -381,6 +441,10 @@ export async function updateStream(
   if (params.description != null) {
     body.description = params.description.trim();
   }
+  if (params.isArchived !== undefined) {
+    // Zulip принимает булев параметр как строку в form-encoded теле PATCH.
+    body.is_archived = params.isArchived ? "true" : "false";
+  }
   if (Object.keys(body).length === 0) {
     return true;
   }
@@ -388,10 +452,51 @@ export async function updateStream(
   try {
     const res = await zulipPipelinePatch(`streams/${streamId}`, body);
     if (!res.ok) return false;
-    const data = res.data as { result?: string };
+    const data = res.data as StreamPatchResponsePayload;
     return data.result !== "error";
   } catch {
     return false;
+  }
+}
+
+/**
+ * Снимает архив с канала: PATCH streams/{id} с is_archived=false.
+ * Старые серверы могут вернуть success, но положить `is_archived` в ignored_parameters_unsupported — трактуем как unsupported.
+ */
+export async function unarchiveStream(streamId: number): Promise<UnarchiveStreamResult> {
+  guard.streamId(streamId, "unarchiveStream.streamId");
+  try {
+    const res = await zulipPipelinePatch(`streams/${streamId}`, { is_archived: "false" });
+    const data = (res.data ?? {}) as StreamPatchResponsePayload;
+
+    if (!res.ok || data.result === "error") {
+      return {
+        ok: false,
+        status: res.status,
+        kind: mapStreamPatchErrorKind(res.status),
+        message: readStreamPatchErrorMessage(data, res.status, "Failed to unarchive channel"),
+        ...(typeof data.code === "string" ? { code: data.code } : {}),
+      };
+    }
+
+    if (includesUnsupportedIsArchivedParameter(data.ignored_parameters_unsupported)) {
+      return {
+        ok: false,
+        status: res.status,
+        kind: "unsupported",
+        message: "is_archived is not supported on this server",
+      };
+    }
+
+    return { ok: true };
+  } catch (err) {
+    log.warn("unarchiveStream request failed", { streamId, error: String(err) });
+    return {
+      ok: false,
+      status: 0,
+      kind: "transient",
+      message: String(err),
+    };
   }
 }
 
@@ -406,4 +511,64 @@ export async function deleteStream(streamId: number): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Deletes all messages in a topic (POST /api/v1/streams/{stream_id}/delete_topic). */
+export async function deleteTopic(
+  streamId: number,
+  topicName: string,
+  maxAttempts = 5,
+): Promise<DeleteTopicResult> {
+  guard.streamId(streamId, "deleteTopic.streamId");
+  const normalizedTopicName = topicName.trim();
+  const attemptsLimit = Math.max(1, Math.floor(maxAttempts));
+
+  for (let attempt = 1; attempt <= attemptsLimit; attempt += 1) {
+    try {
+      const res = await zulipPipelinePost(`/streams/${streamId}/delete_topic`, {
+        topic_name: normalizedTopicName,
+      });
+      if (!res.ok) {
+        return {
+          ok: false,
+          complete: false,
+          attempts: attempt,
+          errorCode: `http_${res.status}`,
+        };
+      }
+
+      const data = res.data as { result?: string; complete?: unknown; code?: string };
+      if (data.result === "error") {
+        return {
+          ok: false,
+          complete: false,
+          attempts: attempt,
+          errorCode: data.code ?? "unknown_error",
+        };
+      }
+
+      const complete = data.complete !== false;
+      if (complete) {
+        return {
+          ok: true,
+          complete: true,
+          attempts: attempt,
+        };
+      }
+    } catch {
+      return {
+        ok: false,
+        complete: false,
+        attempts: attempt,
+        errorCode: "network_error",
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    complete: false,
+    attempts: attemptsLimit,
+    errorCode: "incomplete_after_retries",
+  };
 }

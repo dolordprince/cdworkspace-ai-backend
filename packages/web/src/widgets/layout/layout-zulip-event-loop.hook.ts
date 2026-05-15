@@ -20,6 +20,7 @@ import { useTypingIndicatorStore } from "~/features/typing-indicator/typing-indi
 import {
   deleteQueue,
   fetchDirectMessagesPage,
+  fetchUnreadMessagesSnapshot,
   fetchSubscriptions,
   fetchUsers,
   getCurrentUser,
@@ -91,6 +92,9 @@ function toStreamMetadataRows(
       return {
         streamId: subscription.stream_id,
         name: subscription.name,
+        ...(typeof subscription.is_archived === "boolean"
+          ? { isArchived: subscription.is_archived }
+          : {}),
         // Что делает: пробрасывает channel-level metadata в store, чтобы UI решал права без raw Zulip payload.
         ...(creatorId != null ? { creatorId } : {}),
         ...(typeof subscription.invite_only === "boolean"
@@ -158,6 +162,20 @@ function persistDmIndexFromStore(instanceId: string): void {
   if (rows.length > 0) {
     upsertDmIndexEntries(instanceId, rows);
   }
+}
+
+function startSidebarUnreadReconcile(options: {
+  cancelled: () => boolean;
+  currentUserId: number | null;
+}): void {
+  // Что делает: после bootstrap отдельно сверяет unread sidebar с серверным is:unread snapshot.
+  // Зачем: IDB hydrate и delta bootstrap могут сохранить stale счетчики, если read-event был когда-то пропущен.
+  void fetchUnreadMessagesSnapshot()
+    .then((messages) => {
+      if (options.cancelled() || messages == null) return;
+      useChatListStore.getState().reconcileUnreadFromMessages(messages, options.currentUserId);
+    })
+    .catch(() => {});
 }
 
 // Нормализует формат строки IDB к контракту, который ожидает mute-store.
@@ -358,6 +376,7 @@ export function useLayoutZulipEventLoop(options: {
         if (streamRowsFromSubscriptions.length > 0) {
           useChatListStore.getState().upsertStreamMetadataRows(streamRowsFromSubscriptions);
         }
+        useChatListStore.getState().setStreamMetadataHydrated(true);
 
         const uid = resolvedCurrentUserId ?? useChatListStore.getState().currentUserId ?? null;
 
@@ -432,6 +451,13 @@ export function useLayoutZulipEventLoop(options: {
             latestMessageIdRef: latestMessageIdRef.current,
           });
         }
+
+        // Что делает: всегда запускает authoritative unread reconcile после bootstrap.
+        // Зачем: даже в delta/none режиме обычная загрузка сообщений не обязана исправить уже застрявшие cached unread.
+        startSidebarUnreadReconcile({
+          cancelled: () => cancelled,
+          currentUserId: uid,
+        });
 
         if (metadataDmBackfillEnabled && currentInstanceId != null) {
           logChatListFlow("eventLoop: starting metadata DM backfill loop", {
@@ -535,6 +561,7 @@ export function useLayoutZulipEventLoop(options: {
             if (streamRows.length > 0) {
               useChatListStore.getState().upsertStreamMetadataRows(streamRows);
             }
+            useChatListStore.getState().setStreamMetadataHydrated(true);
             if (metadataBootstrapEnabled) {
               // Что делает: подмешивает recent_private_conversations сразу после register.
               const rows = toDmMetadataRowsFromRecentConversations(

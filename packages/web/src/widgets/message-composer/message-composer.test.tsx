@@ -742,6 +742,29 @@ describe("MessageComposer preview mode", () => {
     expect(screen.getByRole("textbox")).toHaveValue("**Hello** world");
   });
 
+  it("keeps rendering preview after switching back to write mode and opening preview again", async () => {
+    renderMessageContentMock.mockResolvedValue("<p><strong>Hello</strong> world</p>");
+    renderWithProviders(<MessageComposer onSend={vi.fn()} />);
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "**Hello** world" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: "Preview" })).toHaveTextContent("Hello world");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Write" }));
+    expect(screen.getByRole("textbox")).toHaveValue("**Hello** world");
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: "Preview" })).toHaveTextContent("Hello world");
+    });
+    expect(renderMessageContentMock).toHaveBeenCalledTimes(2);
+    expect(renderMessageContentMock).toHaveBeenNthCalledWith(2, "**Hello** world");
+  });
+
   it("does not call preview API for empty draft", async () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
@@ -1025,6 +1048,124 @@ describe("MessageComposer edit-last shortcut", () => {
     fireEvent.keyDown(textbox, { key: "ArrowUp", shiftKey: true });
 
     expect(onEditLastMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("MessageComposer edit session", () => {
+  it("submits edited content and restores previous draft after session closes", async () => {
+    const onSubmitEdit = vi.fn().mockResolvedValue(undefined);
+    const onValueChange = vi.fn();
+    const onCancelEdit = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        initialValue="draft before edit"
+        onValueChange={onValueChange}
+        onSubmitEdit={onSubmitEdit}
+        onCancelEdit={onCancelEdit}
+      />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    expect(textbox).toHaveValue("draft before edit");
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        initialValue="draft before edit"
+        onValueChange={onValueChange}
+        onSubmitEdit={onSubmitEdit}
+        onCancelEdit={onCancelEdit}
+        editSession={{ messageId: 42, initialMarkdown: "message to edit" }}
+      />,
+    );
+
+    expect(textbox).toHaveValue("message to edit");
+    fireEvent.change(textbox, { target: { value: "edited message body" } });
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(onSubmitEdit).toHaveBeenCalledWith(42, "edited message body");
+    });
+    expect(onValueChange).not.toHaveBeenCalled();
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        initialValue="draft before edit"
+        onValueChange={onValueChange}
+        onSubmitEdit={onSubmitEdit}
+        onCancelEdit={onCancelEdit}
+      />,
+    );
+
+    expect(textbox).toHaveValue("draft before edit");
+  });
+
+  it("cancels edit session on Escape and restores previous draft", () => {
+    const onCancelEdit = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MessageComposer onSend={vi.fn()} initialValue="draft text" onCancelEdit={onCancelEdit} />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        initialValue="draft text"
+        onCancelEdit={onCancelEdit}
+        editSession={{ messageId: 7, initialMarkdown: "server markdown" }}
+      />,
+    );
+
+    expect(textbox).toHaveValue("server markdown");
+    fireEvent.keyDown(textbox, { key: "Escape" });
+    expect(onCancelEdit).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <MessageComposer onSend={vi.fn()} initialValue="draft text" onCancelEdit={onCancelEdit} />,
+    );
+    expect(textbox).toHaveValue("draft text");
+  });
+
+  it("restores original draft after switching edit target within one edit flow", () => {
+    const onCancelEdit = vi.fn();
+    const { rerender } = renderWithProviders(
+      <MessageComposer onSend={vi.fn()} initialValue="draft text" onCancelEdit={onCancelEdit} />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    expect(textbox).toHaveValue("draft text");
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        initialValue="draft text"
+        onCancelEdit={onCancelEdit}
+        editSession={{ messageId: 7, initialMarkdown: "message A" }}
+      />,
+    );
+    expect(textbox).toHaveValue("message A");
+
+    fireEvent.change(textbox, { target: { value: "edited message A" } });
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        initialValue="draft text"
+        onCancelEdit={onCancelEdit}
+        editSession={{ messageId: 8, initialMarkdown: "message B" }}
+      />,
+    );
+    expect(textbox).toHaveValue("message B");
+
+    fireEvent.keyDown(textbox, { key: "Escape" });
+    expect(onCancelEdit).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <MessageComposer onSend={vi.fn()} initialValue="draft text" onCancelEdit={onCancelEdit} />,
+    );
+    expect(textbox).toHaveValue("draft text");
   });
 });
 

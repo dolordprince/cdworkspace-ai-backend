@@ -5,6 +5,7 @@ import { useMemo } from "react";
 import { useMessageReadersStore } from "~/features/message-readers/message-readers.model";
 import { t } from "~/i18n/i18n";
 import { addMessageFlag, addReaction, removeMessageFlag, removeReaction } from "~/shared/api/zulip";
+import { writeText } from "~/shared/lib/clipboard";
 import { plainTextPreviewFromMessageBody } from "~/shared/lib/message-markdown-display.lib";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
 import { buildMessageRedirectRouteFromZulipPermalink } from "~/shared/lib/push-click";
@@ -27,7 +28,7 @@ export function useChatMessageListCallbacks(
     navigate,
     rightDrawer,
     setReplyQuote,
-    setEditingMessage,
+    requestMessageEdit,
     setDeleteConfirm,
     setToastMessage,
     setForwardMessages,
@@ -63,16 +64,15 @@ export function useChatMessageListCallbacks(
         });
       },
       onMessageEdit(msg) {
-        setEditingMessage(msg);
+        requestMessageEdit(msg);
       },
       onMessageDelete(msg) {
         setDeleteConfirm({ type: "single", messageId: msg.id });
       },
       onMessageCopy(msg) {
         const text = plainTextPreviewFromMessageBody(msg.content);
-        void navigator.clipboard.writeText(text).then(
-          () => setToastMessage(t("message.copied")),
-          () => setToastMessage(t("message.copyFailed")),
+        void writeText(text).then((ok) =>
+          setToastMessage(ok ? t("message.copied") : t("message.copyFailed")),
         );
       },
       onMessageForward(msg, selectedText) {
@@ -197,7 +197,7 @@ export function useChatMessageListCallbacks(
       navigate,
       rightDrawer,
       setReplyQuote,
-      setEditingMessage,
+      requestMessageEdit,
       setDeleteConfirm,
       setToastMessage,
       setForwardMessages,
