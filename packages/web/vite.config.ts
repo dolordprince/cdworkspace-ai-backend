@@ -322,16 +322,21 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 400,
       rollupOptions: {
         output: {
-          manualChunks: {
-            react: ["react", "react-dom"],
-            router: ["react-router-dom"],
-            radix: [
-              "@radix-ui/react-dialog",
-              "@radix-ui/react-dropdown-menu",
-              "@radix-ui/react-scroll-area",
-              "@radix-ui/react-tabs",
-              "@radix-ui/react-tooltip",
-            ],
+          // Vite 8 / Rolldown: manualChunks must be a function (object form removed).
+          manualChunks(id) {
+            if (!id.includes("node_modules")) return;
+            if (
+              id.includes("/node_modules/react/") ||
+              id.includes("/node_modules/react-dom/")
+            ) {
+              return "react";
+            }
+            if (id.includes("/node_modules/react-router-dom/")) {
+              return "router";
+            }
+            if (id.includes("/node_modules/@radix-ui/")) {
+              return "radix";
+            }
           },
         },
       },
