@@ -76,6 +76,8 @@ export interface ZulipUnreadStreamBucket {
 export interface ZulipUnreadDmBucket {
   userIds: number[];
   unreadMessageIds: number[];
+  /** True for huddles / group DMs (excluded from personal DM badge counts). */
+  isGroup?: boolean;
 }
 
 // Полный unread snapshot для reconcile sidebar unread.
@@ -125,7 +127,7 @@ function parseUnreadMessagesSnapshotFromUnreadMsgs(
     if (!isPositiveInteger(senderId)) continue;
     const unreadMessageIds = parseUnreadMessageIds(entry.unread_message_ids);
     if (unreadMessageIds.length === 0) continue;
-    dms.push({ userIds: [senderId], unreadMessageIds });
+    dms.push({ userIds: [senderId], unreadMessageIds, isGroup: false });
   }
 
   for (const entry of huddlesRaw) {
@@ -134,7 +136,7 @@ function parseUnreadMessagesSnapshotFromUnreadMsgs(
     if (userIds.length === 0) continue;
     const unreadMessageIds = parseUnreadMessageIds(entry.unread_message_ids);
     if (unreadMessageIds.length === 0) continue;
-    dms.push({ userIds, unreadMessageIds });
+    dms.push({ userIds, unreadMessageIds, isGroup: true });
   }
 
   // Если сервер дал прямой count, используем его как authoritative total.
@@ -216,6 +218,7 @@ function parseUnreadMessagesSnapshotFromMessages(
       dmBuckets.set(key, {
         userIds: participantIds,
         unreadMessageIds: [messageId],
+        isGroup: participantIds.length > 2,
       });
     }
   }
@@ -237,6 +240,33 @@ export function parseUnreadMessagesSnapshot(payload: unknown): ZulipUnreadMessag
   return parseUnreadMessagesSnapshotFromMessages(payload);
 }
 
+/** DM badge polling uses GET /messages — prefer `messages` over stale `unread_msgs` on combined payloads. */
+function parseUnreadDmMessagesSnapshot(payload: unknown): ZulipUnreadMessagesSnapshot | null {
+  const fromMessages = parseUnreadMessagesSnapshotFromMessages(payload);
+  if (fromMessages != null) {
+    return fromMessages;
+  }
+  return parseUnreadMessagesSnapshotFromUnreadMsgs(payload);
+}
+
+/** Personal 1:1 for inactive-instance badge polling (stricter than sidebar row reconciliation). */
+function isPersonalDmBucketForBadge(dm: ZulipUnreadDmBucket): boolean {
+  if (dm.isGroup === true) return false;
+  // Legacy `unread_msgs.pms` buckets only include the other party's user id.
+  if (dm.userIds.length === 1) return true;
+  // `/messages` buckets list every participant — only two-user conversations are 1:1.
+  return dm.userIds.length === 2;
+}
+
+function countPersonalDmUnreadFromSnapshot(snapshot: ZulipUnreadMessagesSnapshot): number {
+  let total = 0;
+  for (const dm of snapshot.dms) {
+    if (!isPersonalDmBucketForBadge(dm)) continue;
+    total += dm.unreadMessageIds.length;
+  }
+  return total;
+}
+
 // Лёгкий helper только для общего unread count.
 export function parseUnreadMessagesCount(payload: unknown): number | null {
   const snapshot = parseUnreadMessagesSnapshot(payload);
@@ -244,4 +274,16 @@ export function parseUnreadMessagesCount(payload: unknown): number | null {
     return null;
   }
   return snapshot.totalCount;
+}
+
+/**
+ * Personal DM unread flag for inactive-instance polling (0 or 1).
+ * Uses conversation-level presence in personal DM buckets, not global `unread_msgs.count`.
+ */
+export function parseUnreadDmMessagesCount(payload: unknown): number | null {
+  const snapshot = parseUnreadDmMessagesSnapshot(payload);
+  if (snapshot == null) {
+    return null;
+  }
+  return countPersonalDmUnreadFromSnapshot(snapshot) > 0 ? 1 : 0;
 }

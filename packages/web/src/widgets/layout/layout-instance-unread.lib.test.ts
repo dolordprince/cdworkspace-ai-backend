@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   buildActiveChatWindowTitle,
+  computeInstanceDmUnreadCount,
   computeInstanceUnreadCount,
+  computeTotalDmUnreadAcrossInstances,
+  computeTotalUnreadAcrossInstances,
   formatWebWindowTitleWithUnreadCount,
+  hasPersonalDmUnreadForActiveInstance,
+  isPersonalDmUnreadEntry,
 } from "./layout-instance-unread.lib";
 
 describe("layout-instance-unread", () => {
@@ -13,6 +18,86 @@ describe("layout-instance-unread", () => {
         dms: [{ badge: 3 }],
       }),
     ).toBe(10);
+  });
+
+  it("sums only personal (1:1) DM unread badges for app icon indicator", () => {
+    expect(
+      computeInstanceDmUnreadCount({
+        dms: [
+          { badge: 3, slug: "10-alice" },
+          { badge: 1, isGroup: true, slug: "7-alice,42-bob,51-carol" },
+        ],
+        currentUserId: 7,
+      }),
+    ).toBe(3);
+    expect(
+      computeInstanceDmUnreadCount({
+        dms: [{ badge: 2 }],
+      }),
+    ).toBe(2);
+  });
+
+  it("excludes huddle unread when isGroup and slug both imply a group DM", () => {
+    expect(
+      isPersonalDmUnreadEntry({ isGroup: true, slug: "7-alice,42-bob,51-carol", badge: 2 }, 7),
+    ).toBe(false);
+    expect(
+      computeInstanceDmUnreadCount({
+        currentUserId: 7,
+        dms: [
+          { badge: 4, slug: "7-alice,42-bob" },
+          { badge: 2, isGroup: true, slug: "7-alice,42-bob,51-carol" },
+        ],
+      }),
+    ).toBe(4);
+  });
+
+  it("hasPersonalDmUnreadForActiveInstance reflects only current org sidebar DM unread", () => {
+    expect(hasPersonalDmUnreadForActiveInstance(0)).toBe(false);
+    expect(hasPersonalDmUnreadForActiveInstance(2)).toBe(true);
+    expect(hasPersonalDmUnreadForActiveInstance(-1)).toBe(false);
+    expect(hasPersonalDmUnreadForActiveInstance(Number.NaN)).toBe(false);
+  });
+
+  it("sums DM unread counts across all instances for app icon badges", () => {
+    expect(
+      computeTotalDmUnreadAcrossInstances({
+        "inst-1": 1,
+        "inst-2": 2,
+      }),
+    ).toBe(3);
+    expect(
+      computeTotalDmUnreadAcrossInstances(
+        { "inst-1": 0, "inst-2": 1 },
+        { instanceId: "inst-1", unreadCount: 5 },
+      ),
+    ).toBe(6);
+  });
+
+  it("sums unread counts across all instances", () => {
+    expect(
+      computeTotalUnreadAcrossInstances({
+        "inst-1": 3,
+        "inst-2": 5,
+      }),
+    ).toBe(8);
+    expect(computeTotalUnreadAcrossInstances({})).toBe(0);
+    expect(
+      computeTotalUnreadAcrossInstances({
+        a: -2,
+        b: Number.NaN,
+        c: 2.9,
+      }),
+    ).toBe(2);
+  });
+
+  it("prefers live current-instance unread over stale store value", () => {
+    expect(
+      computeTotalUnreadAcrossInstances(
+        { "inst-1": 0, "inst-2": 2 },
+        { instanceId: "inst-1", unreadCount: 4 },
+      ),
+    ).toBe(6);
   });
 
   it("ignores invalid badge values", () => {

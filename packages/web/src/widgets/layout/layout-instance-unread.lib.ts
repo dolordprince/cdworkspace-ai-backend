@@ -1,4 +1,10 @@
-import type { LayoutBuildActiveChatWindowTitleInput, LayoutComputeInstanceUnreadInput } from "./layout-instance-unread.types";
+import { effectiveDmIsGroupFromSlug } from "~/shared/lib/dm-route.lib";
+import { parseDmSlugToUserIds } from "~/widgets/sidebar/sidebar.lib";
+import type {
+  LayoutBuildActiveChatWindowTitleInput,
+  LayoutComputeInstanceUnreadInput,
+  LayoutDmBadgeHolder,
+} from "./layout-instance-unread.types";
 
 function toSafeUnreadCount(value: number | null | undefined): number {
   if (!Number.isFinite(value)) return 0;
@@ -11,8 +17,75 @@ export function computeInstanceUnreadCount({
   dms,
 }: LayoutComputeInstanceUnreadInput): number {
   const streamUnread = streams.reduce((sum, stream) => sum + toSafeUnreadCount(stream.badge), 0);
-  const dmUnread = dms.reduce((sum, dm) => sum + toSafeUnreadCount(dm.badge), 0);
+  const dmUnread = computeInstanceDmUnreadCount({ dms });
   return streamUnread + dmUnread;
+}
+
+function resolveDmSlugUserIds(dm: LayoutDmBadgeHolder): number[] {
+  if (Array.isArray(dm.userIds) && dm.userIds.length > 0) {
+    return [...dm.userIds];
+  }
+  if (typeof dm.slug === "string" && dm.slug.length > 0) {
+    return parseDmSlugToUserIds(dm.slug);
+  }
+  return [];
+}
+
+/** Same personal-DM rule as sidebar DM list (`effectiveDmIsGroupFromSlug`). */
+export function isPersonalDmUnreadEntry(
+  dm: LayoutDmBadgeHolder,
+  currentUserId: number | null,
+): boolean {
+  return !effectiveDmIsGroupFromSlug(dm.isGroup, resolveDmSlugUserIds(dm), currentUserId);
+}
+
+/** Sums 1:1 DM unread badges for one instance (excludes group / huddle DMs). */
+export function computeInstanceDmUnreadCount({
+  dms,
+  currentUserId = null,
+}: Pick<LayoutComputeInstanceUnreadInput, "dms"> & {
+  currentUserId?: number | null;
+}): number {
+  return dms
+    .filter((dm) => isPersonalDmUnreadEntry(dm, currentUserId))
+    .reduce((sum, dm) => sum + toSafeUnreadCount(dm.badge), 0);
+}
+
+function sumUnreadCountsByInstance(
+  countsByInstance: Record<string, number>,
+  liveCurrent?: { instanceId: string; unreadCount: number } | null,
+): number {
+  const merged =
+    liveCurrent != null
+      ? { ...countsByInstance, [liveCurrent.instanceId]: liveCurrent.unreadCount }
+      : countsByInstance;
+
+  let total = 0;
+  for (const count of Object.values(merged)) {
+    total += toSafeUnreadCount(count);
+  }
+  return total;
+}
+
+/** Sums per-instance unread counts (streams + DMs) for org switcher and window title. */
+export function computeTotalUnreadAcrossInstances(
+  unreadCountsByInstance: Record<string, number>,
+  liveCurrent?: { instanceId: string; unreadCount: number } | null,
+): number {
+  return sumUnreadCountsByInstance(unreadCountsByInstance, liveCurrent);
+}
+
+/** Sums per-instance DM unread for app icon badges (dock, tray, favicon). */
+export function computeTotalDmUnreadAcrossInstances(
+  dmUnreadCountsByInstance: Record<string, number>,
+  liveCurrent?: { instanceId: string; unreadCount: number } | null,
+): number {
+  return sumUnreadCountsByInstance(dmUnreadCountsByInstance, liveCurrent);
+}
+
+/** App icon dot: personal DM unread on the active org only (same source as sidebar). */
+export function hasPersonalDmUnreadForActiveInstance(currentInstanceDmUnread: number): boolean {
+  return toSafeUnreadCount(currentInstanceDmUnread) > 0;
 }
 
 function toSafeTitleSegment(value: string | null | undefined): string | null {

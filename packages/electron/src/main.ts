@@ -12,7 +12,13 @@ import {
   ipcMain,
 } from "electron";
 import { autoUpdater } from "electron-updater";
-import { getTrayMenuLabels, TRAY_NAV_ROUTES } from "./tray.lib";
+import { createUnreadDotOverlaySvg } from "./unread-indicator.lib";
+import {
+  getTrayMenuLabels,
+  resolveDockIconFileName,
+  resolveTrayIconFileName,
+  TRAY_NAV_ROUTES,
+} from "./tray.lib";
 
 /** Set at compile time via `ELECTRON_DISABLE_AUTO_UPDATE` in esbuild (`get-main-esbuild-define.mjs`). */
 declare const __ELECTRON_DISABLE_AUTO_UPDATE__: boolean;
@@ -32,6 +38,10 @@ let hadTrayHideSinceLastShow = false;
 /** Linux: run GTK frame resync on the next `show` after tray hide (fixes native drag offset). */
 let pendingLinuxTrayFrameResync = false;
 let currentBadgeCount = 0;
+let trayIconNormal: Electron.NativeImage | null = null;
+let trayIconUnread: Electron.NativeImage | null = null;
+let dockIconNormal: Electron.NativeImage | null = null;
+let dockIconUnread: Electron.NativeImage | null = null;
 let callPowerSaveBlockerId: number | null = null;
 let activeCallRoom: string | null = null;
 
@@ -366,25 +376,55 @@ function createWindow(): void {
 // Tray
 // ---------------------------------------------------------------------------
 
-function resolveTrayIcon(): Electron.NativeImage | null {
-  const candidates =
-    process.platform === "darwin"
-      ? ["tray-icon-mac.png", "icons/16x16.png", "icon.png"]
-      : ["tray-icon.png", "icons/16x16.png", "icon.png"];
+function loadTrayIconFromFile(fileName: string): Electron.NativeImage | null {
+  const iconPath = getIconPath(fileName);
+  const icon = nativeImage.createFromPath(iconPath);
+  if (icon.isEmpty()) return null;
 
-  for (const fileName of candidates) {
-    const iconPath = getIconPath(fileName);
-    const icon = nativeImage.createFromPath(iconPath);
-    if (icon.isEmpty()) continue;
+  // macOS menu bar assets are baked at 32×32 (16pt @2x); downscaling blurs the unread dot.
+  if (process.platform === "darwin") {
+    return icon;
+  }
 
-    const resized = icon.resize({ width: 16, height: 16 });
-    if (process.platform === "darwin" && fileName.includes("tray-icon-mac")) {
-      resized.setTemplateImage(true);
-    }
-    return resized;
+  return icon.resize({ width: 16, height: 16 });
+}
+
+function loadDockIconFromFile(fileName: string): Electron.NativeImage | null {
+  const icon = nativeImage.createFromPath(getIconPath(fileName));
+  return icon.isEmpty() ? null : icon;
+}
+
+function loadTrayBaseIcon(): Electron.NativeImage | null {
+  const primaryName = resolveTrayIconFileName(process.platform, false);
+  if (primaryName != null) {
+    const primary = loadTrayIconFromFile(primaryName);
+    if (primary != null) return primary;
+  }
+
+  const fallbackCandidates = ["icons/16x16.png", "icon.png"];
+  for (const fileName of fallbackCandidates) {
+    const icon = loadTrayIconFromFile(fileName);
+    if (icon != null) return icon;
   }
 
   return null;
+}
+
+function resolveTrayIcon(unread: boolean): Electron.NativeImage | null {
+  const fileName = resolveTrayIconFileName(process.platform, unread);
+  if (fileName != null) {
+    const icon = loadTrayIconFromFile(fileName);
+    if (icon != null) return icon;
+  }
+
+  if (unread) {
+    const normalName = resolveTrayIconFileName(process.platform, false);
+    if (normalName != null) {
+      return loadTrayIconFromFile(normalName);
+    }
+  }
+
+  return loadTrayBaseIcon();
 }
 
 function focusMainWindow(runAfterFocus?: () => void): void {
@@ -469,7 +509,9 @@ function dispatchInternalNavigation(route: string): void {
 
 function createTray(): void {
   try {
-    const icon = resolveTrayIcon();
+    trayIconNormal = resolveTrayIcon(false);
+    trayIconUnread = resolveTrayIcon(true);
+    const icon = trayIconNormal;
     if (!icon) return;
 
     tray = new Tray(icon);
@@ -518,21 +560,48 @@ function updateTrayMenu(): void {
 // Badge Count (unread messages)
 // ---------------------------------------------------------------------------
 
+function ensureDarwinDockIcons(): void {
+  if (process.platform !== "darwin" || dockIconNormal != null) return;
+
+  dockIconNormal = loadDockIconFromFile(resolveDockIconFileName(false));
+  dockIconUnread = loadDockIconFromFile(resolveDockIconFileName(true));
+}
+
+/** macOS Dock: small dot on app icon; no text in the system badge (except during calls). */
+function updateDarwinDockUnread(hasUnread: boolean): void {
+  if (process.platform !== "darwin" || activeCallRoom != null) return;
+
+  ensureDarwinDockIcons();
+  app.dock?.setBadge("");
+
+  if (hasUnread && dockIconUnread != null) {
+    app.dock?.setIcon(dockIconUnread);
+  } else if (dockIconNormal != null) {
+    app.dock?.setIcon(dockIconNormal);
+  }
+}
+
 function setBadgeCount(count: number): void {
   currentBadgeCount = count;
+  const hasUnread = count > 0;
+
+  if (tray != null && trayIconNormal != null) {
+    tray.setImage(hasUnread && trayIconUnread != null ? trayIconUnread : trayIconNormal);
+  }
 
   if (process.platform === "darwin") {
-    app.dock?.setBadge(count > 0 ? String(count) : "");
+    updateDarwinDockUnread(hasUnread);
   }
 
   if (process.platform === "linux") {
-    app.setBadgeCount(count);
+    app.setBadgeCount(hasUnread ? 1 : 0);
   }
 
   if (process.platform === "win32" && mainWindow) {
-    if (count > 0) {
-      const badge = createBadgeOverlay(count);
-      mainWindow.setOverlayIcon(badge, `${count} unread`);
+    if (hasUnread) {
+      const badge = createUnreadDotOverlay();
+      const labels = getTrayMenuLabels(app.getLocale());
+      mainWindow.setOverlayIcon(badge, labels.unreadTaskbarOverlay);
     } else {
       mainWindow.setOverlayIcon(null, "");
     }
@@ -541,17 +610,12 @@ function setBadgeCount(count: number): void {
   updateTrayMenu();
 }
 
-function createBadgeOverlay(count: number): Electron.NativeImage {
+function createUnreadDotOverlay(): Electron.NativeImage {
   const size = 16;
-  const canvas = `
-    <svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="${size / 2}" cy="${size / 2}" r="${size / 2}" fill="#FF0000"/>
-      <text x="${size / 2}" y="${size / 2 + 4}" text-anchor="middle" font-size="10"
-            font-weight="bold" fill="white" font-family="sans-serif">
-        ${count > 99 ? "99+" : count}
-      </text>
-    </svg>`;
-  return nativeImage.createFromBuffer(Buffer.from(canvas), { width: size, height: size });
+  return nativeImage.createFromBuffer(Buffer.from(createUnreadDotOverlaySvg(size)), {
+    width: size,
+    height: size,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +677,7 @@ app.whenReady().then(() => {
   }
   createWindow();
   createTray();
+  ensureDarwinDockIcons();
 });
 
 // ---------------------------------------------------------------------------
@@ -904,8 +969,10 @@ function registerIpcHandlers(): void {
       tray.setToolTip(`${app.getName()} — In call: ${activeCallRoom}`);
     }
 
-    // macOS dock: bouncing dot to show activity
     if (process.platform === "darwin") {
+      if (dockIconNormal != null) {
+        app.dock?.setIcon(dockIconNormal);
+      }
       app.dock?.setBadge("📞");
     }
   });
@@ -925,9 +992,8 @@ function registerIpcHandlers(): void {
       tray.setToolTip(app.getName());
     }
 
-    // Restore dock badge
     if (process.platform === "darwin") {
-      app.dock?.setBadge(currentBadgeCount > 0 ? String(currentBadgeCount) : "");
+      updateDarwinDockUnread(currentBadgeCount > 0);
     }
   });
 

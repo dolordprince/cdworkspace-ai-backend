@@ -44,12 +44,33 @@ describe("getTrayMenuLabels", () => {
     assert.equal(labels.calendar, "Календарь");
     assert.equal(labels.mail, "Почта");
     assert.equal(labels.quit, "Выход");
+    assert.equal(labels.unreadTaskbarOverlay, "Непрочитанные сообщения");
   });
 
   it("returns English labels for non-ru locales", () => {
     const labels = trayLib.getTrayMenuLabels("en-US");
     assert.equal(labels.messenger, "Messenger");
     assert.equal(labels.quit, "Quit");
+    assert.equal(labels.unreadTaskbarOverlay, "Unread messages");
+  });
+});
+
+describe("resolveTrayIconFileName", () => {
+  it("returns primary tray icon for normal state", () => {
+    assert.equal(trayLib.resolveTrayIconFileName("darwin", false), "tray-icon-mac.png");
+    assert.equal(trayLib.resolveTrayIconFileName("win32", false), "tray-icon.png");
+  });
+
+  it("returns unread tray icon variant when requested", () => {
+    assert.equal(trayLib.resolveTrayIconFileName("darwin", true), "tray-icon-mac-unread.png");
+    assert.equal(trayLib.resolveTrayIconFileName("linux", true), "tray-icon-unread.png");
+  });
+});
+
+describe("resolveDockIconFileName", () => {
+  it("returns baked dock PNG file names", () => {
+    assert.equal(trayLib.resolveDockIconFileName(false), "dock-icon.png");
+    assert.equal(trayLib.resolveDockIconFileName(true), "dock-icon-unread.png");
   });
 });
 

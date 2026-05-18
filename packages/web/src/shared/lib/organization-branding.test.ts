@@ -1,16 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { brand } from "~/shared/lib/brand";
 import {
+  getAppFaviconUrl,
   getOrganizationFallbackLogoUrl,
   getOrganizationLogoSrc,
+  resolveFaviconHref,
   resolveOrganizationLogoUrl,
+  setDocumentFaviconHref,
   setOrganizationFaviconHref,
+  syncFaviconWithUnreadIndicator,
   syncOrganizationFavicon,
 } from "./organization-branding";
 
+async function flushFaviconUpdates(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    queueMicrotask(() => resolve());
+  });
+}
+
 describe("organization-branding", () => {
   afterEach(() => {
-    const dynamic = document.getElementById("organization-favicon");
-    dynamic?.remove();
+    document.querySelectorAll('link[rel="icon"]').forEach((link) => link.remove());
   });
 
   it("returns null for invalid organization logo urls", () => {
@@ -49,37 +59,63 @@ describe("organization-branding", () => {
     ).toBe("https://chat.example.com/user_avatars/1/realm/icon.png");
   });
 
-  it("creates and updates dynamic favicon link", () => {
-    setOrganizationFaviconHref("https://cdn.example.com/favicon-a.svg");
-    setOrganizationFaviconHref("https://cdn.example.com/favicon-b.svg");
+  it("setDocumentFaviconHref updates every icon link in the document head", () => {
+    const svg = document.createElement("link");
+    svg.rel = "icon";
+    svg.href = "/favicon.svg";
+    const png = document.createElement("link");
+    png.rel = "icon";
+    png.href = "/favicon-32x32.png";
+    document.head.append(svg, png);
 
-    const dynamic = document.getElementById("organization-favicon");
+    setDocumentFaviconHref("/favicon-unread.svg");
+    expect(svg.getAttribute("href")).toBe("/favicon-unread.svg");
+    expect(png.getAttribute("href")).toBe("/favicon-unread.svg");
+
+    svg.remove();
+    png.remove();
+  });
+
+  it("creates and updates dynamic favicon link", async () => {
+    setOrganizationFaviconHref("https://cdn.example.com/favicon-a.svg");
+    await flushFaviconUpdates();
+    setOrganizationFaviconHref("https://cdn.example.com/favicon-b.svg");
+    await flushFaviconUpdates();
+
+    const dynamic = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
     expect(dynamic).toBeInstanceOf(HTMLLinkElement);
     expect(dynamic).toHaveAttribute("rel", "icon");
     expect(dynamic).toHaveAttribute("href", "https://cdn.example.com/favicon-b.svg");
   });
 
-  it("syncs fallback favicon when organization logo is missing", () => {
-    syncOrganizationFavicon();
-
-    const dynamic = document.getElementById("organization-favicon");
-    expect(dynamic).toHaveAttribute("href", getOrganizationFallbackLogoUrl());
+  it("getAppFaviconUrl returns white-label app icon", () => {
+    expect(getAppFaviconUrl()).toBe(brand.logoUrl);
   });
 
-  it("falls back favicon when organization logo cannot be loaded", () => {
-    class BrokenImage {
-      onload: (() => void) | null = null;
-      onerror: (() => void) | null = null;
-      set src(_value: string) {
-        this.onerror?.();
-      }
-    }
+  it("syncs app favicon regardless of organization logo", async () => {
+    syncOrganizationFavicon("https://cdn.example.com/org-logo.svg", "https://chat.example.com");
+    await flushFaviconUpdates();
 
-    vi.stubGlobal("Image", BrokenImage as unknown as typeof Image);
-    syncOrganizationFavicon("https://cdn.example.com/broken.svg");
+    const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    expect(icon?.getAttribute("href")).toBe(brand.logoUrl);
+  });
 
-    const dynamic = document.getElementById("organization-favicon");
-    expect(dynamic).toHaveAttribute("href", getOrganizationFallbackLogoUrl());
-    vi.unstubAllGlobals();
+  it("resolveFaviconHref swaps known static paths when hasUnread", () => {
+    expect(resolveFaviconHref("/favicon.svg", false)).toBe("/favicon.svg");
+    expect(resolveFaviconHref("/favicon.svg", true)).toBe("/favicon-unread.svg");
+    expect(resolveFaviconHref(`${getOrganizationFallbackLogoUrl()}`, true)).toBe(
+      `${import.meta.env.BASE_URL}organization-fallback-unread.svg`,
+    );
+    expect(resolveFaviconHref("https://cdn.example.com/org.png", true)).toBe(
+      "https://cdn.example.com/org.png",
+    );
+  });
+
+  it("syncFaviconWithUnreadIndicator applies unread variant for app favicon", async () => {
+    syncFaviconWithUnreadIndicator({ hasUnread: true });
+    await flushFaviconUpdates();
+
+    const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    expect(icon?.getAttribute("href")).toBe(resolveFaviconHref(brand.logoUrl, true));
   });
 });
