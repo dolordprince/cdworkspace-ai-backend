@@ -150,6 +150,24 @@ describe("MessageBubble edit/delete actions parity", () => {
     }
   });
 
+  it("uses explicit highlight hover contract for message menu items", async () => {
+    render(<MessageBubble message={createMessage()} isOwn={false} />);
+
+    fireEvent.contextMenu(screen.getByTestId("message-101"));
+    const replyItem = await screen.findByRole("menuitem", { name: /reply/i });
+    const moreReactionsButton = screen.getByRole("button", { name: /more reactions/i });
+
+    expect(replyItem).toHaveClass("data-[highlighted]:bg-sidebar-hover");
+    expect(replyItem).toHaveClass("hover:bg-sidebar-hover");
+    expect(replyItem).toHaveClass("transition-colors");
+    expect(replyItem).not.toHaveClass("hover:bg-bg/80");
+    expect(replyItem).not.toHaveClass("data-[highlighted]:bg-accent/20");
+    expect(replyItem).not.toHaveClass("hover:bg-accent/20");
+    expect(moreReactionsButton).toHaveClass("hover:bg-sidebar-hover");
+    expect(moreReactionsButton).toHaveClass("transition-colors");
+    expect(moreReactionsButton).not.toHaveClass("hover:bg-bg/50");
+  });
+
   it("renders regular message actions grouped in a logical order", async () => {
     render(
       <MessageBubble
@@ -192,7 +210,7 @@ describe("MessageBubble edit/delete actions parity", () => {
     expect(incomingMenuTrigger).not.toHaveClass("right-1");
   });
 
-  it("anchors context menu near pointer for right-click within feed bounds", async () => {
+  it("anchors context menu near pointer for right-click", async () => {
     render(
       <div role="feed">
         <MessageBubble message={createMessage()} isOwn={false} />
@@ -216,7 +234,7 @@ describe("MessageBubble edit/delete actions parity", () => {
       '[data-context-menu-trigger-source="context"]',
     );
     expect(contextTrigger).toBeInTheDocument();
-    expect(contextTrigger?.style.left).toBe("854px");
+    expect(contextTrigger?.style.left).toBe("866px");
     expect(contextTrigger?.style.top).toBe("320px");
   });
 
