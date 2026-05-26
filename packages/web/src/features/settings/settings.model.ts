@@ -10,9 +10,11 @@ import { useInstancesStore } from "~/entities/instance/instance.model";
 import { setLocale } from "~/i18n/i18n";
 import { logStoreAction } from "~/shared/lib/logger";
 import { buildOrgScopedStorageKey } from "~/shared/lib/org-scoped-storage";
+import { resolveAuthIdleTimeout } from "./auth-idle-timeout.lib";
 import type {
   AppLanguage,
   AppSettings,
+  AuthIdleTimeout,
   ChatListDensity,
   ChatSorting,
   FolderRailLayout,
@@ -56,6 +58,7 @@ function createDefaultSettings(): AppSettings {
     folderRailLayout: "vertical",
     showSystemFolders: true,
     chatListDensity: "standard",
+    authIdleTimeout: "3d",
   };
 }
 
@@ -69,6 +72,7 @@ const FALLBACK_SETTINGS: Omit<AppSettings, "language"> = {
   folderRailLayout: "horizontal",
   showSystemFolders: true,
   chatListDensity: "standard",
+  authIdleTimeout: "3d",
 };
 
 function coerceLegacySorting(value: unknown): ChatSorting | null {
@@ -172,6 +176,10 @@ function loadSettings(organizationId: string | null = getActiveOrganizationId())
       folderRailLayout: resolveFolderRailLayout(parsed.folderRailLayout),
       showSystemFolders: resolveShowSystemFolders(parsed.showSystemFolders),
       chatListDensity: resolveChatListDensity(parsed.chatListDensity),
+      authIdleTimeout: resolveAuthIdleTimeout(
+        parsed.authIdleTimeout,
+        FALLBACK_SETTINGS.authIdleTimeout,
+      ),
     };
   } catch {
     return createDefaultSettings();
@@ -200,6 +208,7 @@ interface SettingsState extends AppSettings {
   setFolderRailLayout: (layout: FolderRailLayout) => void;
   setShowSystemFolders: (enabled: boolean) => void;
   setChatListDensity: (density: ChatListDensity) => void;
+  setAuthIdleTimeout: (timeout: AuthIdleTimeout) => void;
   resetToDefaults: () => void;
 }
 
@@ -271,6 +280,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     logStoreAction("settings", "setChatListDensity", { chatListDensity });
     set({ chatListDensity });
     persistSettings({ ...get(), chatListDensity });
+  },
+
+  setAuthIdleTimeout(authIdleTimeout) {
+    logStoreAction("settings", "setAuthIdleTimeout", { authIdleTimeout });
+    set({ authIdleTimeout });
+    persistSettings({ ...get(), authIdleTimeout });
   },
 
   resetToDefaults() {

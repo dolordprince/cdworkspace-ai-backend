@@ -1,5 +1,5 @@
-import { screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "~/test/render";
 import { ChatHeader } from "./chat-header.ui";
 
@@ -52,6 +52,55 @@ describe("ChatHeader", () => {
     expect(screen.queryByText(/online|в сети/i)).not.toBeInTheDocument();
   });
 
+  it("opens DM partner profile from avatar click", () => {
+    const onDmPartnerClick = vi.fn();
+
+    renderWithProviders(
+      <ChatHeader
+        channelName="unused"
+        dmPartner={{ name: "Alice", avatarUrl: null, presenceState: "active" }}
+        hideParticipants
+        hideTopic
+        onDmPartnerClick={onDmPartnerClick}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /open profile: alice/i }));
+
+    expect(onDmPartnerClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not expose DM partner title as a button without profile handler", () => {
+    renderWithProviders(
+      <ChatHeader
+        channelName="unused"
+        dmPartner={{ name: "Alice", avatarUrl: null, presenceState: "active" }}
+        hideParticipants
+        hideTopic
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /open profile: alice/i })).not.toBeInTheDocument();
+  });
+
+  it("opens DM partner profile from title action", () => {
+    const onDmPartnerClick = vi.fn();
+
+    renderWithProviders(
+      <ChatHeader
+        channelName="unused"
+        dmPartner={{ name: "Slon", avatarUrl: null, presenceState: "idle" }}
+        hideParticipants
+        hideTopic
+        onDmPartnerClick={onDmPartnerClick}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /open profile: slon/i }));
+
+    expect(onDmPartnerClick).toHaveBeenCalledTimes(1);
+  });
+
   it("shows group dm title and participant count", () => {
     renderWithProviders(
       <ChatHeader
@@ -97,10 +146,73 @@ describe("ChatHeader", () => {
     const heading = screen.getByRole("heading", { level: 1 });
     expect(heading).toHaveTextContent("sprint-planning · #engineering");
     expect(heading.querySelector(".font-semibold")).toHaveTextContent("sprint-planning");
+    expect(heading.closest("button")).toBeNull();
+  });
+
+  it("does not expose channel title or right panel controls without panel handlers", () => {
+    renderWithProviders(<ChatHeader channelName="general" hideTopic hideParticipants />);
+
+    expect(
+      screen.queryByRole("button", { name: /channel info|информация о канале/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /hide panel|скрыть панель/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses toggle handler as fallback for channel title action", () => {
+    const onToggleRightPanel = vi.fn();
+
+    renderWithProviders(
+      <ChatHeader
+        channelName="#engineering"
+        topic="sprint-planning"
+        hideTopic={false}
+        hideParticipants={false}
+        participantsCount={2}
+        onlineCount={1}
+        onToggleRightPanel={onToggleRightPanel}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /channel info|информация о канале/i }));
+
+    expect(onToggleRightPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens right panel from channel title block click", () => {
+    const onOpenRightPanel = vi.fn();
+    const onToggleRightPanel = vi.fn();
+
+    renderWithProviders(
+      <ChatHeader
+        channelName="#engineering"
+        topic="sprint-planning"
+        hideTopic={false}
+        hideParticipants={false}
+        participantsCount={2}
+        onlineCount={1}
+        onOpenRightPanel={onOpenRightPanel}
+        onToggleRightPanel={onToggleRightPanel}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /channel info|информация о канале/i }));
+
+    expect(onOpenRightPanel).toHaveBeenCalledTimes(1);
+    expect(onToggleRightPanel).not.toHaveBeenCalled();
   });
 
   it("places chat actions button inside right controls cluster", () => {
-    renderWithProviders(<ChatHeader channelName="general" hideTopic hideParticipants />);
+    renderWithProviders(
+      <ChatHeader
+        channelName="general"
+        hideTopic
+        hideParticipants
+        onOpenSearch={vi.fn()}
+        onToggleRightPanel={vi.fn()}
+      />,
+    );
 
     const searchButton = screen.getByRole("button", { name: /search/i });
     const actionButton = screen.getByRole("button", { name: /hide panel/i });

@@ -218,6 +218,7 @@ export const ChatPage: React.FC = () => {
     });
   }, [messages.length, messages, chatContextForMessages]);
   const streams = useChatListStore((s) => s.streams());
+  const handleDeleteMessagesInChatList = useChatListStore((s) => s.handleDeleteMessages);
   const realmBaseUrl = getRealmBaseUrl();
   const firstUnreadId = useMemo(
     () => resolveFirstUnreadBoundaryMessageId(messages, currentUserId),
@@ -1629,6 +1630,20 @@ export const ChatPage: React.FC = () => {
     rightDrawer?.setOpen(!rightDrawer.open);
   }, [rightDrawer]);
 
+  const handleOpenRightPanel = useCallback(() => {
+    // Клик по шапке должен возвращать к инфо текущего чата и сбрасывать
+    // вложенный профиль пользователя, если он был открыт поверх.
+    rightDrawer?.openInfo?.();
+    if (rightDrawer?.openInfo == null) {
+      rightDrawer?.setOpen(true);
+    }
+  }, [rightDrawer]);
+
+  const handleOpenDmPartnerProfile = useCallback(() => {
+    if (partnerUserId == null) return;
+    rightDrawer?.openUserProfile?.(partnerUserId);
+  }, [partnerUserId, rightDrawer]);
+
   const typingChatKey = useMemo(() => {
     if (isDmView && activeDmUserIds?.length && currentUserId != null) {
       return buildDmTypingChatKey(activeDmUserIds, currentUserId);
@@ -1746,7 +1761,12 @@ export const ChatPage: React.FC = () => {
     if (deleteConfirm.type === "single") {
       const messageId = deleteConfirm.messageId;
       deleteMessage(messageId)
-        .then(() => removeMessageFromStore(messageId))
+        .then(() => {
+          handleDeleteMessagesInChatList([messageId], {
+            replacementMessages: useCurrentChatMessagesStore.getState().messages,
+          });
+          removeMessageFromStore(messageId);
+        })
         .catch((err) =>
           setActionError(err instanceof Error ? err.message : t("message.deleteError")),
         );
@@ -1754,6 +1774,9 @@ export const ChatPage: React.FC = () => {
       const ids = deleteConfirm.messageIds;
       Promise.all(ids.map((id) => deleteMessage(id)))
         .then(() => {
+          handleDeleteMessagesInChatList(ids, {
+            replacementMessages: useCurrentChatMessagesStore.getState().messages,
+          });
           removeMessagesFromStore(ids);
           setSelectedMessageIds(new Set());
           setSelectionMode(false);
@@ -1761,7 +1784,13 @@ export const ChatPage: React.FC = () => {
         .catch((err) => setActionError(err instanceof Error ? err.message : t("app.error")));
     }
     setDeleteConfirm(null);
-  }, [deleteConfirm, removeMessageFromStore, removeMessagesFromStore, t]);
+  }, [
+    deleteConfirm,
+    handleDeleteMessagesInChatList,
+    removeMessageFromStore,
+    removeMessagesFromStore,
+    t,
+  ]);
 
   const handleDeleteCancel = useCallback(() => {
     setDeleteConfirm(null);
@@ -1815,6 +1844,7 @@ export const ChatPage: React.FC = () => {
         onlineCount={chatInfo?.onlineCount ?? 0}
         onOpenSearch={openSearch ?? undefined}
         onToggleRightPanel={rightDrawer ? handleToggleRightPanel : undefined}
+        onOpenRightPanel={rightDrawer ? handleOpenRightPanel : undefined}
         rightPanelOpen={rightDrawer?.open ?? false}
         rightPanelLabel={
           isGroupDmView ? t("dm.groupChat") : isDmView ? t("info.partnerInfo") : undefined
@@ -1823,6 +1853,7 @@ export const ChatPage: React.FC = () => {
         onCallClick={canStartCall ? handleCallClick : undefined}
         dmPartner={dmPartner}
         dmGroup={dmGroup}
+        onDmPartnerClick={handleOpenDmPartnerProfile}
       />
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <ChatPageMessageListSection

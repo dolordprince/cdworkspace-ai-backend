@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import { authIdleTimeoutToMs } from "~/features/settings/auth-idle-timeout.lib";
+import { useSettingsStore } from "~/features/settings/settings.model";
 import { initAuthGuard } from "~/shared/lib/auth-guard";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
 import { pushService } from "~/shared/lib/push/push.service";
@@ -10,11 +12,15 @@ export function useLayoutAuthGuard(options: {
   navigate: NavigateFunction;
 }): void {
   const { currentInstanceId, currentUserStatus, navigate } = options;
+  const authIdleTimeout = useSettingsStore((s) => s.authIdleTimeout);
 
-  // Session timeout: auto-logout after 24h inactivity when user is authenticated
+  // Session timeout: auto-logout after configured inactivity period when user is authenticated.
   useEffect(() => {
     if (!currentInstanceId || currentUserStatus !== "ready") return;
+    const timeoutMs = authIdleTimeoutToMs(authIdleTimeout);
+    if (timeoutMs == null) return;
     const cleanup = initAuthGuard({
+      timeoutMs,
       onBeforeSessionExpired: () => {
         void pushService.unregister().catch(() => {});
       },
@@ -23,6 +29,5 @@ export function useLayoutAuthGuard(options: {
       },
     });
     return cleanup;
-  }, [currentInstanceId, currentUserStatus, navigate]);
+  }, [authIdleTimeout, currentInstanceId, currentUserStatus, navigate]);
 }
-
