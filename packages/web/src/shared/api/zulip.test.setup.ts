@@ -4,7 +4,6 @@
  * Import this module first in each test file so `vi.mock` runs before `./zulip` loads.
  */
 import { afterEach, beforeEach, vi } from "vitest";
-import { getCurrentInstance } from "./client";
 
 const mockZulipClient = vi.hoisted(() => ({
   streams: {
@@ -71,17 +70,12 @@ vi.mock("~/shared/lib/env", () => ({
   env: { ZULIP_API_PATH: "/api/v1" },
 }));
 
-vi.mock("~/shared/lib/logger", () => ({
-  createLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-  logApiCall: vi.fn(),
-  logStoreAction: vi.fn(),
-  logEvent: vi.fn(),
-}));
+vi.mock("~/shared/lib/logger", async (importOriginal) => {
+  const { createPartialLoggerMock } = await import("~/test/logger-vitest-mock");
+  return createPartialLoggerMock(
+    importOriginal as () => Promise<typeof import("~/shared/lib/logger")>,
+  );
+});
 
 vi.mock("zulip-js", () => ({
   default: vi.fn(() => Promise.resolve(mockZulipClient)),

@@ -1,10 +1,7 @@
 import type { ZulipInstance } from "~/entities/instance/instance.model";
 import type { ZulipEvent } from "~/shared/api/zulip.types";
 import { MULTI_ORG_UNREAD_REFRESH_DEBOUNCE_MS } from "~/shared/config/constants";
-import type {
-  StartCredentialEventLoopFn,
-  StartInactiveInstanceEventStreamsOptions,
-} from "./layout-multi-org-event-streams.types";
+import type { StartInactiveInstanceEventStreamsOptions } from "./layout-multi-org-event-streams.types";
 
 export type {
   StartCredentialEventLoopFn,
@@ -77,7 +74,7 @@ export function startInactiveInstanceEventStreams(
           scheduleRefresh(instance);
         }
       },
-      onReconnect: () => {
+      onQueueReady: () => {
         scheduleRefresh(instance);
       },
       onBadQueue: () => {

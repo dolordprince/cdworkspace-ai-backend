@@ -14,17 +14,15 @@ import {
   fetchApiKey,
   exchangeDesktopFlowToken,
   registerQueue,
-  registerQueueForCredentials,
-  deleteQueue,
-  fetchUnreadMessagesCountForCredentials,
-  getEvents,
-  getEventsForCredentials,
   getCurrentUser,
   fetchUsers,
   fetchUser,
   fetchRealmPresence,
   fetchRealmEmojis,
   fetchRecentMessages,
+  fetchRecentStreamMessagesForSidebarPreview,
+  fetchStreamChannelMessagesForSidebarTopics,
+  fetchStreamUnreadMessagesForSidebarPreview,
   fetchMessagesBeforeAnchor,
   fetchMessagesAfterAnchor,
   fetchActivityMessages,
@@ -47,13 +45,6 @@ import {
   deleteStream,
   addReaction,
   removeReaction,
-  markMessagesAsRead,
-  markDmAsRead,
-  markStreamAsRead,
-  markTopicAsRead,
-  setTopicResolvedState,
-  updateMessageFlags,
-  uploadFile,
   fetchUsersAvatarMap,
 } from "./zulip";
 
@@ -96,21 +87,20 @@ vi.mock("~/i18n/i18n", () => ({
   t: (key: string) => key,
 }));
 
-vi.mock("~/shared/lib/env", () => ({
-  env: { ZULIP_API_PATH: "/api/v1" },
+const mockEnv = vi.hoisted(() => ({
+  ZULIP_API_PATH: "/api/v1",
 }));
 
-vi.mock("~/shared/lib/logger", () => ({
-  createLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-  logApiCall: vi.fn(),
-  logStoreAction: vi.fn(),
-  logEvent: vi.fn(),
+vi.mock("~/shared/lib/env", () => ({
+  env: mockEnv,
 }));
+
+vi.mock("~/shared/lib/logger", async (importOriginal) => {
+  const { createPartialLoggerMock } = await import("~/test/logger-vitest-mock");
+  return createPartialLoggerMock(
+    importOriginal as () => Promise<typeof import("~/shared/lib/logger")>,
+  );
+});
 
 vi.mock("zulip-js", () => ({
   default: vi.fn(() => Promise.resolve(mockZulipClient)),
@@ -391,7 +381,7 @@ describe("fetchApiKey", () => {
       status: 200,
       json: () => Promise.reject(new SyntaxError("Unexpected token")),
       headers: new Headers(),
-    } as unknown as Response);
+    });
 
     await expect(fetchApiKey("https://z.com", "u@t.com", "pw")).rejects.toThrow(ZulipAuthError);
   });
@@ -470,562 +460,90 @@ describe("exchangeDesktopFlowToken", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `registerQueue` — авторизованный POST через shared client
+// Stream sidebar preview (metadata-first, channels only)
 // ---------------------------------------------------------------------------
 
-describe("registerQueue", () => {
-  it("returns queue_id and last_event_id on success", async () => {
-    mockZulipApi.post.mockResolvedValue({
+describe("fetchStreamUnreadMessagesForSidebarPreview", () => {
+  it("requests is:unread with -is:dm narrow", async () => {
+    mockZulipApi.get.mockResolvedValue({
       ok: true,
       status: 200,
       data: {
         result: "success",
-        queue_id: "q-123",
-        last_event_id: -1,
-        event_queue_longpoll_timeout_seconds: 90,
+        messages: [{ id: 1, type: "stream", stream_id: 5 }],
       },
       raw: { statusText: "OK" },
     });
 
-    const result = await registerQueue(["message", "presence"]);
-    expect(result).toEqual({
-      queue_id: "q-123",
-      last_event_id: -1,
-      event_queue_longpoll_timeout_seconds: 90,
-    });
-    expect(mockRefreshZulipApiBase).toHaveBeenCalled();
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/register", {
-      event_types: JSON.stringify(["message", "presence"]),
-      apply_markdown: "false",
-      client_capabilities: JSON.stringify({
-        notification_settings_null: true,
-        bulk_message_deletion: true,
-        user_avatar_url_field_optional: true,
-        stream_typing_notifications: true,
-        user_settings_object: true,
-        archived_channels: true,
-        empty_topic_name: true,
-      }),
-      fetch_event_types: JSON.stringify([
-        "subscription",
-        "user_topic",
-        "recent_private_conversations",
-        "realm",
-        "realm_user_groups",
+    const messages = await fetchStreamUnreadMessagesForSidebarPreview(5000);
+
+    expect(messages).toHaveLength(1);
+    expect(mockZulipApi.get).toHaveBeenCalledWith("/messages", {
+      anchor: "newest",
+      num_before: "5000",
+      num_after: "0",
+      narrow: JSON.stringify([
+        { operator: "is", operand: "unread" },
+        { negated: true, operator: "is", operand: "dm" },
       ]),
-    });
-  });
-
-  it("throws on error result", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "error", msg: "Rate limited", code: "RATE_LIMITED" },
-      raw: { statusText: "OK" },
-    });
-    await expect(registerQueue(["message"])).rejects.toThrow("Rate limited");
-  });
-
-  it("throws on missing queue_id", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    await expect(registerQueue(["message"])).rejects.toThrow();
-  });
-
-  it("throws on invalid JSON", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: null,
-      raw: { statusText: "OK" },
-    });
-    await expect(registerQueue(["message"])).rejects.toThrow();
-  });
-
-  it("parses recent_private_conversations from register payload", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        result: "success",
-        queue_id: "q-123",
-        last_event_id: -1,
-        recent_private_conversations: {
-          "1": {
-            user_ids: [10, 20],
-            max_message_id: 777,
-            unread_message_ids: [700, 701],
-          },
-        },
-      },
-      raw: { statusText: "OK" },
-    });
-
-    const result = await registerQueue(["message"]);
-    expect(result.recent_private_conversations).toEqual({
-      "1": {
-        user_ids: [10, 20],
-        max_message_id: 777,
-        unread_message_ids: [700, 701],
-      },
-    });
-  });
-
-  it("parses server_thumbnail_formats from register payload", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        result: "success",
-        queue_id: "q-123",
-        last_event_id: -1,
-        server_thumbnail_formats: [
-          {
-            name: "840x560.webp",
-            max_width: 840,
-            max_height: 560,
-            format: "webp",
-            animated: false,
-          },
-        ],
-      },
-      raw: { statusText: "OK" },
-    });
-
-    const result = await registerQueue(["message"]);
-    expect(result.server_thumbnail_formats?.[0]?.name).toBe("840x560.webp");
-  });
-
-  it("includes jitsi_server_url_effective from register payload", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        result: "success",
-        queue_id: "q-123",
-        last_event_id: -1,
-        realm_jitsi_server_url: "https://realm-jitsi.example.com",
-      },
-      raw: { statusText: "OK" },
-    });
-
-    const result = await registerQueue(["message"]);
-    expect(result.jitsi_server_url_effective).toBe("https://realm-jitsi.example.com");
-  });
-
-  it("parses modern realm add-subscribers group from register payload", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        result: "success",
-        queue_id: "q-123",
-        last_event_id: -1,
-        realm_can_add_subscribers_group: {
-          direct_members: [10],
-          direct_subgroups: [14],
-        },
-      },
-      raw: { statusText: "OK" },
-    });
-
-    const result = await registerQueue(["message"]);
-    expect(result.realm_can_add_subscribers_group).toEqual({
-      direct_members: [10],
-      direct_subgroups: [14],
+      client_gravatar: "true",
+      allow_empty_topic_name: "true",
+      apply_markdown: "false",
     });
   });
 });
 
-describe("registerQueueForCredentials", () => {
-  it("registers queue via direct fetch for explicit credentials", async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        result: "success",
-        queue_id: "q-explicit",
-        last_event_id: 44,
-        event_queue_longpoll_timeout_seconds: 90,
-      }),
-    );
-
-    const result = await registerQueueForCredentials(
-      {
-        realm: "https://other.example.com",
-        email: "other@test.com",
-        apiKey: "key",
-      },
-      ["message", "typing"],
-    );
-
-    expect(result).toEqual({
-      queue_id: "q-explicit",
-      last_event_id: 44,
-      event_queue_longpoll_timeout_seconds: 90,
-    });
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://other.example.com/api/v1/register",
-      expect.objectContaining({
-        method: "POST",
-        body: expect.stringContaining(
-          `client_capabilities=${encodeURIComponent(
-            JSON.stringify({
-              notification_settings_null: true,
-              bulk_message_deletion: true,
-              user_avatar_url_field_optional: true,
-              stream_typing_notifications: true,
-              user_settings_object: true,
-              archived_channels: true,
-              empty_topic_name: true,
-            }),
-          )}`,
-        ),
-      }),
-    );
-  });
-
-  it("fails fast when credentials realm url uses unsupported protocol", async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        result: "success",
-        queue_id: "q-explicit",
-        last_event_id: 44,
-      }),
-    );
-
-    await expect(
-      registerQueueForCredentials(
-        {
-          realm: "ftp://malicious.example.com",
-          email: "other@test.com",
-          apiKey: "key",
-        },
-        ["message"],
-      ),
-    ).rejects.toThrow(/registerQueueForCredentials\.realm/i);
-
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `deleteQueue` — best-effort cleanup, ошибки проглатываются
-// ---------------------------------------------------------------------------
-
-describe("deleteQueue", () => {
-  it("uses shared delete transport for the current instance path", async () => {
-    mockZulipApi.delete.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    await deleteQueue("q-123");
-    expect(mockRefreshZulipApiBase).toHaveBeenCalled();
-    expect(mockZulipApi.delete).toHaveBeenCalledWith("/events", { queue_id: "q-123" });
-  });
-
-  it("does nothing when no instance and no credentials", async () => {
-    vi.mocked(getCurrentInstance).mockReturnValue(null);
-    await deleteQueue("q-123");
-    expect(mockZulipApi.delete).not.toHaveBeenCalled();
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("swallows shared transport errors", async () => {
-    mockZulipApi.delete.mockRejectedValue(new TypeError("Network error"));
-    await expect(deleteQueue("q-123")).resolves.toBeUndefined();
-  });
-
-  it("keeps explicit-credentials cleanup on the raw fetch path", async () => {
-    vi.mocked(getCurrentInstance).mockReturnValue(null);
-    mockFetch.mockResolvedValue(jsonResponse({ result: "success" }));
-    await deleteQueue("q-123", {
-      realm: "https://other.example.com",
-      email: "other@test.com",
-      apiKey: "key",
-    });
-    expect(mockZulipApi.delete).not.toHaveBeenCalled();
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://other.example.com/api/v1/events",
-      expect.objectContaining({ method: "DELETE" }),
-    );
-  });
-
-  it("skips cleanup when queue id is blank", async () => {
-    await deleteQueue("   ");
-    await deleteQueue("", {
-      realm: "https://other.example.com",
-      email: "other@test.com",
-      apiKey: "key",
-    });
-
-    expect(mockZulipApi.delete).not.toHaveBeenCalled();
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("skips explicit-credentials cleanup when realm url is invalid", async () => {
-    vi.mocked(getCurrentInstance).mockReturnValue(null);
-    mockFetch.mockResolvedValue(jsonResponse({ result: "success" }));
-
-    await expect(
-      deleteQueue("q-123", {
-        realm: "ftp://malicious.example.com",
-        email: "other@test.com",
-        apiKey: "key",
-      }),
-    ).resolves.toBeUndefined();
-
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `fetchUnreadMessagesCountForCredentials`
-// ---------------------------------------------------------------------------
-
-describe("fetchUnreadMessagesCountForCredentials", () => {
-  it("returns unread count from messages payload", async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        messages: [{ id: 1 }, { id: 2 }, { id: 3 }],
-      }),
-    );
-
-    const count = await fetchUnreadMessagesCountForCredentials({
-      realm: "https://other.example.com",
-      email: "other@test.com",
-      apiKey: "key",
-    });
-
-    expect(count).toBe(3);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const fetchArgs = mockFetch.mock.calls[0];
-    const calledUrl = new URL(String(fetchArgs?.[0]));
-    expect(fetchArgs?.[1]).toEqual(expect.objectContaining({ method: "GET" }));
-    expect(calledUrl.origin).toBe("https://other.example.com");
-    expect(calledUrl.pathname).toBe("/api/v1/messages");
-    expect(calledUrl.searchParams.get("anchor")).toBe("newest");
-    expect(calledUrl.searchParams.get("num_before")).toBe("5000");
-    expect(calledUrl.searchParams.get("num_after")).toBe("0");
-    expect(calledUrl.searchParams.get("narrow")).toBe(
-      JSON.stringify([{ operator: "is", operand: "unread" }]),
-    );
-  });
-
-  it("returns null on non-ok response", async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ result: "error" }, 500));
-
-    const count = await fetchUnreadMessagesCountForCredentials({
-      realm: "https://other.example.com",
-      email: "other@test.com",
-      apiKey: "key",
-    });
-
-    expect(count).toBeNull();
-  });
-
-  it("returns null without network call when realm url is invalid", async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        messages: [{ id: 1 }],
-      }),
-    );
-
-    const count = await fetchUnreadMessagesCountForCredentials({
-      realm: "ftp://malicious.example.com",
-      email: "other@test.com",
-      apiKey: "key",
-    });
-
-    expect(count).toBeNull();
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `getEvents` — long-polling
-// ---------------------------------------------------------------------------
-
-describe("getEvents", () => {
-  it("returns events on success", async () => {
+describe("fetchStreamChannelMessagesForSidebarTopics", () => {
+  it("requests newest messages with stream narrow for one channel", async () => {
     mockZulipApi.get.mockResolvedValue({
       ok: true,
       status: 200,
-      data: { result: "success", events: [{ id: 1, type: "message" }] },
+      data: {
+        result: "success",
+        messages: [{ id: 3, type: "stream", stream_id: 42, subject: "t" }],
+      },
       raw: { statusText: "OK" },
     });
 
-    const result = await getEvents("q-123", 0);
-    expect(result.events).toHaveLength(1);
-    expect(result.events![0]!.type).toBe("message");
-    expect(mockRefreshZulipApiBase).toHaveBeenCalled();
-    expect(mockZulipApi.get).toHaveBeenCalledWith(
-      "/events",
-      { queue_id: "q-123", last_event_id: "0" },
-      expect.any(AbortSignal),
-    );
-  });
+    const messages = await fetchStreamChannelMessagesForSidebarTopics(42, 100);
 
-  it("throws when no instance", async () => {
-    vi.mocked(getCurrentInstance).mockReturnValue(null);
-    await expect(getEvents("q-123", 0)).rejects.toThrow();
-  });
-
-  it("returns error result for invalid JSON body", async () => {
-    mockZulipApi.get.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: null,
-      raw: { statusText: "OK" },
+    expect(messages).toHaveLength(1);
+    expect(mockZulipApi.get).toHaveBeenCalledWith("/messages", {
+      anchor: "newest",
+      num_before: "100",
+      num_after: "0",
+      narrow: JSON.stringify([{ operator: "stream", operand: 42 }]),
+      client_gravatar: "true",
+      allow_empty_topic_name: "true",
+      apply_markdown: "false",
     });
-
-    const result = await getEvents("q-123", 0);
-    expect(result.result).toBe("error");
-  });
-
-  it("throws for blank queue id", async () => {
-    await expect(getEvents("   ", 0)).rejects.toThrow(
-      /getEvents\.queueId must be a non-empty string/i,
-    );
-    expect(mockZulipApi.get).not.toHaveBeenCalled();
-  });
-
-  it("throws for cursor below -1", async () => {
-    await expect(getEvents("q-123", -2)).rejects.toThrow(
-      /getEvents\.lastEventId must be an integer >= -1/i,
-    );
-    expect(mockZulipApi.get).not.toHaveBeenCalled();
-  });
-
-  it("throws for non-integer cursor", async () => {
-    await expect(getEvents("q-123", 1.5)).rejects.toThrow(
-      /getEvents\.lastEventId must be an integer >= -1/i,
-    );
-    expect(mockZulipApi.get).not.toHaveBeenCalled();
-  });
-
-  it("removes the outer abort listener after the request completes", async () => {
-    const controller = new AbortController();
-    const addSpy = vi.spyOn(controller.signal, "addEventListener");
-    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
-
-    mockZulipApi.get.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success", events: [{ id: 1, type: "message" }] },
-      raw: { statusText: "OK" },
-    });
-
-    await getEvents("q-123", 0, { signal: controller.signal });
-
-    expect(addSpy).toHaveBeenCalled();
-    const addedAbortCall = addSpy.mock.calls.find((call) => call[0] === "abort");
-    expect(addedAbortCall).toBeDefined();
-    const addedHandler = addedAbortCall?.[1];
-    expect(removeSpy).toHaveBeenCalledWith("abort", addedHandler);
   });
 });
 
-describe("getEventsForCredentials", () => {
-  it("polls events using explicit credentials", async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
+describe("fetchRecentStreamMessagesForSidebarPreview", () => {
+  it("requests recent messages with -is:dm narrow only", async () => {
+    mockZulipApi.get.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: {
         result: "success",
-        events: [{ id: 101, type: "message" }],
-      }),
-    );
-
-    const result = await getEventsForCredentials(
-      {
-        realm: "https://other.example.com",
-        email: "other@test.com",
-        apiKey: "key",
+        messages: [{ id: 2, type: "stream", stream_id: 9 }],
       },
-      "q-xyz",
-      12,
-    );
+      raw: { statusText: "OK" },
+    });
 
-    expect(result.result).toBe("success");
-    expect(result.events).toHaveLength(1);
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://other.example.com/api/v1/events?queue_id=q-xyz&last_event_id=12",
-      expect.objectContaining({ method: "GET" }),
-    );
-  });
+    const messages = await fetchRecentStreamMessagesForSidebarPreview(5000);
 
-  it("throws when credentials realm url uses unsupported protocol", async () => {
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        result: "success",
-        events: [{ id: 101, type: "message" }],
-      }),
-    );
-
-    await expect(
-      getEventsForCredentials(
-        {
-          realm: "ftp://malicious.example.com",
-          email: "other@test.com",
-          apiKey: "key",
-        },
-        "q-xyz",
-        12,
-      ),
-    ).rejects.toThrow(/getEventsForCredentials\.realm/i);
-
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("throws for blank queue id", async () => {
-    await expect(
-      getEventsForCredentials(
-        {
-          realm: "https://other.example.com",
-          email: "other@test.com",
-          apiKey: "key",
-        },
-        "  ",
-        12,
-      ),
-    ).rejects.toThrow(/getEventsForCredentials\.queueId must be a non-empty string/i);
-
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("throws for cursor below -1", async () => {
-    await expect(
-      getEventsForCredentials(
-        {
-          realm: "https://other.example.com",
-          email: "other@test.com",
-          apiKey: "key",
-        },
-        "q-xyz",
-        -2,
-      ),
-    ).rejects.toThrow(/getEventsForCredentials\.lastEventId must be an integer >= -1/i);
-
-    expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it("throws for non-integer cursor", async () => {
-    await expect(
-      getEventsForCredentials(
-        {
-          realm: "https://other.example.com",
-          email: "other@test.com",
-          apiKey: "key",
-        },
-        "q-xyz",
-        1.25,
-      ),
-    ).rejects.toThrow(/getEventsForCredentials\.lastEventId must be an integer >= -1/i);
-
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(messages).toHaveLength(1);
+    expect(mockZulipApi.get).toHaveBeenCalledWith("/messages", {
+      anchor: "newest",
+      num_before: "5000",
+      num_after: "0",
+      narrow: JSON.stringify([{ negated: true, operator: "is", operand: "dm" }]),
+      client_gravatar: "true",
+      allow_empty_topic_name: "true",
+      apply_markdown: "false",
+    });
   });
 });
 
@@ -1819,7 +1337,7 @@ describe("fetchMessages", () => {
     const retrievePromise = new Promise<{ messages: unknown[] }>((resolve) => {
       resolveRetrieve = resolve;
     });
-    mockZulipClient.messages.retrieve.mockReturnValue(retrievePromise as never);
+    mockZulipClient.messages.retrieve.mockReturnValue(retrievePromise);
 
     const first = fetchMessages("general", "topic1");
     const second = fetchMessages("general", "topic1");
@@ -1938,7 +1456,7 @@ describe("fetchMessagesWithNarrow", () => {
     const retrievePromise = new Promise<{ messages: unknown[] }>((resolve) => {
       resolveRetrieve = resolve;
     });
-    mockZulipClient.messages.retrieve.mockReturnValue(retrievePromise as never);
+    mockZulipClient.messages.retrieve.mockReturnValue(retrievePromise);
 
     const first = fetchMessagesWithNarrow(
       [{ operator: "is", operand: "unread" }],
@@ -2128,7 +1646,7 @@ describe("fetchDmMessages", () => {
     const retrievePromise = new Promise<{ messages: unknown[] }>((resolve) => {
       resolveRetrieve = resolve;
     });
-    mockZulipClient.messages.retrieve.mockReturnValue(retrievePromise as never);
+    mockZulipClient.messages.retrieve.mockReturnValue(retrievePromise);
 
     const first = fetchDmMessages(42);
     const second = fetchDmMessages(42);
@@ -2152,7 +1670,7 @@ describe("fetchDmMessages", () => {
     const retrievePromise = new Promise<{ messages: unknown[] }>((resolve) => {
       resolveRetrieve = resolve;
     });
-    mockZulipClient.messages.retrieve.mockReturnValue(retrievePromise as never);
+    mockZulipClient.messages.retrieve.mockReturnValue(retrievePromise);
 
     const first = fetchDmMessages([42, 77]);
     const second = fetchDmMessages([77, 42]);
@@ -2610,498 +2128,6 @@ describe("removeReaction", () => {
       emoji_code: "1f44d",
       reaction_type: "unicode_emoji",
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `markMessagesAsRead`
-// ---------------------------------------------------------------------------
-
-describe("markMessagesAsRead", () => {
-  it("posts flag update for message IDs", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    await markMessagesAsRead([1, 2, 3]);
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/messages/flags", {
-      messages: "[1,2,3]",
-      op: "add",
-      flag: "read",
-    });
-  });
-
-  it("does nothing for empty array", async () => {
-    await markMessagesAsRead([]);
-    expect(mockZulipApi.post).not.toHaveBeenCalled();
-  });
-
-  it("throws for invalid message id", async () => {
-    await expect(markMessagesAsRead([1, 0])).rejects.toThrow(/Invalid messageId/);
-    expect(mockZulipApi.post).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `markDmAsRead`
-// ---------------------------------------------------------------------------
-
-describe("markDmAsRead", () => {
-  it("returns true on success", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    const result = await markDmAsRead([42]);
-    expect(result).toBe(true);
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/messages/flags/narrow", {
-      anchor: "newest",
-      include_anchor: "false",
-      num_before: "5000",
-      num_after: "0",
-      narrow: JSON.stringify([{ operator: "dm", operand: [42] }]),
-      op: "add",
-      flag: "read",
-    });
-  });
-
-  it("returns false on non-ok response", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: false,
-      status: 500,
-      data: {},
-      raw: { statusText: "Server Error" },
-    });
-    const result = await markDmAsRead([42]);
-    expect(result).toBe(false);
-  });
-
-  it("throws for empty ids list", async () => {
-    await expect(markDmAsRead([])).rejects.toThrow(/non-empty array/i);
-  });
-
-  it("throws for invalid user id", async () => {
-    await expect(markDmAsRead([0])).rejects.toThrow(/Invalid userId/i);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `markStreamAsRead`
-// ---------------------------------------------------------------------------
-
-describe("markStreamAsRead", () => {
-  it("returns true on success", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    const result = await markStreamAsRead(10);
-    expect(result).toBe(true);
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/messages/flags/narrow", {
-      anchor: "newest",
-      include_anchor: "false",
-      num_before: "5000",
-      num_after: "0",
-      narrow: JSON.stringify([{ operator: "stream", operand: 10 }]),
-      op: "add",
-      flag: "read",
-    });
-  });
-
-  it("returns false on non-ok", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: false,
-      status: 500,
-      data: {},
-      raw: { statusText: "Server Error" },
-    });
-    const result = await markStreamAsRead(10);
-    expect(result).toBe(false);
-  });
-
-  it("throws for invalid streamId", async () => {
-    await expect(markStreamAsRead(0)).rejects.toThrow(/Invalid streamId/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `markTopicAsRead`
-// ---------------------------------------------------------------------------
-
-describe("markTopicAsRead", () => {
-  it("returns true on success", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    const result = await markTopicAsRead(10, "bugs");
-    expect(result).toBe(true);
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/messages/flags/narrow", {
-      anchor: "newest",
-      include_anchor: "false",
-      num_before: "5000",
-      num_after: "0",
-      narrow: JSON.stringify([
-        { operator: "stream", operand: 10 },
-        { operator: "topic", operand: "bugs" },
-      ]),
-      op: "add",
-      flag: "read",
-    });
-  });
-
-  it("throws for invalid streamId", async () => {
-    await expect(markTopicAsRead(0, "bugs")).rejects.toThrow(/Invalid streamId/);
-  });
-
-  it("supports explicit empty topic", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    await markTopicAsRead(10, "");
-    expect(mockZulipApi.post).toHaveBeenCalledWith(
-      "/messages/flags/narrow",
-      expect.objectContaining({
-        narrow: JSON.stringify([
-          { operator: "stream", operand: 10 },
-          { operator: "topic", operand: "" },
-        ]),
-      }),
-    );
-  });
-
-  it("preserves literal general topic operand", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    await markTopicAsRead(10, "general");
-    expect(mockZulipApi.post).toHaveBeenCalledWith(
-      "/messages/flags/narrow",
-      expect.objectContaining({
-        narrow: JSON.stringify([
-          { operator: "stream", operand: 10 },
-          { operator: "topic", operand: "general" },
-        ]),
-      }),
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `setTopicResolvedState`
-// ---------------------------------------------------------------------------
-
-describe("setTopicResolvedState", () => {
-  it("renames topic to resolved variant", async () => {
-    mockZulipApi.get.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        result: "success",
-        messages: [{ id: 501 }],
-      },
-      raw: { statusText: "OK" },
-    });
-    mockZulipApi.patch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-
-    await expect(setTopicResolvedState(10, "incident", true)).resolves.toBe(true);
-    expect(mockZulipApi.get).toHaveBeenCalledWith("/messages", {
-      anchor: "oldest",
-      num_before: "0",
-      num_after: "1",
-      include_anchor: "true",
-      allow_empty_topic_name: "true",
-      client_gravatar: "false",
-      apply_markdown: "false",
-      narrow: JSON.stringify([
-        { operator: "stream", operand: 10 },
-        { operator: "topic", operand: "incident" },
-      ]),
-    });
-    expect(mockZulipApi.patch).toHaveBeenCalledWith("/messages/501", {
-      topic: "\u2714 incident",
-      propagate_mode: "change_all",
-      send_notification_to_old_thread: "false",
-      send_notification_to_new_thread: "false",
-      send_webhook_notifications: "false",
-    });
-  });
-
-  it("renames topic to unresolved variant", async () => {
-    mockZulipApi.get.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        result: "success",
-        messages: [{ id: 777 }],
-      },
-      raw: { statusText: "OK" },
-    });
-    mockZulipApi.patch.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-
-    await expect(setTopicResolvedState(10, "\u2714 incident", false)).resolves.toBe(true);
-    expect(mockZulipApi.patch).toHaveBeenCalledWith("/messages/777", {
-      topic: "incident",
-      propagate_mode: "change_all",
-      send_notification_to_old_thread: "false",
-      send_notification_to_new_thread: "false",
-      send_webhook_notifications: "false",
-    });
-  });
-
-  it("returns false when topic has no anchor message", async () => {
-    mockZulipApi.get.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success", messages: [] },
-      raw: { statusText: "OK" },
-    });
-
-    await expect(setTopicResolvedState(10, "incident", true)).resolves.toBe(false);
-    expect(mockZulipApi.patch).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `updateMessageFlags`
-// ---------------------------------------------------------------------------
-
-describe("updateMessageFlags", () => {
-  it("posts add flag request", async () => {
-    mockZulipApi.post.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { result: "success" },
-      raw: { statusText: "OK" },
-    });
-    await updateMessageFlags([1, 2], "add", "starred");
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/messages/flags", {
-      messages: "[1,2]",
-      op: "add",
-      flag: "starred",
-    });
-  });
-
-  it("does nothing for empty array", async () => {
-    await updateMessageFlags([], "add", "starred");
-    expect(mockZulipApi.post).not.toHaveBeenCalled();
-  });
-
-  it("throws for invalid message id", async () => {
-    await expect(updateMessageFlags([1, -5], "add", "read")).rejects.toThrow(/Invalid messageId/);
-    expect(mockZulipApi.post).not.toHaveBeenCalled();
-  });
-
-  it("throws for blank flag name", async () => {
-    await expect(updateMessageFlags([1], "add", "   ")).rejects.toThrow(
-      /updateMessageFlags\.flag must be a non-empty string/,
-    );
-    expect(mockZulipApi.post).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// `uploadFile` — авторизованный POST с FormData
-// ---------------------------------------------------------------------------
-
-describe("uploadFile", () => {
-  it("returns URI on success", async () => {
-    mockZulipApi.postFormData.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { uri: "/user_uploads/1/test.png" },
-      raw: { statusText: "OK" },
-    });
-    const file = new File(["data"], "test.png", { type: "image/png" });
-    const result = await uploadFile(file);
-    expect(result).toBe("/user_uploads/1/test.png");
-    expect(mockRefreshZulipApiBase).toHaveBeenCalled();
-    expect(mockZulipApi.postFormData).toHaveBeenCalledWith("/user_uploads", expect.any(FormData));
-  });
-
-  it("falls back to url field", async () => {
-    mockZulipApi.postFormData.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { url: "/uploads/2/file.pdf" },
-      raw: { statusText: "OK" },
-    });
-    const file = new File(["data"], "file.pdf");
-    expect(await uploadFile(file)).toBe("/uploads/2/file.pdf");
-  });
-
-  it("passes abort signal to multipart upload when provided", async () => {
-    mockZulipApi.postFormData.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { uri: "/user_uploads/2/cancellable.txt" },
-      raw: { statusText: "OK" },
-    });
-    const file = new File(["data"], "cancellable.txt", { type: "text/plain" });
-    const controller = new AbortController();
-    const uploadWithOptions = uploadFile as unknown as (
-      file: File,
-      options?: { signal?: AbortSignal },
-    ) => Promise<string>;
-
-    const result = await uploadWithOptions(file, { signal: controller.signal });
-    expect(result).toBe("/user_uploads/2/cancellable.txt");
-    expect(mockZulipApi.postFormData).toHaveBeenCalledWith(
-      "/user_uploads",
-      expect.any(FormData),
-      controller.signal,
-    );
-  });
-
-  it("uses TUS flow for large files and resolves uploaded URI from attachments", async () => {
-    const sixteenMb = 16 * 1024 * 1024;
-    const largeFile = new File([new Uint8Array(sixteenMb)], "large-video.mp4", {
-      type: "video/mp4",
-    });
-
-    mockFetch
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 201,
-        headers: new Headers({ Location: "/api/v1/tus/upload-1" }),
-        json: () => Promise.resolve({}),
-      } as unknown as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        headers: new Headers({ "Upload-Offset": "0" }),
-        json: () => Promise.resolve({}),
-      } as unknown as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 204,
-        headers: new Headers({ "Upload-Offset": "5242880" }),
-        json: () => Promise.resolve({}),
-      } as unknown as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 204,
-        headers: new Headers({ "Upload-Offset": "10485760" }),
-        json: () => Promise.resolve({}),
-      } as unknown as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 204,
-        headers: new Headers({ "Upload-Offset": "15728640" }),
-        json: () => Promise.resolve({}),
-      } as unknown as Response)
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 204,
-        headers: new Headers({ "Upload-Offset": String(sixteenMb) }),
-        json: () => Promise.resolve({}),
-      } as unknown as Response)
-      .mockResolvedValueOnce(
-        jsonResponse({
-          attachments: [
-            {
-              name: "large-video.mp4",
-              size: sixteenMb,
-              path_id: "1/large-video.mp4",
-              create_time: 1710012345,
-            },
-          ],
-        }),
-      );
-
-    const uri = await uploadFile(largeFile);
-
-    expect(uri).toBe("/user_uploads/1/large-video.mp4");
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://zulip.example.com/api/v1/tus",
-      expect.objectContaining({
-        method: "POST",
-      }),
-    );
-    expect(mockZulipApi.postFormData).not.toHaveBeenCalled();
-  });
-
-  it("falls back to multipart upload when TUS is unavailable", async () => {
-    const sixteenMb = 16 * 1024 * 1024;
-    const largeFile = new File([new Uint8Array(sixteenMb)], "large.zip", {
-      type: "application/zip",
-    });
-
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      status: 404,
-      headers: new Headers(),
-      json: () => Promise.resolve({ msg: "Not found" }),
-    } as unknown as Response);
-    mockZulipApi.postFormData.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: { uri: "/user_uploads/legacy/large.zip" },
-      raw: { statusText: "OK" },
-    });
-
-    const uri = await uploadFile(largeFile);
-
-    expect(uri).toBe("/user_uploads/legacy/large.zip");
-    expect(mockZulipApi.postFormData).toHaveBeenCalledWith("/user_uploads", expect.any(FormData));
-  });
-
-  it("throws when no instance", async () => {
-    vi.mocked(getCurrentInstance).mockReturnValue(null);
-    const file = new File(["data"], "test.png");
-    await expect(uploadFile(file)).rejects.toThrow();
-  });
-
-  it("throws on non-ok response", async () => {
-    mockZulipApi.postFormData.mockResolvedValue({
-      ok: false,
-      status: 413,
-      data: { msg: "Too large" },
-      raw: { statusText: "Payload Too Large" },
-    });
-    const file = new File(["data"], "big.zip");
-    await expect(uploadFile(file)).rejects.toThrow("Too large");
-  });
-
-  it("throws when no URI returned", async () => {
-    mockZulipApi.postFormData.mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {},
-      raw: { statusText: "OK" },
-    });
-    const file = new File(["data"], "test.png");
-    await expect(uploadFile(file)).rejects.toThrow("No URI returned");
-  });
-
-  it("throws when file is empty before upload request", async () => {
-    const file = new File([], "empty.txt", { type: "text/plain" });
-    await expect(uploadFile(file)).rejects.toThrow("File is empty");
-    expect(mockZulipApi.postFormData).not.toHaveBeenCalled();
   });
 });
 

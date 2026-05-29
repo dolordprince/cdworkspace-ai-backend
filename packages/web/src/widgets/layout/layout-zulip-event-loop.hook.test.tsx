@@ -1,5 +1,4 @@
 import { act, render, waitFor } from "@testing-library/react";
-import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { useInstancesStore } from "~/entities/instance/instance.model";
@@ -9,6 +8,7 @@ import { DEFAULT_REGISTER_FETCH_EVENT_TYPES } from "~/shared/api/zulip-queue";
 import type { ZulipRawMessage } from "~/shared/api/zulip.types";
 import { loadUsersDirectoryRow } from "~/shared/lib/users-directory-snapshot-db";
 import { useLayoutZulipEventLoop } from "./layout-zulip-event-loop.hook";
+import type { ChatListBootstrapResult } from "./layout-chat-list-bootstrap.lib";
 
 const startZulipEventLoopMock = vi.hoisted(() => vi.fn());
 const fetchUsersMock = vi.hoisted(() => vi.fn(() => Promise.resolve([])));
@@ -21,9 +21,19 @@ const deleteQueueMock = vi.hoisted(() => vi.fn(() => Promise.resolve(undefined))
 const fetchDirectMessagesPageMock = vi.hoisted(() =>
   vi.fn(() => Promise.resolve({ messages: [], foundOldest: true })),
 );
+const hydrateDmSidebarPreviewsMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
 vi.mock("~/shared/lib/event-loop", () => ({
   startZulipEventLoop: startZulipEventLoopMock,
+}));
+
+vi.mock("~/shared/lib/connection-health", () => ({
+  cancelScheduledReconnect: vi.fn(),
+  registerManualReconnectListener: vi.fn(() => vi.fn()),
+  reportFailure: vi.fn(),
+  reportSuccess: vi.fn(),
+  scheduleReconnect: vi.fn(),
+  setConnectionPhase: vi.fn(),
 }));
 
 vi.mock("~/shared/api/zulip", () => ({
@@ -33,6 +43,10 @@ vi.mock("~/shared/api/zulip", () => ({
   fetchUnreadMessagesSnapshot: fetchUnreadMessagesSnapshotMock,
   fetchUsers: fetchUsersMock,
   getCurrentUser: getCurrentUserMock,
+}));
+
+vi.mock("~/entities/chat-list/chat-list-dm-preview-hydrate.lib", () => ({
+  hydrateDmSidebarPreviewsFromRecentConversations: hydrateDmSidebarPreviewsMock,
 }));
 
 vi.mock("~/shared/lib/mute-snapshot-db", () => ({
@@ -57,10 +71,7 @@ vi.mock("~/shared/lib/dm-index", () => ({
 function createHarnessProps() {
   return {
     loadBootstrapMessages: vi.fn<
-      (
-        signal: AbortSignal,
-        isStale: () => boolean,
-      ) => Promise<{ mode: "none"; latestMessageIdHint: number | null }>
+      (signal: AbortSignal, isStale: () => boolean) => Promise<ChatListBootstrapResult>
     >(() => Promise.resolve({ mode: "none", latestMessageIdHint: null })),
     loadMuteSnapshot: vi.fn<
       () => Promise<{
@@ -111,6 +122,7 @@ function Harness({
 
 describe("useLayoutZulipEventLoop", () => {
   beforeEach(() => {
+    hydrateDmSidebarPreviewsMock.mockClear();
     useChatListStore.getState().clear();
     useUsersStore.getState().clear();
     useUserGroupsStore.getState().clear();
@@ -140,96 +152,149 @@ describe("useLayoutZulipEventLoop", () => {
     });
   });
 
-  it("reconciles stale sidebar unread counts from authoritative server unread snapshot", async () => {
+  it("reconciles stale sidebar unread counts from register unread_msgs snapshot", async () => {
     const props = createHarnessProps();
-    props.loadBootstrapMessages.mockImplementation(() => {
-      useChatListStore.getState().setFromMessages(
-        [
-          {
-            id: 101,
-            sender_id: 20,
-            sender_full_name: "Notifier",
-            content: "rename",
-            timestamp: 1000,
-            type: "stream",
-            stream_id: 12,
-            display_recipient: "engineering",
-            subject: "channel events",
-            flags: [],
-          },
-        ],
-        7,
-      );
-      return Promise.resolve({ mode: "none", latestMessageIdHint: null });
+    props.loadBootstrapMessages.mockResolvedValue({
+      mode: "streamPreviews",
+      messages: [
+        {
+          id: 101,
+          sender_id: 20,
+          sender_full_name: "Notifier",
+          content: "rename",
+          timestamp: 1000,
+          type: "stream",
+          stream_id: 12,
+          display_recipient: "engineering",
+          subject: "channel events",
+          flags: ["unread"],
+        },
+      ],
+      latestMessageIdHint: null,
     });
-    fetchUnreadMessagesSnapshotMock.mockResolvedValueOnce([]);
 
     render(<Harness currentInstanceId="inst-1" props={props} />);
 
     await waitFor(() => {
       expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
     });
+
+    const onQueueRegistered = (
+      startZulipEventLoopMock.mock.calls[0]?.[0] as {
+        onQueueRegistered?: (
+          id: string,
+          registration?: {
+            unread_snapshot?: {
+              streams: { streamId: number; topic: string; unreadMessageIds: number[] }[];
+              dms: unknown[];
+              totalCount: number;
+            };
+            subscriptions?: { stream_id: number; name: string }[];
+          },
+        ) => void;
+      }
+    )?.onQueueRegistered;
+
+    act(() => {
+      onQueueRegistered?.("q-stale-unread", {
+        subscriptions: [{ stream_id: 12, name: "engineering" }],
+        unread_snapshot: {
+          streams: [{ streamId: 12, topic: "channel events", unreadMessageIds: [] }],
+          dms: [],
+          totalCount: 0,
+        },
+      });
+    });
+
     await waitFor(() => {
       expect(
         useChatListStore.getState().streamsMap.get(12)?.topics.get("channel events")?.unreadCount,
       ).toBe(0);
     });
+    expect(fetchUnreadMessagesSnapshotMock).not.toHaveBeenCalled();
   });
 
-  it("applies authoritative unread snapshot metadata to sidebar ordering and preview", async () => {
+  it("applies register unread snapshot to sidebar ordering and preview", async () => {
     const props = createHarnessProps();
-    props.loadBootstrapMessages.mockImplementation(() => {
-      useChatListStore.getState().setFromMessages(
-        [
-          {
-            id: 201,
-            sender_id: 20,
-            sender_full_name: "Older Sender",
-            content: "older stream preview",
-            timestamp: 1000,
-            type: "stream",
-            stream_id: 12,
-            display_recipient: "engineering",
-            subject: "legacy topic",
-            flags: ["read"],
-          },
-          {
-            id: 202,
-            sender_id: 21,
-            sender_full_name: "Baseline Sender",
-            content: "baseline preview",
-            timestamp: 3000,
-            type: "stream",
-            stream_id: 20,
-            display_recipient: "design",
-            subject: "baseline topic",
-            flags: ["read"],
-          },
-        ],
-        7,
-      );
-      return Promise.resolve({ mode: "none", latestMessageIdHint: null });
+    props.loadBootstrapMessages.mockResolvedValue({
+      mode: "streamPreviews",
+      messages: [
+        {
+          id: 201,
+          sender_id: 20,
+          sender_full_name: "Older Sender",
+          content: "older stream preview",
+          timestamp: 1000,
+          type: "stream",
+          stream_id: 12,
+          display_recipient: "engineering",
+          subject: "legacy topic",
+          flags: ["read"],
+        },
+        {
+          id: 202,
+          sender_id: 21,
+          sender_full_name: "Baseline Sender",
+          content: "baseline preview",
+          timestamp: 3000,
+          type: "stream",
+          stream_id: 20,
+          display_recipient: "design",
+          subject: "baseline topic",
+          flags: ["read"],
+        },
+        {
+          id: 203,
+          sender_id: 20,
+          sender_full_name: "Fresh Sender",
+          content: "fresh unread preview",
+          timestamp: 9000,
+          type: "stream",
+          stream_id: 12,
+          display_recipient: "engineering",
+          subject: "incident response",
+          flags: [],
+        },
+      ],
+      latestMessageIdHint: null,
     });
-    fetchUnreadMessagesSnapshotMock.mockResolvedValueOnce([
-      {
-        id: 203,
-        sender_id: 20,
-        sender_full_name: "Fresh Sender",
-        content: "fresh unread preview",
-        timestamp: 9000,
-        type: "stream",
-        stream_id: 12,
-        display_recipient: "engineering",
-        subject: "incident response",
-        flags: [],
-      },
-    ]);
 
     render(<Harness currentInstanceId="inst-1" props={props} />);
 
     await waitFor(() => {
       expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
     });
+
+    const onQueueRegistered = (
+      startZulipEventLoopMock.mock.calls[0]?.[0] as {
+        onQueueRegistered?: (
+          id: string,
+          registration?: {
+            unread_snapshot?: {
+              streams: { streamId: number; topic: string; unreadMessageIds: number[] }[];
+              dms: unknown[];
+              totalCount: number;
+            };
+            subscriptions?: { stream_id: number; name: string }[];
+          },
+        ) => void;
+      }
+    )?.onQueueRegistered;
+
+    act(() => {
+      onQueueRegistered?.("q-preview-order", {
+        subscriptions: [
+          { stream_id: 12, name: "engineering" },
+          { stream_id: 20, name: "design" },
+        ],
+        unread_snapshot: {
+          streams: [{ streamId: 12, topic: "incident response", unreadMessageIds: [203] }],
+          dms: [],
+          totalCount: 1,
+        },
+      });
+    });
+
     await waitFor(() => {
       expect(useChatListStore.getState().streams()[0]!.stream_id).toBe(12);
     });
@@ -238,6 +303,7 @@ describe("useLayoutZulipEventLoop", () => {
     expect(stream?.lastMessage).toContain("fresh unread preview");
     expect(stream?.topics.get("incident response")?.lastMessageId).toBe(203);
     expect(stream?.topics.get("incident response")?.unreadCount).toBe(1);
+    expect(fetchUnreadMessagesSnapshotMock).not.toHaveBeenCalled();
   });
 
   it("starts Zulip event loop after bootstrap settles", async () => {
@@ -286,7 +352,7 @@ describe("useLayoutZulipEventLoop", () => {
     await waitFor(() => {
       expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
     });
-    expect(props.setCurrentUserStatus).not.toHaveBeenCalledWith("error");
+    expect(props.setCurrentUserStatus).not.toHaveBeenCalledWith("blocked");
   });
 
   it("stores modern realm add-subscribers group from register metadata", async () => {
@@ -316,6 +382,179 @@ describe("useLayoutZulipEventLoop", () => {
     expect(useUsersStore.getState().currentUserChannelCapabilities).toEqual({
       realmCanAddSubscribersGroup: 14,
     });
+  });
+
+  it("resolves current user from /users when /users/me returns null", async () => {
+    getCurrentUserMock.mockResolvedValueOnce(null as unknown as { user_id: number });
+    fetchUsersMock.mockResolvedValueOnce([
+      { user_id: 7, full_name: "Test User", email: "test@example.com" },
+    ] as never);
+    const props = createHarnessProps();
+
+    render(<Harness currentInstanceId="inst-1" props={props} />);
+
+    await waitFor(() => {
+      expect(props.setCurrentUserStatus).toHaveBeenCalledWith("ready");
+    });
+    expect(props.setCurrentUserId).toHaveBeenCalledWith(7);
+    await waitFor(() => {
+      expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not let a superseded bootstrap run set blocked after ready", async () => {
+    const props = createHarnessProps();
+    let resolveUsers!: (members: never[]) => void;
+    fetchUsersMock.mockImplementationOnce(
+      () =>
+        new Promise<never[]>((resolve) => {
+          resolveUsers = resolve;
+        }),
+    );
+    getCurrentUserMock.mockResolvedValueOnce({ user_id: 7 });
+
+    const { unmount } = render(<Harness currentInstanceId="inst-1" props={props} />);
+
+    await waitFor(() => {
+      expect(props.setCurrentUserStatus).toHaveBeenCalledWith("ready");
+    });
+
+    unmount();
+    resolveUsers([]);
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(props.setCurrentUserStatus).not.toHaveBeenCalledWith("blocked");
+  });
+
+  it("reconciles sidebar unread from register after metadata rows are applied", async () => {
+    const reconcileSpy = vi.spyOn(useChatListStore.getState(), "reconcileUnreadFromSnapshot");
+    const props = createHarnessProps();
+    props.setCurrentUserId.mockImplementation((id: number) => {
+      useChatListStore.getState().setCurrentUserId(id);
+    });
+
+    render(<Harness currentInstanceId="inst-1" props={props} />);
+
+    await waitFor(() => {
+      expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
+    });
+
+    const firstCallArg = startZulipEventLoopMock.mock.calls[0]?.[0] as
+      | {
+          onQueueRegistered?: (
+            id: string,
+            registration?: {
+              unread_snapshot?: {
+                streams: unknown[];
+                dms: unknown[];
+                totalCount: number;
+              };
+              recent_private_conversations?: Record<
+                string,
+                { user_ids: number[]; max_message_id: number | null; unread_message_ids: number[] }
+              >;
+              subscriptions?: { stream_id: number; name: string }[];
+            },
+          ) => void;
+        }
+      | undefined;
+
+    reconcileSpy.mockClear();
+    useChatListStore.getState().clear();
+    useChatListStore.getState().setCurrentUserId(7);
+
+    act(() => {
+      firstCallArg?.onQueueRegistered?.("q-unread", {
+        subscriptions: [{ stream_id: 12, name: "engineering" }],
+        unread_snapshot: {
+          streams: [{ streamId: 12, topic: "incidents", unreadMessageIds: [401, 402] }],
+          dms: [{ userIds: [20], unreadMessageIds: [501], isGroup: false }],
+          totalCount: 3,
+        },
+        recent_private_conversations: {
+          "7,20": {
+            user_ids: [7, 20],
+            max_message_id: 900,
+            unread_message_ids: [501],
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(reconcileSpy).toHaveBeenCalled();
+    });
+
+    expect(
+      useChatListStore.getState().streamsMap.get(12)?.topics.get("incidents")?.unreadCount,
+    ).toBe(2);
+    expect(useChatListStore.getState().dmsMap.get("7,20")?.unreadCount).toBe(1);
+    reconcileSpy.mockRestore();
+  });
+
+  it("hydrates DM previews from recent_private_conversations when metadata bootstrap is enabled", async () => {
+    const props = createHarnessProps();
+    props.setCurrentUserId.mockImplementation((id: number) => {
+      useChatListStore.getState().setCurrentUserId(id);
+    });
+
+    render(<Harness currentInstanceId="inst-1" props={props} />);
+
+    await waitFor(() => {
+      expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
+    });
+
+    const firstCallArg = startZulipEventLoopMock.mock.calls[0]?.[0] as
+      | {
+          onQueueRegistered?: (
+            id: string,
+            registration?: {
+              recent_private_conversations?: Record<
+                string,
+                { user_ids: number[]; max_message_id: number | null; unread_message_ids: number[] }
+              >;
+            },
+          ) => void;
+        }
+      | undefined;
+
+    act(() => {
+      firstCallArg?.onQueueRegistered?.("q-dm", {
+        recent_private_conversations: {
+          "7,20": {
+            user_ids: [7, 20],
+            max_message_id: 900,
+            unread_message_ids: [900],
+          },
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(hydrateDmSidebarPreviewsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          currentUserId: 7,
+          conversations: {
+            "7,20": {
+              user_ids: [7, 20],
+              max_message_id: 900,
+              unread_message_ids: [900],
+            },
+          },
+          metadataRows: [
+            expect.objectContaining({
+              userIds: [7, 20],
+              lastMessageId: 900,
+            }),
+          ],
+        }),
+      );
+    });
+    expect(fetchDirectMessagesPageMock).not.toHaveBeenCalled();
   });
 
   it("marks stream metadata as hydrated on queue register even without subscriptions payload", async () => {

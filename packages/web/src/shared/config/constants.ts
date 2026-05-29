@@ -33,6 +33,9 @@ export const MULTI_ORG_UNREAD_REFRESH_DEBOUNCE_MS = SEARCH_INPUT_DEBOUNCE_MS;
 /** Jitsi Meet API: poll interval for participant list display in the call UI. */
 export const JITSI_PARTICIPANTS_POLL_MS = 5000;
 
+/** Background Workspace folder rail + selective folder-items refresh (see folder-sync). */
+export const FOLDER_SYNC_POLL_INTERVAL_MS = 5 * 60_000;
+
 /**
  * Hard cap for each Zulip HTTP request (until response headers + JSON body read via fetch).
  * Retries receive a fresh timeout window. Does not apply to GET long-poll `.../events`.
@@ -73,3 +76,15 @@ export const DEFAULT_MESSENGER_STREAM_SLUG = "general";
 
 /** Debounce for persisting the last opened messenger chat to localStorage. */
 export const LAST_MESSENGER_ROUTE_PERSIST_DEBOUNCE_MS = 300;
+
+/** In-app toast auto-dismiss for error variant. */
+export const TOAST_ERROR_DISMISS_MS = 5000;
+
+/** In-app toast auto-dismiss for success and info variants. */
+export const TOAST_SUCCESS_DISMISS_MS = 3000;
+
+/** Suppress duplicate toast messages with the same text within this window. */
+export const TOAST_DEDUP_WINDOW_MS = 2000;
+
+/** Maximum visible in-app toasts at once. */
+export const TOAST_MAX_VISIBLE = 3;

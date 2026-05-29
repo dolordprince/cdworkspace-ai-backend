@@ -6,7 +6,10 @@ import { computeIsGroupDmView, normalizeDmRouteUserIds } from "~/shared/lib/dm-r
 import type { SidebarChat } from "~/shared/types/sidebar-chat";
 import { getDmById, parseDmSlugToUserIds, parseStreamSlug } from "~/widgets/sidebar/sidebar.lib";
 import type { StreamWithLast } from "~/widgets/sidebar/sidebar.types";
-import { computeInstanceUnreadCount, buildActiveChatWindowTitle  } from "./layout-instance-unread.lib";
+import {
+  computeInstanceUnreadCount,
+  buildActiveChatWindowTitle,
+} from "./layout-instance-unread.lib";
 
 type DmSidebarChat = Extract<SidebarChat, { type: "dm" }>;
 
@@ -20,6 +23,8 @@ export function useLayoutUnreadAndTitle(options: {
   activeTopic: string | null;
   dmIdParam: string | undefined;
   currentUserId: number | null;
+  isStreamMuted?: (streamId: number) => boolean;
+  isEffectivelyMuted?: (streamId: number, topic: string) => boolean;
 }): {
   realmIcon: string | undefined;
   unreadCount: number;
@@ -35,6 +40,8 @@ export function useLayoutUnreadAndTitle(options: {
     activeTopic,
     dmIdParam,
     currentUserId,
+    isStreamMuted,
+    isEffectivelyMuted,
   } = options;
 
   const realmIcon = useMemo(
@@ -47,8 +54,10 @@ export function useLayoutUnreadAndTitle(options: {
       computeInstanceUnreadCount({
         streams,
         dms,
+        isStreamMuted,
+        isEffectivelyMuted,
       }),
-    [streams, dms],
+    [streams, dms, isStreamMuted, isEffectivelyMuted],
   );
 
   const activeStreamNameForTitle = useMemo(() => {
@@ -128,4 +137,3 @@ export function useLayoutUnreadAndTitle(options: {
 
   return { realmIcon, unreadCount, activeChatWindowTitle };
 }
-

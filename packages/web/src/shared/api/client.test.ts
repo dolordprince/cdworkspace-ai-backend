@@ -9,15 +9,10 @@ import { ZULIP_API_FETCH_TIMEOUT_MS } from "../config/constants";
 import { wipeCredentials } from "../lib/auth-guard";
 import type { Middleware, ApiRequest, ApiResponse, NextFn } from "./client";
 
-vi.mock("../lib/logger", () => ({
-  logApiCall: vi.fn(),
-  createLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-}));
+vi.mock("../lib/logger", async (importOriginal) => {
+  const { createPartialLoggerMock } = await import("~/test/logger-vitest-mock");
+  return createPartialLoggerMock(importOriginal as () => Promise<typeof import("../lib/logger")>);
+});
 
 vi.mock("../lib/env", () => ({
   env: {
@@ -622,16 +617,14 @@ describe("ApiClient (via zulipApi / workspaceApi)", () => {
   it("retryMiddleware falls back to progressive delay for malformed Retry-After", async () => {
     const { retryMiddleware } = await import("./client");
 
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
-      callback: TimerHandler,
-      _delay?: number,
-      ...args: unknown[]
-    ) => {
-      if (typeof callback === "function") {
-        callback(...args);
-      }
-      return 0 as unknown as ReturnType<typeof setTimeout>;
-    }) as unknown as typeof setTimeout);
+    const setTimeoutSpy = vi
+      .spyOn(globalThis, "setTimeout")
+      .mockImplementation((callback: TimerHandler, _delay?: number, ...args: unknown[]) => {
+        if (typeof callback === "function") {
+          callback(...args);
+        }
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      });
 
     let callCount = 0;
     const fetchFn = vi.fn().mockImplementation(() => {

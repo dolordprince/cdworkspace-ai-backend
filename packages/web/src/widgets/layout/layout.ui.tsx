@@ -1,5 +1,5 @@
 // Корневой layout приложения: собирает shell, стор-оркестрацию и фоновые синки для активного инстанса.
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { useHydrateDrafts } from "~/entities/draft/draft-hydration";
@@ -19,7 +19,11 @@ import { useLayoutAuthErrorHandler } from "./layout-auth-error-handler.hook";
 import { useLayoutAuthGuard } from "./layout-auth-guard.hook";
 import { runChatListBootstrap } from "./layout-chat-list-bootstrap.lib";
 import { useLayoutChatListSnapshotSync } from "./layout-chat-list-snapshot-sync.hook";
+import { parseFocusedMessageIdFromSearch } from "./layout-chat-route.lib";
 import { shouldRenderChatShell } from "./layout-chat-shell.lib";
+import { LayoutConnectionBanner } from "./layout-connection-banner.ui";
+import { useConnectionHealthSnapshot } from "./layout-connection-health.hook";
+import { useLayoutConnectionRecovery } from "./layout-connection-recovery.hook";
 import { useLayoutFolderSyncOrchestration } from "./layout-folder-sync-orchestration.hook";
 import { useInactiveInstancesBackgroundWork } from "./layout-inactive-instances-background-work.hook";
 import { useLayoutInstanceBootstrap } from "./layout-instance-bootstrap.hook";
@@ -28,17 +32,23 @@ import { useLayoutLastMessengerRoutePersistence } from "./layout-last-messenger-
 import { useLayoutLegacyStreamSlugRedirect } from "./layout-legacy-stream-redirect.hook";
 import { LayoutLoadingGate } from "./layout-loading-gate.ui";
 import { useLayoutMuteSnapshotSync } from "./layout-mute-snapshot-sync.hook";
+import { LayoutNotificationPermissionBanner } from "./layout-notification-permission-banner.ui";
+import { useLayoutNotificationPermission } from "./layout-notification-permission.hook";
 import { useLayoutOnlineStatus } from "./layout-online-status.hook";
 import { useLayoutPresencePolling } from "./layout-presence-polling.hook";
 import { useLayoutPushClickRouting } from "./layout-push-click-routing.hook";
+import { useLayoutPushNotifications } from "./layout-push-notifications.hook";
 import { useLayoutPushPermission } from "./layout-push-permission.hook";
 import { useLayoutResetRightDrawerOnInstanceChange } from "./layout-reset-right-drawer-on-instance-change.hook";
 import { useLayoutRightPanelShell } from "./layout-right-panel-shell.hook";
 import { useLayoutShortcuts } from "./layout-shortcuts.hook";
 import { useSyncChatContextFromLocation } from "./layout-sync-chat-context.hook";
 import { useLayoutUnreadAndTitle } from "./layout-unread-title.hook";
+import { isLayoutUserConnectionReady } from "./layout-user-connection-status.types";
 import { useLayoutWindowBranding } from "./layout-window-branding.hook";
 import { useLayoutZulipEventLoop } from "./layout-zulip-event-loop.hook";
+import { useZulipRateLimitCountdownSeconds } from "./layout-zulip-rate-limit-banner.hook";
+import type { LayoutUserConnectionStatus } from "./layout-user-connection-status.types";
 
 export const Layout: React.FC = () => {
   const location = useLocation();
@@ -48,7 +58,6 @@ export const Layout: React.FC = () => {
   const setCurrentInstanceId = useInstancesStore((s) => s.setCurrentInstanceId);
   const setInstanceUnreadCount = useInstancesStore((s) => s.setInstanceUnreadCount);
   const setInstanceDmUnreadCount = useInstancesStore((s) => s.setInstanceDmUnreadCount);
-  const unreadCountsByInstance = useInstancesStore((s) => s.unreadCountsByInstance);
   const {
     streamSlug,
     topicName,
@@ -82,6 +91,8 @@ export const Layout: React.FC = () => {
   const language = useSettingsStore((s) => s.language);
   const showSystemFolders = useSettingsStore((s) => s.showSystemFolders);
   const mutedStreamIds = useMuteStore((s) => s.mutedStreamIds);
+  const isStreamMuted = useMuteStore((s) => s.isStreamMuted);
+  const isEffectivelyMuted = useMuteStore((s) => s.isEffectivelyMuted);
   const chatsSortedByLastMessage = useMemo(
     () =>
       sortChatsByLastMessage(streamsMap, dmsMap, chatSorting, mutedStreamIds, {
@@ -110,6 +121,8 @@ export const Layout: React.FC = () => {
       activeTopic,
       dmIdParam,
       currentUserId,
+      isStreamMuted,
+      isEffectivelyMuted,
     });
 
   const dmUnreadCountForCurrentInstance = useMemo(
@@ -135,9 +148,9 @@ export const Layout: React.FC = () => {
   const openRightDrawerUserProfile = useRightDrawerStore((s) => s.openUserProfile);
   const openRightDrawerSettings = useRightDrawerStore((s) => s.openSettings);
   const openRightDrawerAbout = useRightDrawerStore((s) => s.openAbout);
-  const [currentUserStatus, setCurrentUserStatus] = useState<
-    "idle" | "loading" | "ready" | "error"
-  >("idle");
+  const [currentUserStatus, setCurrentUserStatus] = useState<LayoutUserConnectionStatus>("idle");
+  const refreshStaleRef = useRef<(() => void) | null>(null);
+  const latestMessageIdRef = useRef<number | null>(null);
 
   const { loadMuteSnapshot } = useLayoutInstanceBootstrap({
     currentInstanceId,
@@ -151,6 +164,8 @@ export const Layout: React.FC = () => {
   );
 
   const online = useLayoutOnlineStatus();
+  const rateLimitSeconds = useZulipRateLimitCountdownSeconds(online);
+  const connectionHealth = useConnectionHealthSnapshot();
   useHydrateDrafts(currentInstanceId, currentUserStatus);
 
   useEffect(() => {
@@ -175,7 +190,7 @@ export const Layout: React.FC = () => {
   useInactiveInstancesBackgroundWork({
     instances,
     currentInstanceId,
-    enabled: currentUserStatus === "ready",
+    enabled: isLayoutUserConnectionReady(currentUserStatus),
     online,
     setUnreadCount: setInstanceUnreadCount,
     setDmUnreadCount: setInstanceDmUnreadCount,
@@ -207,8 +222,23 @@ export const Layout: React.FC = () => {
     closeRightDrawer();
   }, [closeRightDrawer]);
 
+  const focusedMessageId = useMemo(
+    () => parseFocusedMessageIdFromSearch(location.search),
+    [location.search],
+  );
+
+  useLayoutConnectionRecovery({
+    currentUserStatus,
+    currentInstanceId,
+    latestMessageIdRef,
+    focusedMessageId,
+  });
+
   useLayoutZulipEventLoop({
     currentInstanceId,
+    latestMessageIdRef,
+    focusedMessageId,
+    onRefreshStaleRef: refreshStaleRef,
     loadBootstrapMessages,
     loadMuteSnapshot,
     setFromMessages,
@@ -227,7 +257,8 @@ export const Layout: React.FC = () => {
     currentInstanceId != null &&
     (currentUserStatus === "loading" || currentUserStatus === "idle") &&
     !chatListHasCachedRows;
-  const showError = currentInstanceId != null && currentUserStatus === "error";
+  const showConnectionBlocked =
+    currentInstanceId != null && currentUserStatus === "blocked" && !chatListHasCachedRows;
 
   useLayoutLegacyStreamSlugRedirect({
     activeStreamSlug,
@@ -239,7 +270,8 @@ export const Layout: React.FC = () => {
   useLayoutAuthErrorHandler({ currentInstanceId, currentUserStatus, navigate });
   useSyncChatContextFromLocation();
 
-  useLayoutPushPermission({ enabled: currentUserStatus === "ready" });
+  useLayoutPushPermission({ enabled: isLayoutUserConnectionReady(currentUserStatus) });
+  useLayoutPushNotifications({ enabled: isLayoutUserConnectionReady(currentUserStatus) });
 
   useLayoutPushClickRouting({
     currentInstanceId,
@@ -248,9 +280,15 @@ export const Layout: React.FC = () => {
     navigate,
   });
 
-  useLayoutPresencePolling({
-    enabled: currentInstanceId != null && currentUserStatus === "ready",
+  const layoutConnectionReady =
+    currentInstanceId != null && isLayoutUserConnectionReady(currentUserStatus);
+
+  const notificationPermission = useLayoutNotificationPermission({
+    enabled: layoutConnectionReady,
+    organizationId: currentInstanceId,
   });
+
+  useLayoutPresencePolling({ enabled: layoutConnectionReady });
 
   const handleSelectDm = useCallback(
     (slug: string | null) => {
@@ -299,26 +337,44 @@ export const Layout: React.FC = () => {
     });
 
   return (
-    <LayoutLoadingGate showFullscreenLoader={showFullscreenLoader} showError={showError}>
-      <LayoutAppShell
-        openSearch={openSearch}
+    <div className="flex h-screen max-h-[100dvh] min-h-app-shell w-full min-w-app-shell-min flex-col overflow-hidden bg-bg text-text-primary">
+      <LayoutConnectionBanner
         online={online}
-        rightDrawerOpen={rightDrawerOpen}
-        setRightDrawerOpen={setRightDrawerOpen}
-        openRightDrawerInfo={openRightDrawerInfo}
-        openRightDrawerUserProfile={openRightDrawerUserProfile}
-        shouldShowChatShell={shouldShowChatShell}
-        sidebarOpen={sidebarOpen}
-        rightDrawerMode={rightDrawerMode}
-        onCloseRightDrawer={handleCloseRightDrawer}
-        rightPanelTitle={rightPanelTitleResolved}
-        participantsCount={participantsCount}
-        onlineCount={onlineCount}
-        rightPanelUser={rightPanelUser}
-        onSelectCommonGroup={(slug: string) => handleSelectDm(slug)}
-        onOpenSettingsDrawer={openRightDrawerSettings}
-        onOpenAboutDrawer={openRightDrawerAbout}
+        health={connectionHealth}
+        rateLimitSeconds={rateLimitSeconds}
       />
-    </LayoutLoadingGate>
+      {notificationPermission.visible ? (
+        <LayoutNotificationPermissionBanner
+          enabling={notificationPermission.enabling}
+          onEnable={notificationPermission.enable}
+          onDismiss={notificationPermission.dismiss}
+        />
+      ) : null}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <LayoutLoadingGate
+          showFullscreenLoader={showFullscreenLoader}
+          showConnectionBlocked={showConnectionBlocked}
+        >
+          <LayoutAppShell
+            openSearch={openSearch}
+            rightDrawerOpen={rightDrawerOpen}
+            setRightDrawerOpen={setRightDrawerOpen}
+            openRightDrawerInfo={openRightDrawerInfo}
+            openRightDrawerUserProfile={openRightDrawerUserProfile}
+            shouldShowChatShell={shouldShowChatShell}
+            sidebarOpen={sidebarOpen}
+            rightDrawerMode={rightDrawerMode}
+            onCloseRightDrawer={handleCloseRightDrawer}
+            rightPanelTitle={rightPanelTitleResolved}
+            participantsCount={participantsCount}
+            onlineCount={onlineCount}
+            rightPanelUser={rightPanelUser}
+            onSelectCommonGroup={(slug: string) => handleSelectDm(slug)}
+            onOpenSettingsDrawer={openRightDrawerSettings}
+            onOpenAboutDrawer={openRightDrawerAbout}
+          />
+        </LayoutLoadingGate>
+      </div>
+    </div>
   );
 };

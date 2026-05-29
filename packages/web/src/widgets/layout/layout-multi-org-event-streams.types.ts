@@ -1,11 +1,13 @@
 import type { ZulipInstance } from "~/entities/instance/instance.model";
-import type { ZulipCredentials, ZulipEvent } from "~/shared/api/zulip.types";
+import type { RegisterQueueResult, ZulipCredentials, ZulipEvent } from "~/shared/api/zulip.types";
 
 export interface StartCredentialEventLoopOptions {
   credentials: ZulipCredentials;
   onEvent: (event: ZulipEvent) => void;
   onBadQueue?: () => void;
-  onReconnect?: () => void;
+  /** Called after the event queue is registered or re-registered successfully. */
+  onQueueReady?: () => void;
+  onQueueRegistered?: (queueId: string, registration?: RegisterQueueResult) => void;
 }
 
 export type StartCredentialEventLoopFn = (options: StartCredentialEventLoopOptions) => () => void;

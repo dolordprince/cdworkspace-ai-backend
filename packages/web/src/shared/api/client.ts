@@ -22,8 +22,14 @@ import {
   workspaceRestApiPathSuffix,
 } from "~/shared/config/dev-workspace-org-proxy";
 import { getBasicAuthValue, wipeCredentials } from "~/shared/lib/auth-guard";
+import {
+  noteApiTransportFailure,
+  noteApiTransportSuccess,
+  reportFailure,
+} from "~/shared/lib/connection-health";
 import { env } from "~/shared/lib/env";
 import { logApiCall } from "~/shared/lib/logger";
+import { extractLoggableRequestParams } from "~/shared/lib/logger-request-params.lib";
 import { workspaceOrgApiOriginFromZulipRealmRoot } from "~/shared/lib/workspace-org-origin.lib";
 import {
   ingestZulipRateLimitFromApiResponse,
@@ -294,19 +300,30 @@ const devWorkspaceOrgTargetHeaderMiddleware: Middleware = async (req, next) => {
 
 const loggingMiddleware: Middleware = async (req, next) => {
   const start = performance.now();
+  const params = extractLoggableRequestParams(req);
+  const logPath = (() => {
+    try {
+      const parsed = new URL(req.url);
+      return `${parsed.pathname}${parsed.search}`;
+    } catch {
+      return req.url;
+    }
+  })();
   try {
     const res = await next(req);
     res.durationMs = Math.round(performance.now() - start);
-    logApiCall(req.method, req.url, {
+    logApiCall(req.method, logPath, {
       status: res.status,
       durationMs: res.durationMs,
+      ...(params ? { params } : {}),
     });
     return res;
   } catch (err) {
     const durationMs = Math.round(performance.now() - start);
-    logApiCall(req.method, req.url, {
+    logApiCall(req.method, logPath, {
       durationMs,
       error: err instanceof Error ? err.message : "Unknown error",
+      ...(params ? { params } : {}),
     });
     throw err;
   }
@@ -337,6 +354,23 @@ function isAbortError(err: unknown): boolean {
     (err instanceof Error && err.name === "AbortError")
   );
 }
+
+const connectionHealthMiddleware: Middleware = async (req, next) => {
+  try {
+    const res = await next(req);
+    if (res.ok) {
+      noteApiTransportSuccess();
+    } else if (res.status === 502 || res.status === 503 || res.status === 504) {
+      reportFailure({ reason: "server", phase: "degraded" });
+    }
+    return res;
+  } catch (err) {
+    if (!isAbortError(err)) {
+      noteApiTransportFailure(err);
+    }
+    throw err;
+  }
+};
 
 const retryMiddleware: Middleware = async (req, next) => {
   const MAX_RETRIES = 2;
@@ -516,6 +550,7 @@ class ApiClient {
       sessionCsrfMiddleware,
       loggingMiddleware,
       retryMiddleware,
+      connectionHealthMiddleware,
       authErrorMiddleware,
     ];
   }
@@ -834,6 +869,7 @@ export function refreshWorkspaceApiBase(): void {
 }
 
 export {
+  connectionHealthMiddleware,
   noCacheMiddleware,
   authMiddleware,
   sessionCsrfMiddleware,

@@ -3,7 +3,9 @@
 import { t } from "~/i18n/i18n";
 import { getBasicAuthValue } from "~/shared/lib/auth-guard";
 import { env } from "~/shared/lib/env";
+import { isBadEventQueueIdResponse } from "~/shared/lib/zulip-event-queue-errors.lib";
 import { normalizeGroupSettingValue } from "~/shared/lib/zulip-group-setting.lib";
+import { extractUserSettingsFromRegisterData } from "~/shared/lib/zulip-notification-settings.lib";
 import { getCurrentInstance, zulipApi } from "./client";
 import {
   getAuthValueForCredentials,
@@ -14,13 +16,18 @@ import {
   zulipPipelinePost,
   ensureZulipApiReady,
 } from "./zulip-pipeline.internal";
+import { parseRecentPrivateConversations } from "./zulip-recent-private-conversations.lib";
 import { parseRegisterResponseJitsiServerUrl } from "./zulip-register-jitsi.lib";
 import {
   parseAvatarChangesDisabledFlag,
   parseMaxAvatarFileSizeMib,
   parseServerThumbnailFormats,
 } from "./zulip-register-metadata.lib";
-import { parseUnreadDmMessagesCount, parseUnreadMessagesCount } from "./zulip-unread.lib";
+import {
+  parseRegisterUnreadSnapshot,
+  parseUnreadDmMessagesCount,
+  parseUnreadMessagesCount,
+} from "./zulip-unread.lib";
 import {
   buildUserTopicsCacheKey,
   getCachedUserTopicsForKey,
@@ -34,7 +41,6 @@ import type {
   RegisterQueueResult,
   ZulipCredentials,
   ZulipOwnAvatarCapabilities,
-  ZulipRecentPrivateConversation,
   ZulipRealmUserGroup,
   ZulipSubscription,
   ZulipUserTopic,
@@ -48,6 +54,9 @@ export const DEFAULT_REGISTER_FETCH_EVENT_TYPES = [
   "recent_private_conversations",
   "realm",
   "realm_user_groups",
+  "user_settings",
+  "message",
+  "update_message_flags",
 ] as const;
 const REGISTER_CLIENT_CAPABILITIES = {
   notification_settings_null: true,
@@ -72,40 +81,6 @@ export function getCachedOwnAvatarCapabilities(): ZulipOwnAvatarCapabilities {
 // Что делает: проверяет, что значение является положительным целым id.
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
-}
-
-// Что делает: безопасно читает recent_private_conversations из register-ответа и отбрасывает битые записи.
-function parseRecentPrivateConversations(
-  data: unknown,
-): Record<string, ZulipRecentPrivateConversation> | null {
-  if (data == null || typeof data !== "object" || Array.isArray(data)) {
-    return null;
-  }
-
-  const entries = Object.entries(data as Record<string, unknown>);
-  if (entries.length === 0) {
-    return {};
-  }
-
-  const parsed: Record<string, ZulipRecentPrivateConversation> = {};
-  for (const [key, value] of entries) {
-    if (value == null || typeof value !== "object" || Array.isArray(value)) continue;
-    const record = value as Record<string, unknown>;
-    if (!Array.isArray(record.user_ids)) continue;
-    const userIds = record.user_ids.filter(isPositiveInteger);
-    if (userIds.length === 0) continue;
-    const unreadMessageIds = Array.isArray(record.unread_message_ids)
-      ? record.unread_message_ids.filter(isPositiveInteger)
-      : [];
-    const maxMessageId = isPositiveInteger(record.max_message_id) ? record.max_message_id : null;
-    parsed[key] = {
-      user_ids: Array.from(new Set(userIds)).sort((left, right) => left - right),
-      max_message_id: maxMessageId,
-      unread_message_ids: unreadMessageIds,
-    };
-  }
-
-  return parsed;
 }
 
 // Что делает: нормализует список подписок из register-ответа.
@@ -250,6 +225,8 @@ export async function registerQueue(
     max_avatar_file_size_mib?: unknown;
     realm_avatar_changes_disabled?: unknown;
     server_avatar_changes_disabled?: unknown;
+    user_settings?: unknown;
+    unread_msgs?: unknown;
   } | null;
   if (data == null || typeof data !== "object") {
     throw new Error(t("app.invalidResponse"));
@@ -261,6 +238,8 @@ export async function registerQueue(
     throw new Error(t("app.invalidRegisterResponse"));
   }
 
+  const unreadSnapshot = parseRegisterUnreadSnapshot(data);
+  const userSettings = extractUserSettingsFromRegisterData(data);
   const subscriptions = parseSubscriptions(data.subscriptions);
   const userTopics = parseUserTopics(data.user_topics);
   const recentPrivateConversations = parseRecentPrivateConversations(
@@ -316,6 +295,8 @@ export async function registerQueue(
       ? { server_avatar_changes_disabled: serverAvatarChangesDisabled }
       : {}),
     ...(jitsiServerUrlEffective ? { jitsi_server_url_effective: jitsiServerUrlEffective } : {}),
+    ...(userSettings ? { user_settings: userSettings } : {}),
+    ...(unreadSnapshot ? { unread_snapshot: unreadSnapshot } : {}),
   };
 }
 
@@ -369,6 +350,8 @@ export async function registerQueueForCredentials(
     max_avatar_file_size_mib?: unknown;
     realm_avatar_changes_disabled?: unknown;
     server_avatar_changes_disabled?: unknown;
+    user_settings?: unknown;
+    unread_msgs?: unknown;
   };
   try {
     data = (await response.json()) as typeof data;
@@ -383,6 +366,8 @@ export async function registerQueueForCredentials(
     throw new Error(t("app.invalidRegisterResponse"));
   }
 
+  const unreadSnapshot = parseRegisterUnreadSnapshot(data);
+  const userSettings = extractUserSettingsFromRegisterData(data);
   const subscriptions = parseSubscriptions(data.subscriptions);
   const userTopics = parseUserTopics(data.user_topics);
   const recentPrivateConversations = parseRecentPrivateConversations(
@@ -438,6 +423,8 @@ export async function registerQueueForCredentials(
       ? { server_avatar_changes_disabled: serverAvatarChangesDisabled }
       : {}),
     ...(jitsiServerUrlEffective ? { jitsi_server_url_effective: jitsiServerUrlEffective } : {}),
+    ...(userSettings ? { user_settings: userSettings } : {}),
+    ...(unreadSnapshot ? { unread_snapshot: unreadSnapshot } : {}),
   };
 }
 
@@ -604,6 +591,9 @@ export async function getEvents(
     const data = res.data;
     if (data == null || typeof data !== "object") {
       return { result: "error", msg: "Invalid JSON in event response" };
+    }
+    if (isBadEventQueueIdResponse(data)) {
+      return data;
     }
     return data;
   } catch (e) {

@@ -10,7 +10,7 @@
 import { Buffer } from "buffer";
 import zulipInitDefault from "zulip-js";
 import { t } from "~/i18n/i18n";
-import { getBasicAuthValue } from "~/shared/lib/auth-guard";
+import { STREAM_SIDEBAR_TOPIC_HYDRATE_LIMIT } from "~/shared/config/metadata-chat-bootstrap.constants";
 import { env } from "~/shared/lib/env";
 import { guard, invariant } from "~/shared/lib/guards";
 import {
@@ -18,8 +18,7 @@ import {
   summarizeZulipMessagesForFlowDebug,
 } from "~/shared/lib/message-flow-debug.lib";
 import { normalizeTopicForIdentity } from "~/shared/lib/topic-identity.lib";
-import { toResolvedTopicName, toUnresolvedTopicName } from "~/shared/lib/topic-resolve";
-import { isValidEmail, isValidRealmUrl, validateFileUpload } from "~/shared/lib/validation";
+import { isValidEmail, isValidRealmUrl } from "~/shared/lib/validation";
 import { normalizeGroupSettingValue } from "~/shared/lib/zulip-group-setting.lib";
 import {
   ZULIP_DM_CHAT_NUM_AFTER,
@@ -27,6 +26,7 @@ import {
   ZULIP_STREAM_CHAT_NUM_AFTER,
   ZULIP_STREAM_CHAT_NUM_BEFORE,
 } from "~/shared/lib/zulip-message-window.lib";
+import { buildStreamSidebarPreviewNarrow } from "~/shared/lib/zulip-stream-sidebar-preview-narrow.lib";
 import {
   normalizeZulipMessagesNarrowForApi,
   zulipTopicNarrowOperandForApi,
@@ -37,20 +37,14 @@ import {
   refreshZulipApiBase,
   zulipApi,
 } from "./client";
+import { parseCurrentUserFromApiData } from "./zulip-current-user.lib";
 import { mockMessageFromGetMessageApiData, rawMessageToMockMessage } from "./zulip-message-map.lib";
-import { parseRegisterResponseJitsiServerUrl } from "./zulip-register-jitsi.lib";
 import {
-  parseAvatarChangesDisabledFlag,
-  parseMaxAvatarFileSizeMib,
-  parseServerThumbnailFormats,
-} from "./zulip-register-metadata.lib";
-import { parseUnreadDmMessagesCount, parseUnreadMessagesCount } from "./zulip-unread.lib";
-import type {
-  ReactionType,
-  RealmEmoji,
-  RegisterQueueResult,
-  ZulipRealmUserGroup,
-} from "./zulip.types";
+  getCachedUserTopicsForKey,
+  getCurrentUserTopicsCacheKey,
+} from "./zulip-user-topics.internal";
+import { validateMessageIds } from "./zulip-validation.internal";
+import type { ReactionType, RealmEmoji } from "./zulip.types";
 
 if (typeof (globalThis as unknown as { Buffer?: unknown }).Buffer === "undefined") {
   (globalThis as unknown as { Buffer: typeof Buffer }).Buffer = Buffer;
@@ -104,10 +98,6 @@ const zulipInit = zulipInitDefault as unknown as (config: {
 type ZulipClient = Awaited<ReturnType<typeof zulipInit>>;
 
 let clientCache: { instanceId: string; promise: Promise<ZulipClient> } | null = null;
-
-const TUS_VERSION = "1.0.0";
-const TUS_UPLOAD_THRESHOLD_BYTES = 15 * 1024 * 1024;
-const TUS_CHUNK_SIZE_BYTES = 5 * 1024 * 1024;
 
 type SessionAuthInstance = NonNullable<ReturnType<typeof getCurrentInstance>> & {
   authType: "session";
@@ -294,14 +284,7 @@ export interface ZulipUserTopic {
   visibility_policy: number;
 }
 
-export interface ZulipRecentPrivateConversation {
-  // Что делает: список участников DM (включая текущего пользователя).
-  user_ids: number[];
-  // Что делает: id последнего сообщения в этом DM, если сервер его знает.
-  max_message_id: number | null;
-  // Что делает: список непрочитанных сообщений в DM для быстрого unread-индикатора.
-  unread_message_ids: number[];
-}
+export type { ZulipRecentPrivateConversation } from "./zulip.types";
 
 export interface SavedSnippet {
   id: number;
@@ -336,186 +319,6 @@ function resolveRealmRelativeUrl(path: string): string {
     return "";
   }
   return `${base}${normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`}`;
-}
-
-const userTopicsByInstance = new Map<string, ZulipUserTopic[]>();
-
-function buildUserTopicsCacheKey(realm: string, email: string): string {
-  return `${normalizeRealm(realm).toLowerCase()}::${email.trim().toLowerCase()}`;
-}
-
-function setCachedUserTopicsForKey(cacheKey: string, topics: ZulipUserTopic[]): void {
-  userTopicsByInstance.set(cacheKey, [...topics]);
-}
-
-function getCurrentUserTopicsCacheKey(): string | null {
-  const instance = getCurrentInstance();
-  if (!instance) {
-    return null;
-  }
-  return buildUserTopicsCacheKey(instance.realm, instance.email);
-}
-
-function isZulipUserTopic(value: unknown): value is ZulipUserTopic {
-  if (typeof value !== "object" || value == null) {
-    return false;
-  }
-  const data = value as Record<string, unknown>;
-  return (
-    typeof data.stream_id === "number" &&
-    typeof data.topic_name === "string" &&
-    typeof data.visibility_policy === "number"
-  );
-}
-
-function parseUserTopics(data: unknown): ZulipUserTopic[] | null {
-  if (!Array.isArray(data)) {
-    return null;
-  }
-  return data.filter(isZulipUserTopic);
-}
-
-// Что делает: нормализует список подписок из register payload.
-// Поднимает channel-level поля (`can_*_group`) в доменный формат.
-function parseSubscriptions(data: unknown): ZulipSubscription[] | null {
-  if (!Array.isArray(data)) {
-    return null;
-  }
-  const parsed: ZulipSubscription[] = [];
-  for (const row of data) {
-    if (typeof row !== "object" || row == null || Array.isArray(row)) {
-      continue;
-    }
-    const subscription = row as {
-      stream_id?: unknown;
-      name?: unknown;
-      is_muted?: unknown;
-      is_archived?: unknown;
-      in_home_view?: unknown;
-      invite_only?: unknown;
-      can_add_subscribers_group?: unknown;
-      can_remove_subscribers_group?: unknown;
-      can_administer_channel_group?: unknown;
-    };
-    if (!isPositiveInteger(subscription.stream_id) || typeof subscription.name !== "string") {
-      continue;
-    }
-    const canAddSubscribersGroup = normalizeGroupSettingValue(
-      subscription.can_add_subscribers_group,
-    );
-    const canRemoveSubscribersGroup = normalizeGroupSettingValue(
-      subscription.can_remove_subscribers_group,
-    );
-    const canAdministerChannelGroup = normalizeGroupSettingValue(
-      subscription.can_administer_channel_group,
-    );
-    parsed.push({
-      stream_id: subscription.stream_id,
-      name: subscription.name,
-      is_muted:
-        typeof subscription.is_muted === "boolean"
-          ? subscription.is_muted
-          : subscription.in_home_view === false,
-      ...(typeof subscription.is_archived === "boolean"
-        ? { is_archived: subscription.is_archived }
-        : {}),
-      ...(typeof subscription.invite_only === "boolean"
-        ? { invite_only: subscription.invite_only }
-        : {}),
-      ...(canAddSubscribersGroup != null
-        ? { can_add_subscribers_group: canAddSubscribersGroup }
-        : {}),
-      ...(canRemoveSubscribersGroup != null
-        ? { can_remove_subscribers_group: canRemoveSubscribersGroup }
-        : {}),
-      ...(canAdministerChannelGroup != null
-        ? { can_administer_channel_group: canAdministerChannelGroup }
-        : {}),
-    });
-  }
-  return parsed;
-}
-
-// Что делает: парсит список групп организации из register metadata.
-// Используется для расчета membership в channel-level permissions.
-function parseRealmUserGroups(data: unknown): ZulipRealmUserGroup[] | null {
-  if (!Array.isArray(data)) {
-    return null;
-  }
-  const parsed: ZulipRealmUserGroup[] = [];
-  for (const row of data) {
-    if (row == null || typeof row !== "object" || Array.isArray(row)) {
-      continue;
-    }
-    const record = row as Record<string, unknown>;
-    const id = record.id;
-    const name = record.name;
-    if (!isPositiveInteger(id) || typeof name !== "string") {
-      continue;
-    }
-    const members = Array.isArray(record.members)
-      ? Array.from(new Set(record.members.filter(isPositiveInteger))).sort(
-          (left, right) => left - right,
-        )
-      : [];
-    const directSubgroupIds = Array.isArray(record.direct_subgroup_ids)
-      ? Array.from(new Set(record.direct_subgroup_ids.filter(isPositiveInteger))).sort(
-          (left, right) => left - right,
-        )
-      : [];
-    parsed.push({
-      id,
-      name,
-      members,
-      direct_subgroup_ids: directSubgroupIds,
-      ...(typeof record.is_system_group === "boolean"
-        ? { is_system_group: record.is_system_group }
-        : {}),
-    });
-  }
-  return parsed;
-}
-
-function parseRealmCanAddSubscribersGroup(data: unknown) {
-  return normalizeGroupSettingValue(data);
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0;
-}
-
-// Что делает: безопасно читает recent_private_conversations из register-ответа и отфильтровывает битые данные.
-function parseRecentPrivateConversations(
-  data: unknown,
-): Record<string, ZulipRecentPrivateConversation> | null {
-  if (data == null || typeof data !== "object" || Array.isArray(data)) {
-    return null;
-  }
-
-  const entries = Object.entries(data as Record<string, unknown>);
-  if (entries.length === 0) {
-    return {};
-  }
-
-  const parsed: Record<string, ZulipRecentPrivateConversation> = {};
-  for (const [key, value] of entries) {
-    if (value == null || typeof value !== "object" || Array.isArray(value)) continue;
-    const record = value as Record<string, unknown>;
-    if (!Array.isArray(record.user_ids)) continue;
-    const userIds = record.user_ids.filter(isPositiveInteger);
-    if (userIds.length === 0) continue;
-    const unreadMessageIds = Array.isArray(record.unread_message_ids)
-      ? record.unread_message_ids.filter(isPositiveInteger)
-      : [];
-    const maxMessageId = isPositiveInteger(record.max_message_id) ? record.max_message_id : null;
-    parsed[key] = {
-      user_ids: Array.from(new Set(userIds)).sort((left, right) => left - right),
-      max_message_id: maxMessageId,
-      unread_message_ids: unreadMessageIds,
-    };
-  }
-
-  return parsed;
 }
 
 // Загружает server settings без авторизации.
@@ -762,6 +565,13 @@ async function zulipPipelineGet(
   }
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
 // `zulipPipelineGet` возвращает null при сетевой ошибке, если это не abort.
 // Message loader'ы должны бросать ошибку, чтобы вызывающий код показал ее пользователю,
 // а не принял пустой список за успешный ответ.
@@ -793,520 +603,28 @@ async function zulipPipelineDelete(path: string, body?: Record<string, string>) 
 
 // --- Real-time events API (register + get-events) ---
 
-// Зачем: по умолчанию подтягиваем metadata, чтобы быстрее собрать sidebar без полной истории сообщений.
-// `realm` — в т.ч. `server_thumbnail_formats`, а `realm_user_groups` нужен для channel-level permission checks.
-const DEFAULT_REGISTER_FETCH_EVENT_TYPES = [
-  "subscription",
-  "user_topic",
-  "recent_private_conversations",
-  "realm",
-  "realm_user_groups",
-] as const;
-const REGISTER_CLIENT_CAPABILITIES = {
-  notification_settings_null: true,
-  bulk_message_deletion: true,
-  user_avatar_url_field_optional: true,
-  stream_typing_notifications: true,
-  user_settings_object: true,
-  archived_channels: true,
-  empty_topic_name: true,
-} as const;
+export type { GetEventsResult, ZulipCredentials, ZulipEvent } from "./zulip.types";
 
-export interface ZulipEvent {
-  id: number;
-  type: string;
-  [key: string]: unknown;
-}
+export {
+  DEFAULT_REGISTER_FETCH_EVENT_TYPES,
+  deleteQueue,
+  fetchUnreadDmMessagesCountForCredentials,
+  fetchUnreadMessagesCountForCredentials,
+  getEvents,
+  getEventsForCredentials,
+  registerQueue,
+  registerQueueForCredentials,
+} from "./zulip-queue";
 
-export interface GetEventsResult {
-  result?: string;
-  msg?: string;
-  code?: string;
-  "retry-after"?: number;
-  events?: ZulipEvent[];
-  queue_id?: string;
-}
+export {
+  markDmAsRead,
+  markMessagesAsRead,
+  markStreamAsRead,
+  markTopicAsRead,
+  setTopicResolvedState,
+} from "./zulip-read-state";
 
-export interface ZulipCredentials {
-  realm: string;
-  email: string;
-  apiKey: string;
-}
-
-function getAuthValueForCredentials(credentials: ZulipCredentials): string {
-  const authValue = getBasicAuthValue({
-    email: credentials.email,
-    apiKey: credentials.apiKey,
-  });
-  if (!authValue) {
-    throw new Error(t("app.noInstance"));
-  }
-  return authValue;
-}
-
-function getValidatedCredentialsRealm(credentials: ZulipCredentials, context: string): string {
-  return normalizeRealm(guard.url(credentials.realm, `${context}.realm`));
-}
-
-function validateQueueId(queueId: string, context: string): string {
-  return guard.nonEmpty(queueId, `${context}.queueId`);
-}
-
-function validateEventCursor(lastEventId: number, context: string): number {
-  invariant(
-    Number.isInteger(lastEventId) && lastEventId >= -1,
-    `${context}.lastEventId must be an integer >= -1, got: ${lastEventId}`,
-  );
-  return lastEventId;
-}
-
-// Регистрирует очередь событий и возвращает `queue_id` для последующего long-polling.
-export async function registerQueue(
-  eventTypes: string[],
-  fetchEventTypes: string[] = [...DEFAULT_REGISTER_FETCH_EVENT_TYPES],
-): Promise<RegisterQueueResult> {
-  const body: Record<string, string> = {
-    event_types: JSON.stringify(eventTypes),
-    apply_markdown: "false",
-    // Что делает: просит сервер включать archived channels в register/events payload.
-    client_capabilities: JSON.stringify(REGISTER_CLIENT_CAPABILITIES),
-  };
-  if (fetchEventTypes.length > 0) {
-    // Что делает: просит Zulip добавить в register нужные metadata-поля.
-    body.fetch_event_types = JSON.stringify(fetchEventTypes);
-  }
-  const res = await zulipPipelinePost("register", body);
-  const data = res.data as {
-    result?: string;
-    msg?: string;
-    code?: string;
-    queue_id?: string;
-    last_event_id?: number;
-    event_queue_longpoll_timeout_seconds?: number;
-    subscriptions?: unknown;
-    user_topics?: unknown;
-    recent_private_conversations?: unknown;
-    realm_can_add_subscribers_group?: unknown;
-    realm_user_groups?: unknown;
-    server_thumbnail_formats?: unknown;
-    max_avatar_file_size_mib?: unknown;
-    realm_avatar_changes_disabled?: unknown;
-    server_avatar_changes_disabled?: unknown;
-  } | null;
-  if (data == null || typeof data !== "object") {
-    throw new Error(t("app.invalidResponse"));
-  }
-  if (data.result === "error") {
-    throw new Error(data.msg ?? data.code ?? t("app.queueRegistrationError"));
-  }
-  if (data.queue_id == null || data.last_event_id == null) {
-    throw new Error(t("app.invalidRegisterResponse"));
-  }
-
-  const subscriptions = parseSubscriptions(data.subscriptions);
-  const userTopics = parseUserTopics(data.user_topics);
-  const recentPrivateConversations = parseRecentPrivateConversations(
-    data.recent_private_conversations,
-  );
-  const realmCanAddSubscribersGroup = parseRealmCanAddSubscribersGroup(
-    data.realm_can_add_subscribers_group,
-  );
-  // Что делает: подхватывает группы организации, чтобы UI мог корректно решать channel-level права.
-  const realmUserGroups = parseRealmUserGroups(data.realm_user_groups);
-  const serverThumbnailFormats = parseServerThumbnailFormats(data.server_thumbnail_formats);
-  const maxAvatarFileSizeMib = parseMaxAvatarFileSizeMib(data.max_avatar_file_size_mib);
-  const realmAvatarChangesDisabled = parseAvatarChangesDisabledFlag(
-    data.realm_avatar_changes_disabled,
-  );
-  const serverAvatarChangesDisabled = parseAvatarChangesDisabledFlag(
-    data.server_avatar_changes_disabled,
-  );
-  const jitsiServerUrlEffective = parseRegisterResponseJitsiServerUrl(data);
-  const cacheKey = getCurrentUserTopicsCacheKey();
-  if (cacheKey && userTopics) {
-    setCachedUserTopicsForKey(cacheKey, userTopics);
-  }
-
-  return {
-    queue_id: data.queue_id,
-    last_event_id: data.last_event_id,
-    event_queue_longpoll_timeout_seconds: data.event_queue_longpoll_timeout_seconds,
-    ...(subscriptions ? { subscriptions } : {}),
-    ...(userTopics ? { user_topics: userTopics } : {}),
-    ...(recentPrivateConversations
-      ? { recent_private_conversations: recentPrivateConversations }
-      : {}),
-    ...(realmCanAddSubscribersGroup != null
-      ? { realm_can_add_subscribers_group: realmCanAddSubscribersGroup }
-      : {}),
-    ...(realmUserGroups ? { realm_user_groups: realmUserGroups } : {}),
-    ...(serverThumbnailFormats ? { server_thumbnail_formats: serverThumbnailFormats } : {}),
-    ...(maxAvatarFileSizeMib != null ? { max_avatar_file_size_mib: maxAvatarFileSizeMib } : {}),
-    ...(realmAvatarChangesDisabled != null
-      ? { realm_avatar_changes_disabled: realmAvatarChangesDisabled }
-      : {}),
-    ...(serverAvatarChangesDisabled != null
-      ? { server_avatar_changes_disabled: serverAvatarChangesDisabled }
-      : {}),
-    ...(jitsiServerUrlEffective ? { jitsi_server_url_effective: jitsiServerUrlEffective } : {}),
-  };
-}
-
-// Регистрирует очередь с явными credentials.
-// Используется для фоновых multi-org loop.
-export async function registerQueueForCredentials(
-  credentials: ZulipCredentials,
-  eventTypes: string[],
-  fetchEventTypes: string[] = [...DEFAULT_REGISTER_FETCH_EVENT_TYPES],
-): Promise<RegisterQueueResult> {
-  const base = getValidatedCredentialsRealm(credentials, "registerQueueForCredentials");
-  const authValue = getAuthValueForCredentials(credentials);
-  const url = `${base}${env.ZULIP_API_PATH}/register`;
-
-  let response: Response;
-  try {
-    response = await fetch(url.toString(), {
-      method: "POST",
-      headers: {
-        Authorization: authValue,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        event_types: JSON.stringify(eventTypes),
-        client_capabilities: JSON.stringify(REGISTER_CLIENT_CAPABILITIES),
-        // Зачем: background-loop для других инстансов должен получать такой же metadata-набор.
-        ...(fetchEventTypes.length > 0
-          ? { fetch_event_types: JSON.stringify(fetchEventTypes) }
-          : {}),
-      }).toString(),
-    });
-  } catch {
-    throw new Error(t("app.queueRegistrationError"));
-  }
-
-  let data: {
-    result?: string;
-    msg?: string;
-    code?: string;
-    queue_id?: string;
-    last_event_id?: number;
-    event_queue_longpoll_timeout_seconds?: number;
-    subscriptions?: unknown;
-    user_topics?: unknown;
-    recent_private_conversations?: unknown;
-    realm_can_add_subscribers_group?: unknown;
-    realm_user_groups?: unknown;
-    server_thumbnail_formats?: unknown;
-    max_avatar_file_size_mib?: unknown;
-    realm_avatar_changes_disabled?: unknown;
-    server_avatar_changes_disabled?: unknown;
-  };
-  try {
-    data = (await response.json()) as typeof data;
-  } catch {
-    throw new Error(t("app.invalidResponse"));
-  }
-
-  if (data.result === "error") {
-    throw new Error(data.msg ?? data.code ?? t("app.queueRegistrationError"));
-  }
-  if (data.queue_id == null || data.last_event_id == null) {
-    throw new Error(t("app.invalidRegisterResponse"));
-  }
-
-  const subscriptions = parseSubscriptions(data.subscriptions);
-  const userTopics = parseUserTopics(data.user_topics);
-  const recentPrivateConversations = parseRecentPrivateConversations(
-    data.recent_private_conversations,
-  );
-  const realmCanAddSubscribersGroup = parseRealmCanAddSubscribersGroup(
-    data.realm_can_add_subscribers_group,
-  );
-  // Что делает: подхватывает группы и для explicit-credentials/background режима.
-  const realmUserGroups = parseRealmUserGroups(data.realm_user_groups);
-  const serverThumbnailFormats = parseServerThumbnailFormats(data.server_thumbnail_formats);
-  const maxAvatarFileSizeMib = parseMaxAvatarFileSizeMib(data.max_avatar_file_size_mib);
-  const realmAvatarChangesDisabled = parseAvatarChangesDisabledFlag(
-    data.realm_avatar_changes_disabled,
-  );
-  const serverAvatarChangesDisabled = parseAvatarChangesDisabledFlag(
-    data.server_avatar_changes_disabled,
-  );
-  const jitsiServerUrlEffective = parseRegisterResponseJitsiServerUrl(data);
-  setCachedUserTopicsForKey(
-    buildUserTopicsCacheKey(credentials.realm, credentials.email),
-    userTopics ?? [],
-  );
-
-  return {
-    queue_id: data.queue_id,
-    last_event_id: data.last_event_id,
-    event_queue_longpoll_timeout_seconds: data.event_queue_longpoll_timeout_seconds,
-    ...(subscriptions ? { subscriptions } : {}),
-    ...(userTopics ? { user_topics: userTopics } : {}),
-    ...(recentPrivateConversations
-      ? { recent_private_conversations: recentPrivateConversations }
-      : {}),
-    ...(realmCanAddSubscribersGroup != null
-      ? { realm_can_add_subscribers_group: realmCanAddSubscribersGroup }
-      : {}),
-    ...(realmUserGroups ? { realm_user_groups: realmUserGroups } : {}),
-    ...(serverThumbnailFormats ? { server_thumbnail_formats: serverThumbnailFormats } : {}),
-    ...(maxAvatarFileSizeMib != null ? { max_avatar_file_size_mib: maxAvatarFileSizeMib } : {}),
-    ...(realmAvatarChangesDisabled != null
-      ? { realm_avatar_changes_disabled: realmAvatarChangesDisabled }
-      : {}),
-    ...(serverAvatarChangesDisabled != null
-      ? { server_avatar_changes_disabled: serverAvatarChangesDisabled }
-      : {}),
-    ...(jitsiServerUrlEffective ? { jitsi_server_url_effective: jitsiServerUrlEffective } : {}),
-  };
-}
-
-// Удаляет очередь событий.
-// Это best-effort cleanup при logout или переключении инстанса, поэтому ошибки глотаются.
-// Credentials нужно передавать явно при cleanup во время instance switch,
-// потому что `getCurrentInstance()` уже мог смениться.
-export async function deleteQueue(queueId: string, credentials?: ZulipCredentials): Promise<void> {
-  try {
-    const safeQueueId = queueId.trim();
-    if (safeQueueId.length === 0) return;
-
-    if (credentials == null) {
-      const inst = getCurrentInstance();
-      if (!inst) return;
-      await zulipPipelineDelete("events", { queue_id: safeQueueId });
-      return;
-    }
-
-    const base = getValidatedCredentialsRealm(credentials, "deleteQueue");
-    const url = `${base}${env.ZULIP_API_PATH}/events`;
-    const authValue = getBasicAuthValue({ email: credentials.email, apiKey: credentials.apiKey });
-    if (!authValue) return;
-    await fetch(url, {
-      method: "DELETE",
-      headers: {
-        Authorization: authValue,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({ queue_id: safeQueueId }).toString(),
-    });
-  } catch {
-    // Best-effort cleanup
-  }
-}
-
-const UNREAD_MESSAGES_NUM_BEFORE = 5000;
-const UNREAD_MESSAGES_NUM_AFTER = 0;
-const UNREAD_MESSAGES_NARROW = JSON.stringify([{ operator: "is", operand: "unread" }]);
-const UNREAD_DM_MESSAGES_NARROW = JSON.stringify([
-  { operator: "is", operand: "unread" },
-  { operator: "is", operand: "dm" },
-]);
-
-async function fetchUnreadMessagesCountForCredentialsWithNarrow(
-  credentials: ZulipCredentials,
-  narrow: string,
-  contextLabel: string,
-  options?: { signal?: AbortSignal },
-  parseCount: (payload: unknown) => number | null = parseUnreadMessagesCount,
-): Promise<number | null> {
-  let base: string;
-  try {
-    base = getValidatedCredentialsRealm(credentials, contextLabel);
-  } catch {
-    return null;
-  }
-  const url = new URL(`${base}${env.ZULIP_API_PATH}/messages`);
-  url.searchParams.set("anchor", "newest");
-  url.searchParams.set("num_before", String(UNREAD_MESSAGES_NUM_BEFORE));
-  url.searchParams.set("num_after", String(UNREAD_MESSAGES_NUM_AFTER));
-  url.searchParams.set("narrow", narrow);
-  url.searchParams.set("allow_empty_topic_name", "true");
-  url.searchParams.set("client_gravatar", "true");
-  const authValue = getBasicAuthValue({
-    email: credentials.email,
-    apiKey: credentials.apiKey,
-  });
-  if (authValue == null) return null;
-
-  let response: Response;
-  try {
-    response = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        Authorization: authValue,
-      },
-      signal: options?.signal,
-    });
-  } catch {
-    return null;
-  }
-
-  if (!response.ok) return null;
-
-  try {
-    const payload = (await response.json()) as unknown;
-    return parseCount(payload);
-  } catch {
-    return null;
-  }
-}
-
-// Читает общее число непрочитанных сообщений для любых instance credentials.
-// Если запрос упал или payload не удалось распарсить, возвращает null.
-export async function fetchUnreadMessagesCountForCredentials(
-  credentials: ZulipCredentials,
-  options?: { signal?: AbortSignal },
-): Promise<number | null> {
-  return fetchUnreadMessagesCountForCredentialsWithNarrow(
-    credentials,
-    UNREAD_MESSAGES_NARROW,
-    "fetchUnreadMessagesCountForCredentials",
-    options,
-  );
-}
-
-/** Unread direct messages only — for app icon badges (dock / tray / favicon). */
-export async function fetchUnreadDmMessagesCountForCredentials(
-  credentials: ZulipCredentials,
-  options?: { signal?: AbortSignal },
-): Promise<number | null> {
-  return fetchUnreadMessagesCountForCredentialsWithNarrow(
-    credentials,
-    UNREAD_DM_MESSAGES_NARROW,
-    "fetchUnreadDmMessagesCountForCredentials",
-    options,
-    parseUnreadDmMessagesCount,
-  );
-}
-
-// Делает long-poll за событиями. Поддерживает timeout и `AbortSignal`.
-export async function getEvents(
-  queueId: string,
-  lastEventId: number,
-  options?: { timeoutSec?: number; signal?: AbortSignal },
-): Promise<GetEventsResult> {
-  const safeQueueId = validateQueueId(queueId, "getEvents");
-  const safeLastEventId = validateEventCursor(lastEventId, "getEvents");
-  ensureZulipApiReady();
-
-  const controller = new AbortController();
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  if (options?.timeoutSec != null && options.timeoutSec > 0) {
-    timeoutId = setTimeout(() => controller.abort(), options.timeoutSec * 1000);
-  }
-
-  const onAbort = () => {
-    if (timeoutId != null) clearTimeout(timeoutId);
-    controller.abort();
-  };
-  if (options?.signal) {
-    options.signal.addEventListener("abort", onAbort);
-  }
-  const signal = controller.signal;
-
-  const cleanup = () => {
-    if (timeoutId != null) clearTimeout(timeoutId);
-    if (options?.signal) {
-      options.signal.removeEventListener("abort", onAbort);
-    }
-  };
-
-  try {
-    const res = await zulipApi.get(
-      "/events",
-      {
-        queue_id: safeQueueId,
-        last_event_id: String(safeLastEventId),
-      },
-      signal,
-    );
-    cleanup();
-    const data = res.data;
-    if (data == null || typeof data !== "object") {
-      return { result: "error", msg: "Invalid JSON in event response" };
-    }
-    return data;
-  } catch (e) {
-    cleanup();
-    throw e;
-  }
-}
-
-// Делает long-poll за событиями с явными credentials.
-// Используется для фоновых multi-org loop.
-export async function getEventsForCredentials(
-  credentials: ZulipCredentials,
-  queueId: string,
-  lastEventId: number,
-  options?: { timeoutSec?: number; signal?: AbortSignal },
-): Promise<GetEventsResult> {
-  const safeQueueId = validateQueueId(queueId, "getEventsForCredentials");
-  const safeLastEventId = validateEventCursor(lastEventId, "getEventsForCredentials");
-  const base = getValidatedCredentialsRealm(credentials, "getEventsForCredentials");
-  const authValue = getAuthValueForCredentials(credentials);
-  const url = new URL(`${base}${env.ZULIP_API_PATH}/events`);
-  url.searchParams.set("queue_id", safeQueueId);
-  url.searchParams.set("last_event_id", String(safeLastEventId));
-
-  const controller = new AbortController();
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  if (options?.timeoutSec != null && options.timeoutSec > 0) {
-    timeoutId = setTimeout(() => controller.abort(), options.timeoutSec * 1000);
-  }
-
-  const onAbort = () => {
-    if (timeoutId != null) clearTimeout(timeoutId);
-    controller.abort();
-  };
-  if (options?.signal) {
-    options.signal.addEventListener("abort", onAbort);
-  }
-
-  const cleanup = () => {
-    if (timeoutId != null) clearTimeout(timeoutId);
-    if (options?.signal) {
-      options.signal.removeEventListener("abort", onAbort);
-    }
-  };
-
-  try {
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        Authorization: authValue,
-      },
-      signal: controller.signal,
-    });
-
-    let payload: unknown;
-    try {
-      payload = (await response.json()) as unknown;
-    } catch {
-      cleanup();
-      return { result: "error", msg: "Invalid JSON in event response" };
-    }
-    cleanup();
-
-    if (payload == null || typeof payload !== "object") {
-      return { result: "error", msg: "Invalid JSON in event response" };
-    }
-
-    const data = payload as GetEventsResult;
-    if (!response.ok && data.result == null) {
-      return {
-        ...data,
-        result: "error",
-        msg: data.msg ?? t("app.errorStatus", { status: String(response.status) }),
-      };
-    }
-    return data;
-  } catch (e) {
-    cleanup();
-    throw e;
-  }
-}
+export { uploadFile } from "./zulip-upload";
 
 export interface ZulipCurrentUser {
   user_id: number;
@@ -1314,158 +632,12 @@ export interface ZulipCurrentUser {
   email: string;
 }
 
-function validateMessageIds(messageIds: number[], context: string): number[] {
-  return messageIds.map((messageId, index) => guard.messageId(messageId, `${context}[${index}]`));
-}
-
-// Помечает сообщения как прочитанные. Вызывается при открытии чата.
-export async function markMessagesAsRead(messageIds: number[]): Promise<void> {
-  if (messageIds.length === 0) return;
-  const validatedMessageIds = validateMessageIds(messageIds, "markMessagesAsRead.messageIds");
-  await zulipPipelinePost("messages/flags", {
-    messages: JSON.stringify(validatedMessageIds),
-    op: "add",
-    flag: "read",
-  });
-}
-
-// Массово помечает все сообщения в DM-чате как прочитанные.
-export async function markDmAsRead(userIds: number[]): Promise<boolean> {
-  const validatedUserIds = guard
-    .nonEmptyArray(userIds, "markDmAsRead.userIds")
-    .map((userId) => guard.userId(userId, "markDmAsRead.userIds"));
-  const res = await zulipPipelinePost("messages/flags/narrow", {
-    anchor: "newest",
-    include_anchor: "false",
-    num_before: "5000",
-    num_after: "0",
-    narrow: JSON.stringify([{ operator: "dm", operand: validatedUserIds }]),
-    op: "add",
-    flag: "read",
-  });
-  return res.ok;
-}
-
-// Массово помечает все сообщения в стриме как прочитанные.
-export async function markStreamAsRead(streamId: number): Promise<boolean> {
-  guard.streamId(streamId, "markStreamAsRead");
-  const res = await zulipPipelinePost("messages/flags/narrow", {
-    anchor: "newest",
-    include_anchor: "false",
-    num_before: "5000",
-    num_after: "0",
-    narrow: JSON.stringify([{ operator: "stream", operand: streamId }]),
-    op: "add",
-    flag: "read",
-  });
-  return res.ok;
-}
-
-// Массово помечает все сообщения в теме стрима как прочитанные.
-export async function markTopicAsRead(streamId: number, topic: string): Promise<boolean> {
-  guard.streamId(streamId, "markTopicAsRead");
-  const normalizedTopic = normalizeTopicForIdentity(topic);
-  const res = await zulipPipelinePost("messages/flags/narrow", {
-    anchor: "newest",
-    include_anchor: "false",
-    num_before: "5000",
-    num_after: "0",
-    narrow: JSON.stringify([
-      { operator: "stream", operand: streamId },
-      { operator: "topic", operand: zulipTopicNarrowOperandForApi(normalizedTopic) },
-    ]),
-    op: "add",
-    flag: "read",
-  });
-  return res.ok;
-}
-
-// Помечает тему стрима как resolved или unresolved,
-// переименовывая весь тред темы.
-//
-// В Zulip resolved-модель основана на соглашении по имени темы,
-// обычно это префикс с галочкой. Для этого PATCH'им первое сообщение темы
-// с `propagate_mode=change_all`.
-export async function setTopicResolvedState(
-  streamId: number,
-  topic: string,
-  resolved: boolean,
-): Promise<boolean> {
-  guard.streamId(streamId, "setTopicResolvedState.streamId");
-  const normalizedTopic = normalizeTopicForIdentity(topic);
-  const targetTopic = resolved
-    ? toResolvedTopicName(normalizedTopic)
-    : toUnresolvedTopicName(normalizedTopic);
-
-  if (targetTopic === normalizedTopic) {
-    return true;
-  }
-
-  const anchorMessageResponse = await zulipPipelineGet("/messages", {
-    anchor: "oldest",
-    num_before: "0",
-    num_after: "1",
-    include_anchor: "true",
-    allow_empty_topic_name: "true",
-    client_gravatar: "false",
-    apply_markdown: "false",
-    narrow: JSON.stringify([
-      { operator: "stream", operand: streamId },
-      { operator: "topic", operand: zulipTopicNarrowOperandForApi(normalizedTopic) },
-    ]),
-  });
-
-  if (!anchorMessageResponse?.ok) {
-    return false;
-  }
-
-  const anchorData = anchorMessageResponse.data as {
-    result?: string;
-    messages?: { id?: number }[];
-  };
-  if (anchorData.result === "error") {
-    return false;
-  }
-
-  const anchorMessageId = anchorData.messages?.[0]?.id;
-  if (anchorMessageId == null) {
-    return false;
-  }
-  guard.messageId(anchorMessageId, "setTopicResolvedState.anchorMessageId");
-
-  const patchResponse = await zulipPipelinePatch(`messages/${anchorMessageId}`, {
-    topic: targetTopic,
-    propagate_mode: "change_all",
-    send_notification_to_old_thread: "false",
-    send_notification_to_new_thread: "false",
-    send_webhook_notifications: "false",
-  });
-
-  if (!patchResponse.ok) {
-    return false;
-  }
-
-  const patchData = patchResponse.data as { result?: string };
-  return patchData.result !== "error";
-}
-
 export async function getCurrentUser(): Promise<ZulipCurrentUser | null> {
   const res = await zulipPipelineGet("/users/me");
   if (!res?.ok) {
     return null;
   }
-  const data = res.data as {
-    result?: string;
-    user_id?: number;
-    full_name?: string;
-    email?: string;
-  };
-  if (data.result === "error" || data.user_id == null) return null;
-  return {
-    user_id: data.user_id,
-    full_name: data.full_name ?? "",
-    email: data.email ?? "",
-  };
+  return parseCurrentUserFromApiData(res.data);
 }
 
 // Карта `user_id -> relative avatar_url`.
@@ -1648,6 +820,7 @@ interface MessageWindowOptions {
   includeAnchor?: boolean;
   narrow?: { operator: string; operand: string | number | number[] }[];
   applyMarkdown?: boolean;
+  signal?: AbortSignal;
   // Если поле задано и включен `CHAT_LIST_FLOW_DEBUG`,
   // логирует запрос и ответ `GET /messages` для bootstrap sidebar.
   flowDebugLabel?: string;
@@ -1681,8 +854,12 @@ async function fetchMessageWindow(options: MessageWindowOptions): Promise<ZulipR
     includeAnchor,
     narrow,
     applyMarkdown = false,
+    signal,
     flowDebugLabel,
   } = options;
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
   if (flowDebugLabel != null) {
     logChatListFlow(`api: GET /messages → ${flowDebugLabel} (request)`, {
       anchor,
@@ -1693,17 +870,24 @@ async function fetchMessageWindow(options: MessageWindowOptions): Promise<ZulipR
       applyMarkdown,
     });
   }
-  const res = await zulipPipelineGet("/messages", {
-    anchor: String(anchor),
-    ...(includeAnchor == null ? {} : { include_anchor: includeAnchor ? "true" : "false" }),
-    num_before: String(numBefore),
-    num_after: String(numAfter),
-    ...(narrow == null ? {} : { narrow: JSON.stringify(narrow) }),
-    client_gravatar: "true",
-    allow_empty_topic_name: "true",
-    apply_markdown: applyMarkdown ? "true" : "false",
-  });
-  throwIfZulipPipelineGetNull(res);
+  const res = await zulipPipelineGet(
+    "/messages",
+    {
+      anchor: String(anchor),
+      ...(includeAnchor == null ? {} : { include_anchor: includeAnchor ? "true" : "false" }),
+      num_before: String(numBefore),
+      num_after: String(numAfter),
+      ...(narrow == null ? {} : { narrow: JSON.stringify(narrow) }),
+      client_gravatar: "true",
+      allow_empty_topic_name: "true",
+      apply_markdown: applyMarkdown ? "true" : "false",
+    },
+    signal,
+  );
+  throwIfZulipPipelineGetNull(res, signal);
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
   if (!res.ok) {
     if (flowDebugLabel != null) {
       logChatListFlow(`api: GET /messages → ${flowDebugLabel} (non-ok)`, { ok: false });
@@ -1728,16 +912,94 @@ async function fetchMessageWindow(options: MessageWindowOptions): Promise<ZulipR
   return messages;
 }
 
-// Загружает последние 1000 сообщений без narrow,
-// чтобы собрать список чатов и каналов в sidebar.
-export async function fetchRecentMessages(): Promise<ZulipRawMessage[]> {
+// Загружает последние сообщения без narrow (default 1000) для sidebar bootstrap fallback.
+export async function fetchRecentMessages(numBefore = 1000): Promise<ZulipRawMessage[]> {
   return fetchMessageWindow({
     anchor: "newest",
-    numBefore: 1000,
+    numBefore,
     numAfter: 0,
     applyMarkdown: false,
     flowDebugLabel: "fetchRecentMessages (chat list bootstrap / reconnect fallback)",
   });
+}
+
+/** Recent channel messages only (`-is:dm`) for metadata-first stream sidebar preview. */
+export async function fetchRecentStreamMessagesForSidebarPreview(
+  numBefore = 5000,
+  signal?: AbortSignal,
+): Promise<ZulipRawMessage[]> {
+  const safeNumBefore = validateNonNegativeInteger(
+    numBefore,
+    "fetchRecentStreamMessagesForSidebarPreview.numBefore",
+  );
+  return fetchMessageWindow({
+    anchor: "newest",
+    numBefore: safeNumBefore,
+    numAfter: 0,
+    narrow: normalizeZulipMessagesNarrowForApi(buildStreamSidebarPreviewNarrow(false)),
+    applyMarkdown: false,
+    signal,
+    flowDebugLabel: "fetchRecentStreamMessagesForSidebarPreview (metadata stream preview)",
+  });
+}
+
+/** Recent messages in one channel for lazy sidebar topic previews. */
+export async function fetchStreamChannelMessagesForSidebarTopics(
+  streamId: number,
+  numBefore = STREAM_SIDEBAR_TOPIC_HYDRATE_LIMIT,
+  signal?: AbortSignal,
+): Promise<ZulipRawMessage[]> {
+  guard.streamId(streamId, "fetchStreamChannelMessagesForSidebarTopics");
+  const safeNumBefore = validateNonNegativeInteger(
+    numBefore,
+    "fetchStreamChannelMessagesForSidebarTopics.numBefore",
+  );
+  return fetchMessageWindow({
+    anchor: "newest",
+    numBefore: safeNumBefore,
+    numAfter: ZULIP_STREAM_CHAT_NUM_AFTER,
+    narrow: [{ operator: "stream", operand: streamId }],
+    applyMarkdown: false,
+    signal,
+    flowDebugLabel: "fetchStreamChannelMessagesForSidebarTopics (sidebar topic hydrate)",
+  });
+}
+
+/** Unread channel messages only (`is:unread` + `-is:dm`) for metadata-first stream sidebar preview. */
+export async function fetchStreamUnreadMessagesForSidebarPreview(
+  numBefore = 5000,
+  signal?: AbortSignal,
+): Promise<ZulipRawMessage[] | null> {
+  const safeNumBefore = validateNonNegativeInteger(
+    numBefore,
+    "fetchStreamUnreadMessagesForSidebarPreview.numBefore",
+  );
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  const res = await zulipPipelineGet(
+    "/messages",
+    {
+      anchor: "newest",
+      num_before: String(safeNumBefore),
+      num_after: "0",
+      narrow: JSON.stringify(
+        normalizeZulipMessagesNarrowForApi(buildStreamSidebarPreviewNarrow(true)),
+      ),
+      client_gravatar: "true",
+      allow_empty_topic_name: "true",
+      apply_markdown: "false",
+    },
+    signal,
+  );
+  if (!res?.ok) {
+    return null;
+  }
+  const data = res.data as { result?: string; messages?: ZulipRawMessage[] };
+  if (!data || data.result === "error") {
+    return null;
+  }
+  return data.messages ?? [];
 }
 
 // Загружает более старые сообщения chat-list до anchor.
@@ -1762,6 +1024,8 @@ export async function fetchMessagesBeforeAnchor(
 export async function fetchMessagesAfterAnchor(
   anchorMessageId: number,
   numAfter = 5000,
+  narrow?: MessageWindowOptions["narrow"],
+  signal?: AbortSignal,
 ): Promise<ZulipRawMessage[]> {
   guard.messageId(anchorMessageId, "fetchMessagesAfterAnchor.anchorMessageId");
   return fetchMessageWindow({
@@ -1769,7 +1033,9 @@ export async function fetchMessagesAfterAnchor(
     numBefore: 0,
     numAfter,
     includeAnchor: false,
+    narrow,
     applyMarkdown: false,
+    signal,
     flowDebugLabel: "fetchMessagesAfterAnchor (chat list delta / reconnect)",
   });
 }
@@ -2067,7 +1333,7 @@ export function fetchUserTopics(): Promise<ZulipUserTopic[]> {
   if (!cacheKey) {
     return Promise.resolve([]);
   }
-  return Promise.resolve([...(userTopicsByInstance.get(cacheKey) ?? [])]);
+  return Promise.resolve(getCachedUserTopicsForKey(cacheKey));
 }
 
 export async function fetchStreams(): Promise<MockStream[]> {
@@ -2505,6 +1771,14 @@ export async function fetchTopics(stream: string): Promise<string[]> {
   return (data.topics ?? []).map((t) => t.name);
 }
 
+/** Loads topic names for a stream id (used for sidebar expand topic list). */
+export async function fetchStreamTopicNames(streamId: number): Promise<string[]> {
+  guard.streamId(streamId, "fetchStreamTopicNames.streamId");
+  const client = await getClient();
+  const data = await client.streams.topics.retrieve({ stream_id: streamId });
+  return (data.topics ?? []).map((t) => t.name);
+}
+
 export interface SendMessageParams {
   // Для stream message: имя стрима. Если используется `to` для private, поле опускается.
   stream?: string;
@@ -2770,213 +2044,6 @@ export async function updateMessageFlags(
     op,
     flag: validatedFlag,
   });
-}
-
-function toUploadUri(data: unknown): string {
-  const response = data as { uri?: string; url?: string };
-  const uri = response.uri ?? response.url;
-  if (!uri) {
-    throw new Error("No URI returned from upload");
-  }
-  return uri;
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    (error instanceof DOMException && error.name === "AbortError") ||
-    (error instanceof Error && error.name === "AbortError")
-  );
-}
-
-function buildTusMetadata(file: File): string {
-  const encode = (value: string) => Buffer.from(value, "utf-8").toString("base64");
-  const parts = [`filename ${encode(file.name)}`];
-  if (file.type) {
-    parts.push(`type ${encode(file.type)}`);
-  }
-  return parts.join(",");
-}
-
-function resolveTusUploadUrl(locationHeader: string, apiBaseUrl: string): string {
-  if (locationHeader.startsWith("http://") || locationHeader.startsWith("https://")) {
-    return locationHeader;
-  }
-  return new URL(locationHeader, `${apiBaseUrl}/`).toString();
-}
-
-function parseUploadOffset(headers: Headers): number {
-  const raw = headers.get("Upload-Offset") ?? headers.get("upload-offset") ?? "0";
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return 0;
-  }
-  return parsed;
-}
-
-async function findTusUploadedAttachmentPath(
-  apiBaseUrl: string,
-  authValue: string,
-  expectedName: string,
-  expectedSize: number,
-  signal?: AbortSignal,
-): Promise<string | null> {
-  const res = await fetch(`${apiBaseUrl}/attachments`, {
-    method: "GET",
-    headers: { Authorization: authValue },
-    signal,
-  });
-  if (!res.ok) {
-    return null;
-  }
-
-  const payload = (await res.json()) as { attachments?: unknown };
-  if (!Array.isArray(payload.attachments)) {
-    return null;
-  }
-
-  let bestMatch: { pathId: string; createTime: number } | null = null;
-  for (const item of payload.attachments) {
-    if (item == null || typeof item !== "object") continue;
-    const row = item as Record<string, unknown>;
-    const name = typeof row.name === "string" ? row.name : "";
-    const size = typeof row.size === "number" ? row.size : -1;
-    const pathId = typeof row.path_id === "string" ? row.path_id : "";
-    const createTime = typeof row.create_time === "number" ? row.create_time : 0;
-    if (!pathId || name !== expectedName || size !== expectedSize) continue;
-    if (bestMatch == null || createTime > bestMatch.createTime) {
-      bestMatch = { pathId, createTime };
-    }
-  }
-
-  return bestMatch?.pathId ?? null;
-}
-
-async function uploadFileViaTus(
-  file: File,
-  credentials: ZulipCredentials,
-  options?: { signal?: AbortSignal },
-): Promise<string> {
-  const authValue = getBasicAuthValue({
-    email: credentials.email,
-    apiKey: credentials.apiKey,
-  });
-  if (authValue == null) {
-    throw new Error(t("app.noInstance"));
-  }
-
-  const apiBaseUrl = `${normalizeRealm(credentials.realm)}${env.ZULIP_API_PATH}`;
-  const createRes = await fetch(`${apiBaseUrl}/tus`, {
-    method: "POST",
-    headers: {
-      Authorization: authValue,
-      "Tus-Resumable": TUS_VERSION,
-      "Upload-Length": String(file.size),
-      "Upload-Metadata": buildTusMetadata(file),
-    },
-    signal: options?.signal,
-  });
-  if (!createRes.ok) {
-    throw new Error(t("app.errorStatus", { status: String(createRes.status) }));
-  }
-
-  const location = createRes.headers.get("location") ?? createRes.headers.get("Location");
-  if (!location) {
-    throw new Error("TUS: Location header is missing");
-  }
-  const uploadUrl = resolveTusUploadUrl(location, apiBaseUrl);
-
-  const headRes = await fetch(uploadUrl, {
-    method: "HEAD",
-    headers: {
-      Authorization: authValue,
-      "Tus-Resumable": TUS_VERSION,
-    },
-    signal: options?.signal,
-  });
-  if (!headRes.ok) {
-    throw new Error(t("app.errorStatus", { status: String(headRes.status) }));
-  }
-
-  let offset = parseUploadOffset(headRes.headers);
-  while (offset < file.size) {
-    const nextOffset = Math.min(offset + TUS_CHUNK_SIZE_BYTES, file.size);
-    const chunk = file.slice(offset, nextOffset);
-    const patchRes = await fetch(uploadUrl, {
-      method: "PATCH",
-      headers: {
-        Authorization: authValue,
-        "Tus-Resumable": TUS_VERSION,
-        "Upload-Offset": String(offset),
-        "Content-Type": "application/offset+octet-stream",
-        "Content-Length": String(chunk.size),
-      },
-      body: chunk,
-      signal: options?.signal,
-    });
-    if (!patchRes.ok) {
-      throw new Error(t("app.errorStatus", { status: String(patchRes.status) }));
-    }
-    const serverOffset = parseUploadOffset(patchRes.headers);
-    offset = serverOffset > offset ? serverOffset : nextOffset;
-  }
-
-  const pathId = await findTusUploadedAttachmentPath(
-    apiBaseUrl,
-    authValue,
-    file.name,
-    file.size,
-    options?.signal,
-  );
-  if (!pathId) {
-    throw new Error("TUS: uploaded file not found in attachments");
-  }
-
-  return `/user_uploads/${pathId}`;
-}
-
-async function uploadFileMultipart(
-  file: File,
-  options?: { signal?: AbortSignal },
-): Promise<string> {
-  const form = new FormData();
-  form.append("file", file);
-  const res =
-    options?.signal != null
-      ? await zulipApi.postFormData("/user_uploads", form, options.signal)
-      : await zulipApi.postFormData("/user_uploads", form);
-  if (!res.ok) {
-    const data = res.data as { msg?: string };
-    throw new Error(data.msg ?? t("app.errorStatus", { status: String(res.status) }));
-  }
-  return toUploadUri(res.data);
-}
-
-// Загружает файл в Zulip.
-// Для больших файлов использует TUS, иначе multipart fallback.
-export async function uploadFile(file: File, options?: { signal?: AbortSignal }): Promise<string> {
-  ensureZulipApiReady();
-  const instance = getCurrentInstance();
-  if (!instance) {
-    throw new Error(t("app.noInstance"));
-  }
-  const validation = validateFileUpload(file);
-  if (!validation.valid) {
-    throw new Error(validation.error ?? "File validation failed");
-  }
-
-  if (file.size > TUS_UPLOAD_THRESHOLD_BYTES) {
-    try {
-      return await uploadFileViaTus(file, instance, options);
-    } catch (error) {
-      if (isAbortError(error) || options?.signal?.aborted) {
-        throw error;
-      }
-      // Сохраняем совместимость с серверами без поддержки TUS.
-      return uploadFileMultipart(file, options);
-    }
-  }
-
-  return uploadFileMultipart(file, options);
 }
 
 // Добавляет флаг сообщениям, например `starred`.

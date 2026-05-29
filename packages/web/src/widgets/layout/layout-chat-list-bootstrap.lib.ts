@@ -5,42 +5,107 @@
  * Pass `isStale` / `signal` from the layout effect so superseded runs (React Strict Mode, remount)
  * skip hydrate and API after awaits — avoids duplicate IDB paint + duplicate GET /messages.
  */
+import { filterStreamMessagesForSidebar } from "~/entities/chat-list/chat-list-stream-preview-from-messages.lib";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import {
   fetchMessagesAfterAnchor,
-  fetchMessagesBeforeAnchor,
-  fetchRecentMessages,
+  fetchRecentStreamMessagesForSidebarPreview,
+  fetchStreamUnreadMessagesForSidebarPreview,
 } from "~/shared/api/zulip";
 import type { ZulipRawMessage } from "~/shared/api/zulip.types";
+import { METADATA_STREAM_PREVIEW_MESSAGE_LIMIT } from "~/shared/config/metadata-chat-bootstrap.constants";
 import { loadChatListSnapshotRow } from "~/shared/lib/chat-list-snapshot-db";
-import { env } from "~/shared/lib/env";
 import {
   logChatListFlow,
   summarizeZulipMessagesForFlowDebug,
 } from "~/shared/lib/message-flow-debug.lib";
-import { loadDeepHistoryMessages } from "./layout-chat-history-sync.lib";
+import { buildStreamSidebarPreviewNarrow } from "~/shared/lib/zulip-stream-sidebar-preview-narrow.lib";
+import { normalizeZulipMessagesNarrowForApi } from "~/shared/lib/zulip-topic-narrow.lib";
+import { getInMemoryLatestMessageId, maxMessageId } from "./layout-chat-list-latest-message-id.lib";
 
-// Что делает: размер одной страницы при подгрузке старой истории.
-const CHAT_HISTORY_BATCH_SIZE = 5000;
-// Зачем: ограничивает глубину bootstrap, чтобы не перегружать сеть и UI.
-const CHAT_HISTORY_MAX_BATCHES = 5;
-// Что делает: верхняя граница дельты после снапшота.
-const DELTA_AFTER_ANCHOR_LIMIT = 5000;
+/** Stream preview batch size (metadata-first bootstrap). */
+export function getStreamPreviewBatchLimit(): number {
+  return METADATA_STREAM_PREVIEW_MESSAGE_LIMIT;
+}
 
 export type ChatListBootstrapResult =
-  | { mode: "full"; messages: ZulipRawMessage[]; latestMessageIdHint: number | null }
-  | { mode: "delta"; messages: ZulipRawMessage[]; latestMessageIdHint: number | null }
+  | { mode: "streamPreviews"; messages: ZulipRawMessage[]; latestMessageIdHint: number | null }
   | { mode: "none"; latestMessageIdHint: number | null };
+
+export type ChatListBootstrapKind = "cold" | "reconnect";
 
 export interface RunChatListBootstrapOptions {
   /** When aborted, skips further work after awaits (fetch cannot be cancelled here yet). */
   signal?: AbortSignal;
   /** When true, this bootstrap was superseded (effect cleanup / newer mount) — skip hydrate and network. */
   isStale?: () => boolean;
+  /**
+   * `cold` — hydrate/clear from IndexedDB then fetch (initial load).
+   * `reconnect` — keep in-memory sidebar, delta from max(IDB hint, in-memory anchor).
+   */
+  kind?: ChatListBootstrapKind;
 }
 
 function isBootstrapSuperseded(options?: RunChatListBootstrapOptions): boolean {
   return (options?.signal?.aborted ?? false) || (options?.isStale?.() ?? false);
+}
+
+/** One batch of stream messages for sidebar preview in metadata-first (no unread reconcile). */
+async function fetchStreamPreviewMessageBatch(
+  hint: number | null,
+  options?: RunChatListBootstrapOptions,
+): Promise<ZulipRawMessage[]> {
+  const limit = getStreamPreviewBatchLimit();
+
+  if (hint != null) {
+    try {
+      if (isBootstrapSuperseded(options)) {
+        return [];
+      }
+      logChatListFlow("bootstrap: stream preview delta after anchor", {
+        lastMessageId: hint,
+        limit,
+      });
+      const delta = await fetchMessagesAfterAnchor(
+        hint,
+        limit,
+        normalizeZulipMessagesNarrowForApi(buildStreamSidebarPreviewNarrow(false)),
+        options?.signal,
+      );
+      if (isBootstrapSuperseded(options)) {
+        return [];
+      }
+      return filterStreamMessagesForSidebar(delta);
+    } catch {
+      if (isBootstrapSuperseded(options)) {
+        return [];
+      }
+      logChatListFlow("bootstrap: stream preview delta failed, falling back", { hint });
+    }
+  }
+
+  if (isBootstrapSuperseded(options)) {
+    return [];
+  }
+
+  logChatListFlow("bootstrap: stream preview unread snapshot (channels only)", { limit });
+  const unread = await fetchStreamUnreadMessagesForSidebarPreview(limit, options?.signal);
+  if (isBootstrapSuperseded(options)) {
+    return [];
+  }
+  const streamUnread = filterStreamMessagesForSidebar(unread ?? []);
+  if (streamUnread.length > 0) {
+    return streamUnread;
+  }
+
+  logChatListFlow("bootstrap: stream preview recent messages (unread snapshot empty)", {
+    limit,
+  });
+  const recent = await fetchRecentStreamMessagesForSidebarPreview(limit, options?.signal);
+  if (isBootstrapSuperseded(options)) {
+    return [];
+  }
+  return filterStreamMessagesForSidebar(recent);
 }
 
 export async function runChatListBootstrap(
@@ -52,10 +117,9 @@ export async function runChatListBootstrap(
     return { mode: "none", latestMessageIdHint: null };
   }
 
-  logChatListFlow("bootstrap: runChatListBootstrap (start)", {
-    instanceId,
-    metadataChatBootstrap: env.METADATA_CHAT_BOOTSTRAP_ENABLED,
-  });
+  const kind = options?.kind ?? "cold";
+
+  logChatListFlow("bootstrap: runChatListBootstrap (start)", { instanceId, kind });
 
   const snap = await loadChatListSnapshotRow(instanceId);
   if (isBootstrapSuperseded(options)) {
@@ -63,86 +127,26 @@ export async function runChatListBootstrap(
     return { mode: "none", latestMessageIdHint: null };
   }
 
-  if (snap) {
-    useChatListStore.getState().hydrateFromIndexedDbSnapshot(snap);
-  } else {
-    useChatListStore.getState().clear();
-    logChatListFlow("bootstrap: no IDB snapshot, store cleared", { instanceId });
-  }
-
-  const hint = snap?.lastMessageId ?? null;
-
-  if (snap?.lastMessageId != null) {
-    try {
-      if (isBootstrapSuperseded(options)) {
-        logChatListFlow("bootstrap: superseded before delta fetch", { instanceId });
-        return { mode: "none", latestMessageIdHint: hint };
-      }
-      logChatListFlow("bootstrap: attempting delta after lastMessageId", {
-        lastMessageId: snap.lastMessageId,
-        limit: DELTA_AFTER_ANCHOR_LIMIT,
-      });
-      const delta = await fetchMessagesAfterAnchor(snap.lastMessageId, DELTA_AFTER_ANCHOR_LIMIT);
-      if (isBootstrapSuperseded(options)) {
-        logChatListFlow("bootstrap: superseded after delta fetch (result discarded)", {
-          instanceId,
-        });
-        return { mode: "none", latestMessageIdHint: hint };
-      }
-      logChatListFlow("bootstrap: delta path success", {
-        ...summarizeZulipMessagesForFlowDebug(delta),
-        latestMessageIdHint: hint,
-      });
-      return { mode: "delta", messages: delta, latestMessageIdHint: hint };
-    } catch {
-      if (isBootstrapSuperseded(options)) {
-        logChatListFlow("bootstrap: superseded during delta error path", { instanceId });
-        return { mode: "none", latestMessageIdHint: hint };
-      }
-      logChatListFlow("bootstrap: delta fetch failed", {
-        metadataChatBootstrap: env.METADATA_CHAT_BOOTSTRAP_ENABLED,
-      });
-      if (env.METADATA_CHAT_BOOTSTRAP_ENABLED) {
-        // Зачем: в metadata-first режиме не проваливаемся в тяжелый full-bootstrap.
-        return { mode: "none", latestMessageIdHint: hint };
-      }
-      // fall through to full bootstrap
+  if (kind === "cold") {
+    if (snap) {
+      useChatListStore.getState().hydrateFromIndexedDbSnapshot(snap);
+    } else {
+      useChatListStore.getState().clear();
+      logChatListFlow("bootstrap: no IDB snapshot, store cleared", { instanceId });
     }
   }
 
-  if (env.METADATA_CHAT_BOOTSTRAP_ENABLED) {
-    // Что делает: оставляем восстановление списка чатов на metadata + события + фоновый backfill.
-    logChatListFlow("bootstrap: mode none (metadata-first, no full message window)", {
-      latestMessageIdHint: hint,
-    });
-    return { mode: "none", latestMessageIdHint: hint };
-  }
+  const idbHint = snap?.lastMessageId ?? null;
+  const hint = kind === "reconnect" ? maxMessageId(idbHint, getInMemoryLatestMessageId()) : idbHint;
 
+  const streamMessages = await fetchStreamPreviewMessageBatch(hint, options);
   if (isBootstrapSuperseded(options)) {
-    logChatListFlow("bootstrap: superseded before full path fetch", { instanceId });
+    logChatListFlow("bootstrap: superseded after stream preview fetch", { instanceId });
     return { mode: "none", latestMessageIdHint: hint };
   }
-
-  logChatListFlow("bootstrap: full path (recent + deep history)", {});
-  const initialMessages = await fetchRecentMessages();
-  if (isBootstrapSuperseded(options)) {
-    logChatListFlow("bootstrap: superseded after fetchRecentMessages", { instanceId });
-    return { mode: "none", latestMessageIdHint: hint };
-  }
-  const full = await loadDeepHistoryMessages({
-    initialMessages,
-    fetchOlderMessages: (anchorId, numBefore) => fetchMessagesBeforeAnchor(anchorId, numBefore),
-    pageSize: CHAT_HISTORY_BATCH_SIZE,
-    maxBatches: CHAT_HISTORY_MAX_BATCHES,
-  });
-  if (isBootstrapSuperseded(options)) {
-    logChatListFlow("bootstrap: superseded after deep history merge", { instanceId });
-    return { mode: "none", latestMessageIdHint: hint };
-  }
-  logChatListFlow("bootstrap: full path merged", {
-    ...summarizeZulipMessagesForFlowDebug(full),
+  logChatListFlow("bootstrap: streamPreviews", {
     latestMessageIdHint: hint,
+    ...summarizeZulipMessagesForFlowDebug(streamMessages),
   });
-
-  return { mode: "full", messages: full, latestMessageIdHint: hint };
+  return { mode: "streamPreviews", messages: streamMessages, latestMessageIdHint: hint };
 }

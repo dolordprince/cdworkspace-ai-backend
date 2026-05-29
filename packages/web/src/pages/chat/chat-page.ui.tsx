@@ -2,6 +2,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { resolvePersonalDmSidebarTitle } from "~/entities/chat-list/chat-list-format.lib";
+import { createOnDmMessagesAppliedHandler } from "~/entities/chat-list/chat-list-sync-dm-from-window.lib";
+import { createOnStreamMessagesAppliedHandler } from "~/entities/chat-list/chat-list-sync-stream-from-window.lib";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { resolveHydratedDraftBootstrap } from "~/entities/draft/draft-chat-bootstrap.lib";
 import {
@@ -31,6 +33,7 @@ import {
   buildStreamTypingChatKey,
 } from "~/features/typing-indicator/typing-key";
 import { t } from "~/i18n/i18n";
+import { getCurrentInstance } from "~/shared/api/client";
 import {
   fetchMessageById,
   getRealmBaseUrl,
@@ -50,7 +53,11 @@ import { normalizeDmRouteUserIds } from "~/shared/lib/dm-route.lib";
 import { getPresenceState, formatLastSeen } from "~/shared/lib/format";
 import { buildJitsiMeetingUrl, type JitsiLinkOptions } from "~/shared/lib/jitsi";
 import { createLogger } from "~/shared/lib/logger";
-import { logMessageFlow, summarizeChatContextForLog } from "~/shared/lib/message-flow-debug.lib";
+import {
+  logMessageFlow,
+  logScrollReadFlow,
+  summarizeChatContextForLog,
+} from "~/shared/lib/message-flow-debug.lib";
 import {
   createMessageIdSet,
   messageIdsMissingFromBothLists,
@@ -228,6 +235,15 @@ export const ChatPage: React.FC = () => {
     () => countUnreadMessages(messages, currentUserId),
     [messages, currentUserId],
   );
+
+  useEffect(() => {
+    logScrollReadFlow("read:firstUnreadChange", {
+      context: summarizeChatContextForLog(chatContextForMessages),
+      firstUnreadId: firstUnreadId ?? null,
+      unreadCount,
+    });
+  }, [firstUnreadId, unreadCount, chatContextForMessages]);
+
   const setContext = useCurrentChatMessagesStore((s) => s.setContext);
   const appendMessageToStore = useCurrentChatMessagesStore((s) => s.appendMessage);
   const commitOutgoingMessageToStore = useCurrentChatMessagesStore((s) => s.commitOutgoingMessage);
@@ -242,6 +258,15 @@ export const ChatPage: React.FC = () => {
   const loadInitialMessagesForContext = useCurrentChatMessagesStore(
     (s) => s.loadInitialMessagesForContext,
   );
+  const onDmMessagesApplied = useMemo(
+    () =>
+      createOnDmMessagesAppliedHandler({
+        getInstanceId: () => getCurrentInstance()?.id ?? null,
+        getCurrentUserId: () => useChatListStore.getState().currentUserId,
+      }),
+    [],
+  );
+  const onStreamMessagesApplied = useMemo(() => createOnStreamMessagesAppliedHandler(), []);
   const loadOlderBoundaryPage = useCurrentChatMessagesStore((s) => s.loadOlderBoundaryPage);
   const loadNewerBoundaryPage = useCurrentChatMessagesStore((s) => s.loadNewerBoundaryPage);
   const boundaryLoadFailed = useCurrentChatMessagesStore((s) => s.boundaryLoadFailed);
@@ -836,6 +861,7 @@ export const ChatPage: React.FC = () => {
       focusedMessageId,
       currentUserId,
       signal: initialLoadController.signal,
+      onStreamMessagesApplied,
       // Что делает: фиксирует момент cache-first гидрации для UI-флагов.
       onCacheHydrated: () => {
         if (!initialLoadController.signal.aborted) {
@@ -888,6 +914,7 @@ export const ChatPage: React.FC = () => {
     focusedMessageId,
     currentUserId,
     loadInitialMessagesForContext,
+    onStreamMessagesApplied,
     isFocusedMessageLoadedInCurrentRoute,
     messagesReloadNonce,
     setActionError,
@@ -948,6 +975,7 @@ export const ChatPage: React.FC = () => {
       focusedMessageId,
       currentUserId,
       signal: initialLoadController.signal,
+      onDmMessagesApplied,
       // Что делает: фиксирует момент cache-first гидрации для UI-флагов.
       onCacheHydrated: () => {
         if (!initialLoadController.signal.aborted) {
@@ -996,6 +1024,7 @@ export const ChatPage: React.FC = () => {
     focusedMessageId,
     currentUserId,
     loadInitialMessagesForContext,
+    onDmMessagesApplied,
     isFocusedMessageLoadedInCurrentRoute,
     messagesReloadNonce,
     setActionError,
@@ -1797,7 +1826,7 @@ export const ChatPage: React.FC = () => {
   }, []);
 
   return (
-    <div className="flex max-h-full min-h-0 min-w-0 max-w-narrow-page flex-1 flex-col overflow-hidden">
+    <div className="flex max-h-full min-h-0 min-w-0 max-w-chat-page flex-1 flex-col overflow-hidden">
       {/* Forward message modal */}
       <Dialog.Root
         open={forwardMessages.length > 0}

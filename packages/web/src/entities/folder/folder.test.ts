@@ -6,7 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceFolder } from "~/shared/api/workspace-client";
-import { getFolders, mapWorkspaceFoldersToRail } from "./folder.api";
+import { getFolders, mapWorkspaceFoldersToRail } from "~/shared/api/workspace-client";
 
 const { workspaceApi } = vi.hoisted(() => {
   const get = vi.fn();
@@ -45,7 +45,7 @@ function makeFolderPayload(overrides: Record<string, unknown> = {}): WorkspaceFo
     unread_messages: [],
     system_type: "created",
     ...overrides,
-  } as WorkspaceFolder;
+  };
 }
 
 // Pure mapping function — no mocks needed.
@@ -199,6 +199,11 @@ describe("getFolders", () => {
 
     await getFolders();
 
-    expect(workspaceApi.getWithBase).toHaveBeenCalledWith("https://zulip.test", "/v1/folders/");
+    expect(workspaceApi.getWithBase).toHaveBeenCalledWith(
+      "https://zulip.test",
+      "/v1/folders/",
+      undefined,
+      undefined,
+    );
   });
 });

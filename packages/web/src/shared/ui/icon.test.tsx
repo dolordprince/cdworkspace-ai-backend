@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { Icon, ICON_NAMES } from "./icon";
-import type { IconName } from "./icon";
 
 const ICONS_DIR = (() => {
   const packageRelative = resolve(process.cwd(), "src/shared/assets/icons");
@@ -28,7 +27,7 @@ describe("Icon", () => {
   });
 
   it("returns null for unknown icon names", () => {
-    const { container } = render(<Icon name={"__unknown__" as IconName} />);
+    const { container } = render(<Icon name={"__unknown__"} />);
     expect(container).toBeEmptyDOMElement();
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });

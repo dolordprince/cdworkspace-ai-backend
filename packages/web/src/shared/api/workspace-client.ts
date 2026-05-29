@@ -12,25 +12,27 @@
 import {
   createV1FoldersFolderUuidItems,
   deleteV1FoldersFolderUuidItemsFolderItemUuid,
-  filterV1FoldersFolderUuidItems,
+  filterV1Folders,
   filterV1Services,
+  FolderItemCreateChatType,
   getV1FoldersFolderUuidItemsFolderItemUuid,
   updateV1FoldersFolderUuidItemsFolderItemUuid,
 } from "workspace-api/workspace-api.generated";
 import { guard, invariant } from "~/shared/lib/guards";
 import { isValidUrl } from "~/shared/lib/validation";
-import { getCurrentInstance, getWorkspaceApiBaseForCurrentInstance, workspaceApi } from "./client";
-import { WorkspaceApiHttpError } from "./workspace-orval-mutator";
+import { getCurrentInstance } from "./client";
 import type {
-  FolderFilter,
+  FilterV1Folders200Item,
+  FilterV1Folders200ItemItemsItem,
+  FilterV1Folders200ItemItemsItemChatType,
   FolderItemCreate,
   ServiceFilter,
 } from "workspace-api/workspace-api.generated";
 
 const inFlightWorkspaceGets = new Map<string, Promise<unknown>>();
 
-/** Folder row from Workspace OpenAPI — re-exported for callers typing `getFolders()`. */
-export type WorkspaceFolder = FolderFilter;
+/** Folder row from `GET /v1/folders/` (nested items included). */
+export type WorkspaceFolder = FilterV1Folders200Item;
 
 type WorkspaceFolderSystemType = "created" | "all";
 export type WorkspaceFolderRailSystemType = WorkspaceFolderSystemType | "personal" | "channels";
@@ -84,18 +86,19 @@ function countFolderUnreadMessages(unreadMessages: readonly unknown[]): number {
   return unreadMessages.reduce<number>((sum, entry) => sum + countUnreadEntry(entry), 0);
 }
 
-function isWorkspaceFolder(value: unknown): value is FolderFilter {
+function isWorkspaceFolder(value: unknown): value is WorkspaceFolder {
   if (!isRecord(value)) {
     return false;
   }
   const bg = value.background_color_value;
   const bgOk = bg === undefined || bg === null || (typeof bg === "number" && Number.isFinite(bg));
   const unreadOk = value.unread_messages == null || Array.isArray(value.unread_messages);
+  const titleOk = value.title === undefined || typeof value.title === "string";
   return (
     typeof value.uuid === "string" &&
-    typeof value.created_at === "string" &&
-    typeof value.updated_at === "string" &&
-    typeof value.title === "string" &&
+    (value.created_at === undefined || typeof value.created_at === "string") &&
+    (value.updated_at === undefined || typeof value.updated_at === "string") &&
+    titleOk &&
     bgOk &&
     unreadOk &&
     (value.system_type === "created" ||
@@ -178,20 +181,10 @@ export async function getWorkspaceServices(): Promise<WorkspaceServiceForClient[
     .filter((service): service is WorkspaceServiceForClient => service != null);
 }
 
-/** Fetches all workspace folders. */
+/** Fetches all workspace folders (items nested in each folder row). */
 export async function getFolders(): Promise<WorkspaceFolder[]> {
   return workspaceGetDeduped("/v1/folders/", async () => {
-    const base = getWorkspaceApiBaseForCurrentInstance();
-    const res = await workspaceApi.getWithBase(base, "/v1/folders/");
-    if (!res.ok) {
-      const statusText = res.raw?.statusText ? ` ${res.raw.statusText}` : "";
-      throw new WorkspaceApiHttpError(
-        `Workspace API error: ${res.status}${statusText}`,
-        res.status,
-        res.data,
-      );
-    }
-    const data = res.data;
+    const data = await filterV1Folders();
     return Array.isArray(data) ? data.filter(isWorkspaceFolder) : [];
   });
 }
@@ -208,7 +201,7 @@ export interface WorkspaceFolderForRail {
 export function mapWorkspaceFoldersToRail(folders: WorkspaceFolder[]): WorkspaceFolderForRail[] {
   return folders.map((f) => ({
     id: f.uuid ?? "",
-    label: f.title,
+    label: f.title ?? "",
     backgroundColor: f.background_color_value ?? 0,
     badge: (() => {
       const unreadCount = countFolderUnreadMessages(f.unread_messages ?? []);
@@ -236,7 +229,7 @@ function parseFolderItemOrderIndex(value: unknown): number {
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
     return value;
   }
-  if (typeof value === "string" && /^[0-9]+$/.test(value.trim())) {
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
     const parsed = Number(value.trim());
     if (Number.isInteger(parsed) && parsed >= 0) {
       return parsed;
@@ -256,17 +249,24 @@ function parseFolderItemChatId(value: unknown): string | null {
   return null;
 }
 
-function mapToFolderItemForClient(
-  raw: unknown,
+function encodeFolderItemChatId(
+  chatType: FilterV1Folders200ItemItemsItemChatType | undefined,
+  chatId: string,
+): string {
+  if (chatType === "stream" && /^\d+$/.test(chatId)) {
+    return `stream:${chatId}:general`;
+  }
+  return chatId;
+}
+
+function mapFolderListItemToClient(
+  raw: FilterV1Folders200ItemItemsItem,
   requestFolderUuid: string,
 ): FolderItemForClient | null {
-  if (!isRecord(raw)) {
-    return null;
-  }
   const uuid = typeof raw.uuid === "string" ? raw.uuid.trim() : "";
-  const folderUuidRaw = typeof raw.folder_uuid === "string" ? raw.folder_uuid.trim() : "";
-  const folderUuid = folderUuidRaw.length > 0 ? folderUuidRaw : requestFolderUuid.trim();
-  const chatId = parseFolderItemChatId(raw.chat_id);
+  const folderUuid = requestFolderUuid.trim();
+  const chatIdRaw = raw.chat_id != null ? parseFolderItemChatId(raw.chat_id) : null;
+  const chatId = chatIdRaw != null ? encodeFolderItemChatId(raw.chat_type, chatIdRaw) : null;
   if (uuid.length === 0 || folderUuid.length === 0 || chatId == null) {
     return null;
   }
@@ -282,6 +282,26 @@ function mapToFolderItemForClient(
     createdAt,
     updatedAt,
   };
+}
+
+/** Parses folder items from a folder row returned by `getFolders()`. */
+export function mapWorkspaceFolderItems(folder: WorkspaceFolder): FolderItemForClient[] {
+  const folderUuid = typeof folder.uuid === "string" ? folder.uuid.trim() : "";
+  if (folderUuid.length === 0) {
+    return [];
+  }
+  const rawItems = folder.items;
+  if (!Array.isArray(rawItems)) {
+    return [];
+  }
+  const result: FolderItemForClient[] = [];
+  for (const rawItem of rawItems) {
+    const mapped = mapFolderListItemToClient(rawItem, folderUuid);
+    if (mapped != null) {
+      result.push(mapped);
+    }
+  }
+  return result;
 }
 
 function validateFolderUuid(folderUuid: string): string {
@@ -308,19 +328,19 @@ function parseNumericFolderChatId(chatId: string): number | null {
   const trimmed = chatId.trim();
   if (!trimmed) return null;
 
-  const decimalMatch = /^[0-9]+$/.exec(trimmed);
+  const decimalMatch = /^\d+$/.exec(trimmed);
   if (decimalMatch) {
     const parsed = Number(trimmed);
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
-  const streamMatch = /^stream:([0-9]+)(?::.*)?$/.exec(trimmed);
+  const streamMatch = /^stream:(\d+)(?::.*)?$/.exec(trimmed);
   if (streamMatch?.[1]) {
     const parsed = Number(streamMatch[1]);
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
   }
 
-  const singleDmMatch = /^dm:([0-9]+)$/.exec(trimmed);
+  const singleDmMatch = /^dm:(\d+)$/.exec(trimmed);
   if (singleDmMatch?.[1]) {
     const parsed = Number(singleDmMatch[1]);
     return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
@@ -337,31 +357,28 @@ function parseChatIdToApiInteger(chatId: string): number | null {
   return null;
 }
 
-function folderItemCreateStub(chatId: number): FolderItemCreate {
+function inferChatTypeForCreate(chatId: string): FolderItemCreateChatType {
+  const trimmed = chatId.trim();
+  if (/^stream:\d+/.test(trimmed)) {
+    return FolderItemCreateChatType.stream;
+  }
+  if (trimmed.startsWith("dm:")) {
+    return FolderItemCreateChatType.private;
+  }
+  return FolderItemCreateChatType.private;
+}
+
+function folderItemCreateStub(
+  chatId: number,
+  chatType: FolderItemCreateChatType,
+): FolderItemCreate {
   const now = new Date().toISOString();
   return {
     created_at: now,
     updated_at: now,
     chat_id: chatId,
+    chat_type: chatType,
   };
-}
-
-/** Fetches all chat assignments within a folder. */
-export async function getFolderItems(folderUuid: string): Promise<FolderItemForClient[]> {
-  const safeFolderUuid = validateFolderUuid(folderUuid);
-  const data = await filterV1FoldersFolderUuidItems(safeFolderUuid);
-  if (!Array.isArray(data)) {
-    return [];
-  }
-
-  const result: FolderItemForClient[] = [];
-  for (const rawItem of data) {
-    const mapped = mapToFolderItemForClient(rawItem, safeFolderUuid);
-    if (mapped != null) {
-      result.push(mapped);
-    }
-  }
-  return result;
 }
 
 /** Assigns a chat to a folder. Returns true on success. */
@@ -373,7 +390,8 @@ export async function addChatToFolder(folderUuid: string, chatId: string): Promi
     if (chatIdNum == null) {
       return false;
     }
-    await createV1FoldersFolderUuidItems(safeFolderUuid, folderItemCreateStub(chatIdNum));
+    const chatType = inferChatTypeForCreate(safeChatId);
+    await createV1FoldersFolderUuidItems(safeFolderUuid, folderItemCreateStub(chatIdNum, chatType));
     return true;
   } catch {
     return false;

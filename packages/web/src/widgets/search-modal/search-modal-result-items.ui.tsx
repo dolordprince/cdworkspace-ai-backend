@@ -1,9 +1,7 @@
 import React from "react";
-import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
 import { useUsersStore } from "~/entities/user/user.model";
 import { t } from "~/i18n/i18n";
 import type { MockMessage } from "~/shared/api/zulip.types";
-import { getPresenceState } from "~/shared/lib/format";
 import { plainTextPreviewFromMessageBody } from "~/shared/lib/message-markdown-display.lib";
 import { Icon } from "~/shared/ui/icon";
 import { PresenceIndicator } from "~/shared/ui/presence-indicator";
@@ -37,7 +35,7 @@ export const SearchResultItem = React.memo(function SearchResultItem({
         <button
           type="button"
           onClick={onSelect}
-          className="hover:bg-bg-elevated/70 mt-0.5 rounded p-1 text-text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-text-primary"
+          className="hover:bg-bg-elevated/70 mt-0.5 rounded p-1 text-text-muted opacity-0 transition-opacity hover:text-text-primary group-hover:opacity-100"
           aria-label={t("message.openInChat")}
           title={t("message.openInChat")}
         >

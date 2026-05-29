@@ -4,7 +4,7 @@
  * Three runtimes:
  * - Electron → ipcRenderer (native OS notifications via main process)
  * - PWA/Browser → Web Notifications API
- * - Fallback → in-app toast (not implemented here, use a toast lib)
+ * - In-app toasts for user-action errors → `~/shared/lib/toast/toast`
  *
  * Usage:
  *   import { notificationService } from "~/lib/notifications";
@@ -43,15 +43,18 @@ function createElectronNotificationService(): NotificationService {
 
     requestPermission: () => Promise.resolve("granted" as const),
 
-    async show({ title, body }) {
+    async show({ title, body, tag, silent }) {
       const api = getElectronAPI();
       if (api) {
-        await api.notifications.show(title, body);
+        await api.notifications.show(title, body, { tag, silent });
       }
     },
 
-    closeByTag(_tag: string) {
-      return Promise.resolve();
+    async closeByTag(tag: string) {
+      const api = getElectronAPI();
+      if (api?.notifications.closeByTag) {
+        await api.notifications.closeByTag(tag);
+      }
     },
 
     async setBadgeCount(_count: number) {

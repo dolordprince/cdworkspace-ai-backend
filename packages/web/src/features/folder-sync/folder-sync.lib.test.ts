@@ -6,7 +6,10 @@ import {
   aliasAllFolderItemsCacheKeys,
   mergeFolderItemsSnapshot,
   resolveFolderItemsRequestUuid,
+  resolveFolderUuidsForPollingItemsRefresh,
   resolvePinScopeFolderUuid,
+  resolveSelectedFolderId,
+  shouldLoadFolderItemsForSelection,
   sidebarFolderItemsMembershipPending,
   withDefaultSystemFolders,
 } from "./folder-sync.lib";
@@ -47,6 +50,47 @@ describe("resolveFolderItemsRequestUuid", () => {
 
   it("passes through created folder uuid unchanged", () => {
     expect(resolveFolderItemsRequestUuid("folder-created-1", apiAllUuid)).toBe("folder-created-1");
+  });
+});
+
+describe("resolveFolderUuidsForPollingItemsRefresh", () => {
+  const railFolders = [
+    { id: SYSTEM_ALL_FOLDER_ID, systemType: "all" as const },
+    { id: "folder-a", systemType: "created" as const },
+    { id: "folder-b", systemType: "created" as const },
+  ];
+
+  it("includes selected created folder, stale folders, and folders missing from cache", () => {
+    const uuids = resolveFolderUuidsForPollingItemsRefresh({
+      foldersFromApi: [
+        { uuid: "api-all", system_type: "all" },
+        { uuid: "folder-a", system_type: "created" },
+        { uuid: "folder-b", system_type: "created" },
+      ],
+      folderItemsByFolderId: new Map([["folder-a", []]]),
+      staleFolderIds: new Set(["folder-c"]),
+      selectedFolderId: "folder-b",
+      foldersForRail: railFolders,
+      allFolderApiUuid: "api-all",
+    });
+
+    expect(uuids).toContain("folder-b");
+    expect(uuids).toContain("folder-c");
+    expect(uuids).not.toContain("folder-a");
+    expect(uuids).not.toContain("api-all");
+  });
+
+  it("skips system folders for selection", () => {
+    const uuids = resolveFolderUuidsForPollingItemsRefresh({
+      foldersFromApi: [{ uuid: "api-all", system_type: "all" }],
+      folderItemsByFolderId: new Map(),
+      staleFolderIds: new Set(),
+      selectedFolderId: SYSTEM_ALL_FOLDER_ID,
+      foldersForRail: [{ id: SYSTEM_ALL_FOLDER_ID, systemType: "all" }],
+      allFolderApiUuid: "api-all",
+    });
+
+    expect(uuids).not.toContain("api-all");
   });
 });
 
@@ -145,5 +189,62 @@ describe("sidebarFolderItemsMembershipPending", () => {
     expect(
       sidebarFolderItemsMembershipPending([createdFolder], "folder-1", new Map([["folder-1", []]])),
     ).toBe(false);
+  });
+});
+
+const folders = [
+  { id: "all", systemType: "all" as const },
+  { id: "system:personal", systemType: "personal" as const },
+  { id: "system:channels", systemType: "channels" as const },
+  { id: "folder-1", systemType: "created" as const },
+  { id: "folder-2", systemType: "created" as const },
+] as const;
+const unsortedFoldersWithSystemAll = [
+  { id: "folder-1", systemType: "created" as const },
+  { id: "all", systemType: "all" as const },
+] as const;
+const onlyAllFolder = [{ id: "system:all", systemType: "all" as const }] as const;
+
+describe("resolveSelectedFolderId", () => {
+  it("falls back to the first folder when selected id is unknown", () => {
+    expect(resolveSelectedFolderId(folders, "1")).toBe("all");
+  });
+
+  it("keeps existing selection when folder id exists", () => {
+    expect(resolveSelectedFolderId(folders, "folder-1")).toBe("folder-1");
+  });
+
+  it("falls back to all-folder when it is the only available folder", () => {
+    expect(resolveSelectedFolderId(onlyAllFolder, "unknown")).toBe("system:all");
+  });
+});
+
+describe("shouldLoadFolderItemsForSelection", () => {
+  it("does not load folder items for unknown selected id", () => {
+    expect(shouldLoadFolderItemsForSelection(folders, "1")).toBe(false);
+  });
+
+  it("does not load folder items for all-folder selection", () => {
+    expect(shouldLoadFolderItemsForSelection(folders, "all")).toBe(false);
+  });
+
+  it("does not load folder items for personal system-folder selection", () => {
+    expect(shouldLoadFolderItemsForSelection(folders, "system:personal")).toBe(false);
+  });
+
+  it("does not load folder items for channels system-folder selection", () => {
+    expect(shouldLoadFolderItemsForSelection(folders, "system:channels")).toBe(false);
+  });
+
+  it("loads folder items for valid custom folders", () => {
+    expect(shouldLoadFolderItemsForSelection(folders, "folder-2")).toBe(true);
+  });
+
+  it("loads folder items for created folder even when all-folder is not first", () => {
+    expect(shouldLoadFolderItemsForSelection(unsortedFoldersWithSystemAll, "folder-1")).toBe(true);
+  });
+
+  it("does not load folder items when only all-folder exists", () => {
+    expect(shouldLoadFolderItemsForSelection(onlyAllFolder, "system:all")).toBe(false);
   });
 });

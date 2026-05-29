@@ -17,7 +17,13 @@
     "underDevelopment": "Раздел в разработке",
     "webModeUnavailable": "Раздел временно недоступен в веб-режиме.",
     "offline": "Нет подключения к интернету",
-    "rateLimitResume": "Соединение восстановится через {{seconds}} с"
+    "rateLimitResume": "Соединение восстановится через {{seconds}} с",
+    "connectionFailed": "Не удалось подключиться к серверу",
+    "connectionDegraded": "Проблемы с соединением — показаны сохранённые данные",
+    "reconnecting": "Переподключение…",
+    "retryConnection": "Повторить",
+    "reloadApp": "Обновить страницу",
+    "retryIn": "Повтор через {{seconds}} с"
   },
   "auth": {
     "server": "Сервер",
@@ -411,6 +417,12 @@
     "logsRuntimeAll": "Все рантаймы",
     "logsResetFilters": "Сбросить фильтры",
     "logsResults": "{{visible}} из {{total}} записей",
+    "logsSourceFilter": "Источник логов",
+    "logsSourceAll": "Все источники",
+    "logsSourceApi": "API",
+    "logsSourceActions": "Действия",
+    "logsSourceConsole": "Консоль",
+    "logsSourceApp": "Приложение",
     "logsLevelFilter": "Уровень логов",
     "logsLevelAll": "Все уровни",
     "logsLevelDebug": "Debug",
@@ -474,7 +486,12 @@
   },
   "notifications": {
     "notifications": "Уведомления",
-    "newMessage": "Новое сообщение"
+    "newMessage": "Новое сообщение",
+    "permissionBannerTitle": "Включить уведомления на рабочем столе?",
+    "permissionBannerBody": "Получайте оповещения о новых сообщениях и упоминаниях, когда вкладка в фоне.",
+    "permissionBannerEnable": "Включить уведомления",
+    "permissionBannerEnabling": "Подключение…",
+    "permissionBannerDismiss": "Не сейчас"
   },
   "downloads": {
     "open": "Открыть загрузки",
@@ -537,7 +554,10 @@
     "folderName": "Название папки",
     "color": "Цвет",
     "preview": "Пример",
-    "save": "Сохранить"
+    "save": "Сохранить",
+    "createFailed": "Не удалось создать папку",
+    "updateFailed": "Не удалось обновить папку",
+    "deleteFailed": "Не удалось удалить папку"
   },
   "inbox": {
     "title": "Входящие",

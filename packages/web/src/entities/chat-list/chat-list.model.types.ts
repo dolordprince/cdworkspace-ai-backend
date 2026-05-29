@@ -1,5 +1,6 @@
 // Типы Zustand-store для chat-list.
 // Здесь описаны состояние и публичные actions, которые используют layout/widgets.
+import type { ZulipUnreadMessagesSnapshot } from "~/shared/api/zulip-unread.lib";
 import type { ZulipGroupSettingValue, ZulipRawMessage } from "~/shared/api/zulip.types";
 import type { ChatListSnapshotSerialized } from "~/shared/lib/chat-list-snapshot-serialize.lib";
 import type {
@@ -89,8 +90,23 @@ export interface ChatListState {
     messages: readonly ZulipRawMessage[],
     currentUserId: number | null,
   ) => void;
+  /** Authoritative unread reconcile from register `unread_msgs` buckets. */
+  reconcileUnreadFromSnapshot: (
+    snapshot: ZulipUnreadMessagesSnapshot,
+    currentUserId: number | null,
+  ) => void;
   addMessage: (message: ZulipRawMessage) => void;
   addMessages: (messages: ZulipRawMessage[]) => void;
+  /**
+   * Adds `messageIdToLocation` entries for unread messages without touching previews/unread totals.
+   * Needed so `update_message_flags(read)` can decrement totals for messages that were loaded in the open chat
+   * but not previously indexed by sidebar bootstrap/lazy hydrate.
+   */
+  upsertUnreadMessageLocations: (messages: ZulipRawMessage[]) => void;
+  /** Stream/topic preview only — does not bump unread (metadata-first stream batch). */
+  applyStreamSidebarPreviewsFromMessages: (messages: ZulipRawMessage[]) => void;
+  /** Ensures topic shells exist for a stream (used when expanding channel in sidebar). */
+  upsertStreamTopicShells: (streamId: number, topics: string[]) => void;
   // Что делает: добавляет каналы в список из metadata, даже если сообщений по ним нет в памяти.
   upsertStreamMetadataRows: (rows: ChatListStreamMetadataRow[]) => void;
   /** Marks stream metadata readiness from authoritative subscriptions sources. */

@@ -225,17 +225,18 @@ UC-AUTH-04:
 
 ## 11. Notifications
 
-| ID        | Use Case                                                      | Actor  | Status |
-| --------- | ------------------------------------------------------------- | ------ | ------ |
-| UC-NTF-01 | Request notification permission                               | System | `[x]`  |
-| UC-NTF-02 | Desktop notification on new message (when tab is not focused) | System | `[x]`  |
-| UC-NTF-03 | Push notification via Firebase FCM (background tab / closed)  | System | `[x]`  |
-| UC-NTF-04 | Register FCM token on Zulip server                            | System | `[x]`  |
-| UC-NTF-05 | Click notification → focus tab + navigate to chat             | User   | `[x]`  |
-| UC-NTF-06 | Dismiss notification when message is read                     | System | `[x]`  |
-| UC-NTF-07 | Sound alert on new message                                    | System | `[x]`  |
-| UC-NTF-08 | Muted chats do not generate notifications                     | System | `[x]`  |
-| UC-NTF-09 | Badge count (unread) on app icon                              | System | `[x]`  |
+| ID        | Use Case                                                                                | Actor  | Status |
+| --------- | --------------------------------------------------------------------------------------- | ------ | ------ |
+| UC-NTF-01 | Request notification permission                                                         | System | `[x]`  |
+| UC-NTF-02 | Desktop notification on new message (offscreen or tab unfocused; Zulip server triggers) | System | `[x]`  |
+| UC-NTF-03 | Push notification via Firebase FCM (background tab / closed)                            | System | `[x]`  |
+| UC-NTF-04 | Register FCM token on Zulip server                                                      | System | `[x]`  |
+| UC-NTF-05 | Click notification → focus tab + navigate to chat                                       | User   | `[x]`  |
+| UC-NTF-06 | Dismiss notification when message is read                                               | System | `[x]`  |
+| UC-NTF-07 | Sound alert per Zulip audible settings (no double OS + app sound)                       | System | `[x]`  |
+| UC-NTF-08 | Muted streams/topics do not generate notifications                                      | System | `[x]`  |
+| UC-NTF-10 | Notification triggers follow Zulip `user_settings` from server                          | System | `[x]`  |
+| UC-NTF-09 | Badge count (unread) on app icon                                                        | System | `[x]`  |
 
 ---
 
@@ -282,17 +283,20 @@ UC-AUTH-04:
 
 ## 15. Profile and Settings
 
-| ID        | Use Case                                     | Actor | Status |
-| --------- | -------------------------------------------- | ----- | ------ |
-| UC-PRF-01 | View own profile (name, email, avatar, role) | User  | `[x]`  |
-| UC-PRF-02 | View another user's profile (right panel)    | User  | `[x]`  |
-| UC-PRF-03 | Edit own profile                             | User  | `[x]`  |
-| UC-SET-01 | Select language (ru/en)                      | User  | `[x]`  |
-| UC-SET-02 | Chat sorting (personal unread first)         | User  | `[x]`  |
-| UC-SET-03 | Configure notification sounds                | User  | `[x]`  |
-| UC-SET-04 | Clear cache                                  | User  | `[x]`  |
-| UC-SET-05 | View application version                     | User  | `[x]`  |
-| UC-SET-06 | View Open Source licenses                    | User  | `[x]`  |
+| ID        | Use Case                                      | Actor | Status |
+| --------- | --------------------------------------------- | ----- | ------ |
+| UC-PRF-01 | View own profile (name, email, avatar, role)  | User  | `[x]`  |
+| UC-PRF-02 | View another user's profile (right panel)     | User  | `[x]`  |
+| UC-PRF-03 | Edit own profile                              | User  | `[x]`  |
+| UC-SET-01 | Select language (ru/en)                       | User  | `[x]`  |
+| UC-SET-02 | Chat sorting (personal unread first)          | User  | `[x]`  |
+| UC-SET-03 | Configure notification sounds                 | User  | `[x]`  |
+| UC-SET-04 | Clear cache                                   | User  | `[x]`  |
+| UC-SET-05 | View application version                      | User  | `[x]`  |
+| UC-SET-06 | View Open Source licenses                     | User  | `[x]`  |
+| UC-SET-07 | View in-memory service logs (dev diagnostics) | User  | `[x]`  |
+
+`UC-SET-07` (dev only): `/settings/logs` — ring buffer of console output, API calls (params + status), and critical actions; filter, export JSON, diagnostic snapshot.
 
 ---
 

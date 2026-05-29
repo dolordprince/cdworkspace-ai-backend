@@ -1,5 +1,4 @@
 import { render, waitFor } from "@testing-library/react";
-import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useHydrateDrafts } from "./draft-hydration";
 import { useDraftStore } from "./draft.model";
@@ -19,7 +18,7 @@ function Harness({
   currentUserStatus,
 }: {
   currentInstanceId: string | null;
-  currentUserStatus: "idle" | "loading" | "ready" | "error";
+  currentUserStatus: "idle" | "loading" | "ready" | "degraded" | "blocked";
 }) {
   useHydrateDrafts(currentInstanceId, currentUserStatus);
   return null;

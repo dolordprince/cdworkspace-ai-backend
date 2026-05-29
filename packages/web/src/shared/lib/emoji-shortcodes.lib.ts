@@ -4,9 +4,6 @@ import {
   ZULIP_SHORTCODE_TO_UNIFIED_OVERRIDES,
 } from "~/shared/lib/emoji-shortcodes-overrides.data";
 
-type EmojibaseShortcodeEntry = string | string[];
-type EmojibaseShortcodeDataset = Record<string, EmojibaseShortcodeEntry>;
-
 /** Runtime-логика резолва emoji shortcodes: нормализация, индексы и lookup. */
 interface ShortcodeIndices {
   unicodeByShortcode: ReadonlyMap<string, string>;
@@ -97,7 +94,7 @@ function applyDatasetShortcodes(
   aliasToCodepoints: Map<string, Set<string>>,
   canonicalShortcodeByUnified: Map<string, string>,
 ): void {
-  const dataset = emojibaseShortcodes as EmojibaseShortcodeDataset;
+  const dataset = emojibaseShortcodes;
   for (const [hexCodeRaw, aliasesRaw] of Object.entries(dataset)) {
     const normalizedUnified = normalizeUnifiedCodeForLookup(hexCodeRaw);
     if (normalizedUnified.length === 0) {

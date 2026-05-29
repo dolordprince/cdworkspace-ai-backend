@@ -8,6 +8,7 @@ import type { FolderRefreshReason } from "~/features/folder-sync/folder-sync.mod
 import { useFolderSyncStore } from "~/features/folder-sync/folder-sync.model";
 import { t } from "~/i18n/i18n";
 import type { FolderItemForClient } from "~/shared/api/workspace-client";
+import { FOLDER_SYNC_POLL_INTERVAL_MS } from "~/shared/config/constants";
 import { createLogger } from "~/shared/lib/logger";
 import type { SidebarChat, StreamEntryInternal } from "~/shared/types/sidebar-chat";
 import { startFolderPolling } from "./layout-folder-polling.lib";
@@ -26,7 +27,7 @@ function getFolderSyncLabelsFromI18n(): FolderSyncSystemLabels {
 
 export interface UseLayoutFolderSyncOrchestrationParams {
   currentInstanceId: string | null;
-  currentUserStatus: "idle" | "loading" | "ready" | "error";
+  currentUserStatus: "idle" | "loading" | "ready" | "degraded" | "blocked";
   showSystemFolders: boolean;
   language: string;
   folderItemsByFolderId: ReadonlyMap<string, FolderItemForClient[]>;
@@ -153,7 +154,11 @@ export function useLayoutFolderSyncOrchestration(
 
   useEffect(() => {
     return startFolderPolling({
-      enabled: currentInstanceId != null && currentUserStatus === "ready" && online,
+      enabled:
+        currentInstanceId != null &&
+        (currentUserStatus === "ready" || currentUserStatus === "degraded") &&
+        online,
+      pollIntervalMs: FOLDER_SYNC_POLL_INTERVAL_MS,
       refreshFolders: () => refreshFolderSync("polling"),
       runImmediately: false,
     });
