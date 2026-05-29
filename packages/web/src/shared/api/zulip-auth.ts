@@ -2,15 +2,22 @@
  * Zulip auth and server discovery (no active instance required for server_settings).
  */
 import { t } from "~/i18n/i18n";
+import { getElectronAPI, isElectron } from "~/shared/lib/electron";
 import { env } from "~/shared/lib/env";
+import { createLogger } from "~/shared/lib/logger";
 import { isValidEmail, isValidRealmUrl } from "~/shared/lib/validation";
 import { normalizeRealm } from "./zulip-realm.internal";
 import { ZulipAuthError } from "./zulip.types";
 import type { DesktopFlowExchangeResult, ZulipServerSettings } from "./zulip.types";
 
+const log = createLogger("zulip-auth");
+
 interface FetchApiKeyResult {
+  // Zulip returns snake_case, so keep the field name as the API uses it.
   api_key: string;
+  // Email is needed to save the instance after login.
   email: string;
+  // Older backends may skip user_id, so we use 0 below.
   user_id: number;
 }
 
@@ -128,10 +135,12 @@ export async function fetchApiKey(
 }
 
 function normalizeExchangeCredentials(payload: unknown): { email: string; apiKey: string } | null {
+  // Desktop exchange may return HTML or a redirect for cookie session, not JSON credentials.
   if (typeof payload !== "object" || payload == null) {
     return null;
   }
   const record = payload as Record<string, unknown>;
+  // Support api_key and apiKey so we do not depend on the server response shape.
   const email = typeof record.email === "string" ? record.email.trim() : "";
   const apiKeyRaw = record.api_key ?? record.apiKey;
   const apiKey = typeof apiKeyRaw === "string" ? apiKeyRaw.trim() : "";
@@ -143,8 +152,10 @@ function normalizeExchangeCredentials(payload: unknown): { email: string; apiKey
 
 async function fetchSessionUserEmail(baseRealm: string): Promise<string | null> {
   try {
+    // Check that the cookie session already works before saving the new instance.
     const response = await fetch(`${baseRealm}/json/users/me`, {
       method: "GET",
+      // For cookie auth, the browser must send cookies explicitly.
       credentials: "include",
     });
     if (!response.ok) {
@@ -158,24 +169,11 @@ async function fetchSessionUserEmail(baseRealm: string): Promise<string | null> 
   }
 }
 
-function buildSessionFallbackEmail(baseRealm: string): string {
-  try {
-    return `session@${new URL(baseRealm).hostname}`;
-  } catch {
-    return "session@unknown.local";
-  }
-}
-
-/**
- * Completes OIDC desktop flow by exchanging decrypted login token
- * against /accounts/login/subdomain/<token>.
- *
- * Backend may return API credentials directly or establish cookie-based session auth.
- */
-export async function exchangeDesktopFlowToken(
+async function exchangeDesktopFlowTokenInRenderer(
   realm: string,
   token: string,
 ): Promise<DesktopFlowExchangeResult> {
+  // Web/PWA path: the renderer calls Zulip itself because there is no Electron main process.
   const base = normalizeRealm(realm);
   const normalizedToken = token.trim();
   if (!base || normalizedToken.length === 0) {
@@ -185,16 +183,21 @@ export async function exchangeDesktopFlowToken(
 
   let response: Response;
   try {
+    // In browser mode, do not follow the redirect automatically, so we can read the exchange response first.
     response = await fetch(`${base}/accounts/login/subdomain/${encodedToken}`, {
       method: "GET",
       redirect: "manual",
       credentials: "include",
     });
   } catch {
+    log.error("Renderer desktop token exchange network error");
     throw new ZulipAuthError(t("auth.pasteTokenInvalid"));
   }
 
   if (response.status >= 400) {
+    log.error("Renderer desktop token exchange returned HTTP error", {
+      status: response.status,
+    });
     let message: string | null;
     try {
       const data = (await response.json()) as { msg?: unknown };
@@ -207,6 +210,7 @@ export async function exchangeDesktopFlowToken(
 
   let exchangePayload: unknown;
   try {
+    // JSON with api_key is the fast path; no JSON means cookie fallback.
     exchangePayload = await response.json();
   } catch {
     exchangePayload = null;
@@ -214,6 +218,7 @@ export async function exchangeDesktopFlowToken(
 
   const apiCredentials = normalizeExchangeCredentials(exchangePayload);
   if (apiCredentials) {
+    // If the API key came right away, session cookies are not needed.
     return {
       authType: "api_key",
       email: apiCredentials.email,
@@ -222,8 +227,57 @@ export async function exchangeDesktopFlowToken(
   }
 
   const sessionEmail = await fetchSessionUserEmail(base);
+  if (sessionEmail == null) {
+    // Without a confirmed email, do not save a session auth instance.
+    log.error("Renderer desktop token exchange failed during session verification");
+    throw new ZulipAuthError(t("auth.pasteTokenInvalid"));
+  }
   return {
     authType: "session",
-    email: sessionEmail ?? buildSessionFallbackEmail(base),
+    email: sessionEmail,
   };
+}
+
+async function exchangeDesktopFlowTokenInElectron(
+  realm: string,
+  token: string,
+): Promise<DesktopFlowExchangeResult> {
+  // In Electron, send the exchange to the main process so cookies are saved in Chromium storage.
+  const exchange = getElectronAPI()?.auth?.exchangeDesktopFlowToken;
+  if (exchange == null) {
+    log.error("Electron desktop auth bridge is unavailable");
+    throw new ZulipAuthError(t("auth.pasteTokenInvalid"), "DESKTOP_FLOW_BRIDGE_MISSING");
+  }
+  const result = await exchange({ realm, token });
+  if (!result.ok) {
+    // The main process already classified the error; here we convert it to a common ZulipAuthError.
+    log.error("Electron desktop auth exchange failed", {
+      reason: result.reason,
+      status: result.status ?? null,
+    });
+    throw new ZulipAuthError(t("auth.pasteTokenInvalid"), result.reason, result);
+  }
+  return {
+    authType: result.data.authType,
+    email: result.data.email,
+    ...(result.data.apiKey != null ? { apiKey: result.data.apiKey } : {}),
+  };
+}
+
+/**
+ * Completes the desktop OIDC flow: exchanges the decrypted login token
+ * through /accounts/login/subdomain/<token>.
+ *
+ * The server can return API credentials right away or create a cookie session.
+ */
+export async function exchangeDesktopFlowToken(
+  realm: string,
+  token: string,
+): Promise<DesktopFlowExchangeResult> {
+  if (isElectron()) {
+    // The desktop shell needs a separate path because of file:// renderer and cookie policy.
+    return exchangeDesktopFlowTokenInElectron(realm, token);
+  }
+  // In normal web mode, keep the old behavior with browser fetch.
+  return exchangeDesktopFlowTokenInRenderer(realm, token);
 }

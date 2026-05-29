@@ -2,10 +2,42 @@
  * Tests for Zulip API (zulip-auth module).
  */
 import "./zulip.test.setup";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+type ElectronAPI = NonNullable<Window["electronAPI"]>;
+type ElectronAuthExchange = NonNullable<ElectronAPI["auth"]>["exchangeDesktopFlowToken"];
+
+const electronMocks = vi.hoisted(() => ({
+  isElectron: vi.fn<() => boolean>(() => false),
+  getElectronAPI: vi.fn<() => Window["electronAPI"] | null>(() => null),
+}));
+
+vi.mock("~/shared/lib/electron", () => ({
+  isElectron: electronMocks.isElectron,
+  getElectronAPI: electronMocks.getElectronAPI,
+}));
+
 import { exchangeDesktopFlowToken, fetchApiKey, fetchServerSettings } from "./zulip-auth";
 import { jsonResponse, mockFetch } from "./zulip.test.setup";
 import { ZulipAuthError } from "./zulip.types";
+
+function mockElectronAuthBridge(
+  exchangeDesktopFlowToken: ElectronAuthExchange = vi.fn(),
+): ElectronAuthExchange {
+  electronMocks.isElectron.mockReturnValue(true);
+  electronMocks.getElectronAPI.mockReturnValue({
+    auth: { exchangeDesktopFlowToken },
+  } as ElectronAPI);
+
+  return exchangeDesktopFlowToken;
+}
+
+beforeEach(() => {
+  electronMocks.isElectron.mockReset();
+  electronMocks.isElectron.mockReturnValue(false);
+  electronMocks.getElectronAPI.mockReset();
+  electronMocks.getElectronAPI.mockReturnValue(null);
+});
 
 describe("fetchServerSettings", () => {
   it("returns settings on success", async () => {
@@ -141,7 +173,7 @@ describe("fetchApiKey", () => {
       status: 200,
       json: () => Promise.reject(new SyntaxError("Unexpected token")),
       headers: new Headers(),
-    } as unknown as Response);
+    });
 
     await expect(fetchApiKey("https://z.com", "u@t.com", "pw")).rejects.toThrow(ZulipAuthError);
   });
@@ -153,6 +185,7 @@ describe("fetchApiKey", () => {
 
 describe("exchangeDesktopFlowToken", () => {
   it("returns api_key auth payload when backend provides credentials", async () => {
+    // The backend can return api_key right away, so session fallback is not needed.
     mockFetch
       .mockResolvedValueOnce(
         jsonResponse({
@@ -188,6 +221,7 @@ describe("exchangeDesktopFlowToken", () => {
   });
 
   it("falls back to session auth when exchange succeeds without api key payload", async () => {
+    // If the response has no api_key, check the cookie session with /json/users/me.
     mockFetch.mockResolvedValueOnce(jsonResponse({ result: "success" })).mockResolvedValueOnce(
       jsonResponse({
         email: "session-user@example.com",
@@ -208,6 +242,61 @@ describe("exchangeDesktopFlowToken", () => {
         credentials: "include",
       }),
     );
+  });
+
+  it("throws ZulipAuthError when session verification fails", async () => {
+    // Session auth must not be saved if the server did not confirm the current user.
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse({ result: "success" }))
+      .mockResolvedValueOnce(jsonResponse({ msg: "Not logged in" }, 401));
+
+    await expect(
+      exchangeDesktopFlowToken("https://zulip.example.com", "session-code-123"),
+    ).rejects.toThrow(ZulipAuthError);
+  });
+
+  it("delegates to Electron auth bridge when running in desktop shell", async () => {
+    // In Electron, the renderer must not touch cookies, so check that it uses the preload bridge.
+    const bridgeExchange = mockElectronAuthBridge(
+      vi.fn().mockResolvedValue({
+        ok: true,
+        data: {
+          authType: "session",
+          email: "session-user@example.com",
+        },
+      }),
+    );
+    const desktopFlowCode = "desktop-flow-code-123";
+
+    const result = await exchangeDesktopFlowToken("https://zulip.example.com", desktopFlowCode);
+
+    expect(result).toEqual({
+      authType: "session",
+      email: "session-user@example.com",
+    });
+    expect(bridgeExchange).toHaveBeenCalledWith({
+      realm: "https://zulip.example.com",
+      token: desktopFlowCode,
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("throws ZulipAuthError when Electron auth bridge returns failure", async () => {
+    // The main process classifies the error; the renderer keeps the code and does not fall back to fetch.
+    mockElectronAuthBridge(
+      vi.fn().mockResolvedValue({
+        ok: false,
+        reason: "DESKTOP_FLOW_SESSION_FAILED",
+        status: 401,
+      }),
+    );
+
+    await expect(
+      exchangeDesktopFlowToken("https://zulip.example.com", "desktop-flow-code-123"),
+    ).rejects.toMatchObject({
+      code: "DESKTOP_FLOW_SESSION_FAILED",
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("throws ZulipAuthError when exchange endpoint fails", async () => {
