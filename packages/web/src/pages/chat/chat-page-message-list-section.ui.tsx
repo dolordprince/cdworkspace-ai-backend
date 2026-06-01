@@ -32,6 +32,7 @@ export const ChatPageMessageListSection = React.memo(function ChatPageMessageLis
   onRetryMessagesLoad,
   boundaryLoadFailed,
   onDismissBoundaryLoadFailed,
+  scrollToBottomAfterSendNonce,
 }: ChatPageMessageListSectionProps) {
   const handleRetryClick = useCallback(() => {
     onRetryMessagesLoad();
@@ -84,6 +85,8 @@ export const ChatPageMessageListSection = React.memo(function ChatPageMessageLis
       : undefined
     : [activeStream ?? "", activeTopic ?? ""].join("|");
 
+  const showTopicInSenderName = activeTopic == null || activeTopic.trim() === "";
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {showRefreshLoadError ? (
@@ -114,6 +117,7 @@ export const ChatPageMessageListSection = React.memo(function ChatPageMessageLis
         messages={messages}
         currentUserId={currentUserId}
         scrollToBottomKey={scrollToBottomKey}
+        scrollToBottomAfterSendNonce={scrollToBottomAfterSendNonce}
         callbacks={callbacks}
         selectionMode={selectionMode}
         selectedMessageIds={selectedMessageIds}
@@ -128,6 +132,7 @@ export const ChatPageMessageListSection = React.memo(function ChatPageMessageLis
         onUnreadMessagesVisible={onUnreadMessagesVisible}
         onUnreadMessagesAtBottom={onUnreadMessagesAtBottom}
         showLoadingOverlay={showLoadingOverlay}
+        showTopicInSenderName={showTopicInSenderName}
       />
     </div>
   );

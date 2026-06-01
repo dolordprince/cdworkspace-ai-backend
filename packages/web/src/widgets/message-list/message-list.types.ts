@@ -41,6 +41,8 @@ export interface MessageListSenderGroupProps {
   onEmojiPickerOpen?: () => void;
   resolveCustomEmojiImageUrl?: (reaction: Reaction) => string | undefined;
   resolveCustomEmojiShortcodeImageUrl?: (shortcode: string) => string | undefined;
+  /** Show topic label next to sender name in stream messages. */
+  showTopicInSenderName?: boolean;
 }
 
 export interface MessageListProps {
@@ -48,6 +50,8 @@ export interface MessageListProps {
   currentUserId?: number;
   /** When the key changes (chat/topic/DM), scroll resets to the latest messages */
   scrollToBottomKey?: string;
+  /** Increment after the user sends a message to force scroll to the latest row */
+  scrollToBottomAfterSendNonce?: number;
   callbacks?: MessageListCallbacks;
   selectionMode?: boolean;
   selectedMessageIds?: Set<number>;
@@ -69,4 +73,6 @@ export interface MessageListProps {
   onUnreadMessagesAtBottom?: (messageIds: number[]) => void;
   /** Shows non-blocking floating loading indicator above the list. */
   showLoadingOverlay?: boolean;
+  /** Show topic label next to sender name in stream messages (default: true). */
+  showTopicInSenderName?: boolean;
 }

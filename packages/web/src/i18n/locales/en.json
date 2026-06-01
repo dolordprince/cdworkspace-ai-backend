@@ -223,7 +223,9 @@
     "deleteTopicConfirm": "Delete topic \"{{topic}}\"?",
     "deleteTopicInProgress": "Deleting topic…",
     "markTopicAsDone": "Mark topic as done",
-    "markTopicAsNotDone": "Mark topic as not done"
+    "markTopicAsNotDone": "Mark topic as not done",
+    "renameTopic": "Rename topic",
+    "renameTopicTitle": "Rename topic"
   },
   "dm": {
     "groupChat": "Group chat",
@@ -336,6 +338,7 @@
     "authIdleTimeoutNever": "Never",
     "settings": "Settings",
     "clearCache": "Clear cache",
+    "clearCacheConfirm": "Clear message cache and all local settings? Your sign-in and saved organizations will be kept. The app will reload.",
     "serviceCatalog": "Service catalog",
     "serviceCatalogHint": "Access to internal tools and company resources.",
     "servicesPlannedHint": "Services will be available here. Integrations are being prepared.",
@@ -433,7 +436,7 @@
     "chatListDensity": "Chat list density",
     "chatListDensityStandard": "Standard",
     "chatListDensityCompact": "Compact",
-    "clearCacheHint": "Clear local data and reload",
+    "clearCacheHint": "Message cache, local settings, then reload",
     "sortRecent": "Recent",
     "sortUnread": "Unread first",
     "sortAlphabetical": "A-Z",
@@ -578,6 +581,10 @@
     "streamDraft": "Channel draft",
     "privateDraft": "DM draft",
     "topic": "Topic: {{topic}}"
+  },
+  "mediaViewer": {
+    "openInNewTab": "Open in new tab",
+    "download": "Download"
   },
   "chatInfo": {
     "title": "Chat info",

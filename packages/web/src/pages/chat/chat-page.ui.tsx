@@ -5,7 +5,6 @@ import { resolvePersonalDmSidebarTitle } from "~/entities/chat-list/chat-list-fo
 import { createOnDmMessagesAppliedHandler } from "~/entities/chat-list/chat-list-sync-dm-from-window.lib";
 import { createOnStreamMessagesAppliedHandler } from "~/entities/chat-list/chat-list-sync-stream-from-window.lib";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { resolveHydratedDraftBootstrap } from "~/entities/draft/draft-chat-bootstrap.lib";
 import {
   reconcileCreatedDraftServerId,
   syncExistingDraftDeleteOnCleanup,
@@ -43,7 +42,6 @@ import {
   deleteMessage,
   markDmAsRead,
   markTopicAsRead,
-  uploadFile,
   type MockMessage,
 } from "~/shared/api/zulip";
 import { useOpenSearch } from "~/shared/contexts/open-search";
@@ -81,7 +79,6 @@ import { resolveLastOwnMessageForEdit } from "./chat-edit-last-message.lib";
 import { countUnreadMessages, resolveFirstUnreadBoundaryMessageId } from "./chat-first-unread.lib";
 import {
   buildForwardQuote,
-  consumePendingForwardPrefill,
   mergeForwardDraftContent,
   resolveForwardDraftTarget,
   setPendingForwardPrefill,
@@ -97,6 +94,7 @@ import { resolveNextUnreadTopicRoute } from "./chat-next-unread-topic.lib";
 import { isAbortLikeError, normalizeAiContextContent } from "./chat-page-ai.lib";
 import { ChatPageComposerSection } from "./chat-page-composer-section.ui";
 import { ChatPageDeleteConfirmBar } from "./chat-page-delete-confirm-bar.ui";
+import { useChatPageDraftHydration } from "./chat-page-draft-sync.hook";
 import { ChatPageFloatingToast } from "./chat-page-floating-toast.ui";
 import { useChatForwardHydration } from "./chat-page-forward-hydration.hook";
 import { ForwardMessageModalBody } from "./chat-page-forward-modal.ui";
@@ -106,6 +104,7 @@ import { useChatPartnerProfileHydration } from "./chat-page-partner-profile.hook
 import { ChatPageReadReceiptsDialog } from "./chat-page-read-receipts-dialog.ui";
 import { useChatRouteContext } from "./chat-page-route-context.hook";
 import { ChatPageSelectionBar } from "./chat-page-selection-bar.ui";
+import { executeChatPageSend } from "./chat-page-send-handler.lib";
 import { useChatToastAutoClear } from "./chat-page-toast.hook";
 import { ChatPageTypingLine } from "./chat-page-typing-line.ui";
 import { shouldLoadBoundaryPage } from "./chat-pagination.lib";
@@ -113,7 +112,7 @@ import {
   buildOptimisticOutgoingMessage,
   markOutgoingMessageFailed,
 } from "./chat-send-delivery.lib";
-import { uploadComposerFiles, type ComposerUploadProgressState } from "./chat-upload.lib";
+import type { ComposerUploadProgressState } from "./chat-upload.lib";
 
 const log = createLogger("chat-page");
 const AI_CONTEXT_MESSAGES_LIMIT = 30;
@@ -299,6 +298,10 @@ export const ChatPage: React.FC = () => {
   const cacheHydratedBeforeApiRef = useRef(false);
   const markAsReadBatcherRef = useRef<ReturnType<typeof createMarkAsReadBatcher> | null>(null);
   const optimisticMessageIdRef = useRef(-1);
+  const [scrollToBottomAfterSendNonce, setScrollToBottomAfterSendNonce] = useState(0);
+  const requestScrollToBottomAfterSend = useCallback(() => {
+    setScrollToBottomAfterSendNonce((nonce) => nonce + 1);
+  }, []);
   const jitsiHeaderCallInFlightRef = useRef(false);
   const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const editRequestTokenRef = useRef(0);
@@ -392,42 +395,16 @@ export const ChatPage: React.FC = () => {
     setComposerEditSession(null);
   }, [location.pathname]);
 
-  useEffect(() => {
-    if (!draftType || draftTo.length === 0) return;
-    const pendingForwardPrefill = consumePendingForwardPrefill(location.pathname);
-    if (pendingForwardPrefill != null) {
-      pendingForwardPrefillRef.current = pendingForwardPrefill;
-      setDraftInitialValue(pendingForwardPrefill);
-      composerValueRef.current = pendingForwardPrefill;
-      activeDraftIdRef.current = null;
-      return;
-    }
-
-    const existing = useDraftStore.getState().getDraftForChat(draftType, draftTo, draftTopic);
-    if (existing) {
-      setDraftInitialValue(existing.content);
-      composerValueRef.current = existing.content;
-      activeDraftIdRef.current = existing.id;
-    } else {
-      setDraftInitialValue("");
-      composerValueRef.current = "";
-      activeDraftIdRef.current = null;
-    }
-  }, [draftType, draftTo, draftTopic, location.pathname]);
-
-  useEffect(() => {
-    if (!draftType || draftTo.length === 0) return;
-    if (pendingForwardPrefillRef.current != null) {
-      pendingForwardPrefillRef.current = null;
-      return;
-    }
-    const existing = useDraftStore.getState().getDraftForChat(draftType, draftTo, draftTopic);
-    const bootstrap = resolveHydratedDraftBootstrap(composerValueRef.current, existing);
-    if (!bootstrap) return;
-    setDraftInitialValue(bootstrap.initialValue);
-    composerValueRef.current = bootstrap.initialValue;
-    activeDraftIdRef.current = bootstrap.activeDraftId;
-  }, [draftType, draftTo, draftTopic, drafts]);
+  useChatPageDraftHydration({
+    draftType,
+    draftTo,
+    draftTopic,
+    drafts,
+    composerValueRef,
+    activeDraftIdRef,
+    pendingForwardPrefillRef,
+    setDraftInitialValue,
+  });
 
   useEffect(() => {
     return () => {
@@ -1262,124 +1239,42 @@ export const ChatPage: React.FC = () => {
   ]);
 
   const handleSend = async (content: string, subjectOverride?: string, files?: File[]) => {
-    setSendError(null);
-    let body = content;
-    setUploadProgress(null);
-
-    if (files && files.length > 0) {
-      const uploadController = new AbortController();
-      uploadAbortControllerRef.current = uploadController;
-      setUploadProgress({
-        completed: 0,
-        total: files.length,
-        activeFileName: files[0]?.name ?? null,
-      });
-      try {
-        const uploadedLinks = await uploadComposerFiles(files, uploadFile, {
-          onProgress: setUploadProgress,
-          signal: uploadController.signal,
-        });
-        body = body + "\n" + uploadedLinks.join("\n");
-      } catch (err) {
-        const wasCancelled = isAbortLikeError(err) || uploadController.signal.aborted;
-        const errorMessage = wasCancelled
-          ? t("composer.uploadCancelled")
-          : err instanceof Error
-            ? err.message
-            : t("message.sendFailed");
-        setSendError(errorMessage);
-        setUploadProgress(null);
-        throw new Error(errorMessage, { cause: err });
-      } finally {
-        if (uploadAbortControllerRef.current === uploadController) {
-          uploadAbortControllerRef.current = null;
-        }
-      }
-    }
-
-    const stopTypingAfterSend = () => {
-      stopTypingNow();
-    };
-
-    if (isDmView && activeDmUserIds?.length) {
-      const optimisticMessageId = optimisticMessageIdRef.current;
-      optimisticMessageIdRef.current -= 1;
-      const optimisticMessage = buildOptimisticOutgoingMessage({
-        id: optimisticMessageId,
-        senderId: currentUserId ?? 0,
-        senderFullName: t("common.you"),
-        content: body,
-        target: { mode: "dm", recipientIds: activeDmUserIds },
-      });
-      appendMessageToStore(optimisticMessage);
-      try {
-        const newMsg = await sendMessage({
-          to: activeDmUserIds,
-          content: body,
-          sender_id: currentUserId ?? 0,
-          sender_full_name: t("common.you"),
-        });
-        commitOutgoingMessageToStore(optimisticMessageId, newMsg);
-        setReplyQuote(null);
-        stopTypingAfterSend();
-      } catch (err) {
-        appendMessageToStore(markOutgoingMessageFailed(optimisticMessage));
-        setSendError(err instanceof Error ? err.message : t("message.sendFailed"));
-        throw err instanceof Error ? err : new Error(t("message.sendFailed"));
-      } finally {
-        setUploadProgress(null);
-      }
-      return;
-    }
-    if (activeStream) {
-      if (!activeStreamCanonicalName) {
-        log.warn("Blocked stream send without canonical stream name", {
-          streamId: activeStreamId ?? undefined,
-          displayName: activeStream,
-        });
-        const error = t("message.sendFailed");
-        setSendError(error);
-        setUploadProgress(null);
-        throw new Error(error);
-      }
-      const subject = normalizeTopicForIdentity(subjectOverride ?? activeTopic ?? "");
-      const optimisticMessageId = optimisticMessageIdRef.current;
-      optimisticMessageIdRef.current -= 1;
-      const optimisticMessage = buildOptimisticOutgoingMessage({
-        id: optimisticMessageId,
-        senderId: currentUserId ?? 0,
-        senderFullName: t("common.you"),
-        content: body,
-        target: {
-          mode: "stream",
-          stream: activeStreamCanonicalName,
-          streamId: activeStreamId ?? undefined,
-          subject,
+    await executeChatPageSend(
+      {
+        currentUserId,
+        isDmView,
+        activeDmUserIds,
+        activeStream: activeStream ?? null,
+        activeStreamCanonicalName: activeStreamCanonicalName ?? null,
+        activeStreamId,
+        activeTopic,
+        allocateOptimisticMessageId: () => {
+          const id = optimisticMessageIdRef.current;
+          optimisticMessageIdRef.current -= 1;
+          return id;
         },
-      });
-      appendMessageToStore(optimisticMessage);
-      try {
-        const newMsg = await sendMessage({
-          stream: activeStreamCanonicalName,
-          streamId: activeStreamId ?? undefined,
-          subject,
-          content: body,
-          sender_id: currentUserId ?? 0,
-          sender_full_name: t("common.you"),
-        });
-        commitOutgoingMessageToStore(optimisticMessageId, newMsg);
-        setReplyQuote(null);
-        stopTypingAfterSend();
-      } catch (err) {
-        appendMessageToStore(markOutgoingMessageFailed(optimisticMessage));
-        setSendError(err instanceof Error ? err.message : t("message.sendFailed"));
-        throw err instanceof Error ? err : new Error(t("message.sendFailed"));
-      } finally {
-        setUploadProgress(null);
-      }
-    }
-
-    setUploadProgress(null);
+        appendMessage: appendMessageToStore,
+        commitOutgoingMessage: commitOutgoingMessageToStore,
+        requestScrollToBottom: requestScrollToBottomAfterSend,
+        clearReplyQuote: () => {
+          setReplyQuote(null);
+        },
+        stopTyping: stopTypingNow,
+        setSendError,
+        setUploadProgress,
+        setUploadAbortController: (controller) => {
+          uploadAbortControllerRef.current = controller;
+        },
+        releaseUploadAbortController: (controller) => {
+          if (uploadAbortControllerRef.current === controller) {
+            uploadAbortControllerRef.current = null;
+          }
+        },
+      },
+      content,
+      subjectOverride,
+      files,
+    );
   };
 
   const handleRemoveFailedOutgoing = useCallback(
@@ -1413,12 +1308,14 @@ export const ChatPage: React.FC = () => {
           target: { mode: "dm", recipientIds: activeDmUserIds },
         });
         appendMessageToStore(optimisticMessage);
+        requestScrollToBottomAfterSend();
         try {
           const newMsg = await sendMessage({
             to: activeDmUserIds,
             content: body,
             sender_id: currentUserId ?? 0,
             sender_full_name: t("common.you"),
+            local_id: String(optimisticMessageId),
           });
           commitOutgoingMessageToStore(optimisticMessageId, newMsg);
           setReplyQuote(null);
@@ -1457,6 +1354,7 @@ export const ChatPage: React.FC = () => {
           },
         });
         appendMessageToStore(optimisticMessage);
+        requestScrollToBottomAfterSend();
         try {
           const newMsg = await sendMessage({
             stream: activeStreamCanonicalName,
@@ -1465,6 +1363,7 @@ export const ChatPage: React.FC = () => {
             content: body,
             sender_id: currentUserId ?? 0,
             sender_full_name: t("common.you"),
+            local_id: String(optimisticMessageId),
           });
           commitOutgoingMessageToStore(optimisticMessageId, newMsg);
           setReplyQuote(null);
@@ -1488,6 +1387,7 @@ export const ChatPage: React.FC = () => {
       currentUserId,
       isDmView,
       removeMessageFromStore,
+      requestScrollToBottomAfterSend,
       stopTypingNow,
       t,
     ],
@@ -1911,6 +1811,7 @@ export const ChatPage: React.FC = () => {
           onRetryMessagesLoad={handleRetryMessagesLoad}
           boundaryLoadFailed={boundaryLoadFailed}
           onDismissBoundaryLoadFailed={handleDismissBoundaryLoadFailed}
+          scrollToBottomAfterSendNonce={scrollToBottomAfterSendNonce}
         />
         {selectionMode && selectedMessageIds.size > 0 && (
           <ChatPageSelectionBar

@@ -72,6 +72,7 @@ export const MessageList: React.FC<MessageListProps> = ({
   messages,
   currentUserId,
   scrollToBottomKey,
+  scrollToBottomAfterSendNonce = 0,
   callbacks,
   selectionMode = false,
   selectedMessageIds,
@@ -86,6 +87,7 @@ export const MessageList: React.FC<MessageListProps> = ({
   onUnreadMessagesVisible,
   onUnreadMessagesAtBottom,
   showLoadingOverlay = false,
+  showTopicInSenderName = true,
 }) => {
   const bubbleCallbacks: MessageBubbleCallbacks | undefined = useMemo(
     () =>
@@ -425,6 +427,28 @@ export const MessageList: React.FC<MessageListProps> = ({
     if (scrollToBottomKey === undefined) return;
     pendingScrollToBottomKeyRef.current = scrollToBottomKey;
   }, [scrollToBottomKey]);
+
+  // After the user sends a message, always reveal the new tail (even with unread anchor or off-bottom scroll).
+  useLayoutEffect(() => {
+    if (scrollToBottomAfterSendNonce === 0) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    logScrollMetrics("scroll:toBottom", { reason: "afterSend" });
+    runProgrammaticScroll(() => {
+      scrollToBottom(el);
+      syncWasAtBottomFromElement(el);
+    });
+    const rafId = requestAnimationFrame(() => {
+      scrollToBottom(el);
+      syncWasAtBottomFromElement(el);
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [
+    scrollToBottomAfterSendNonce,
+    runProgrammaticScroll,
+    logScrollMetrics,
+    syncWasAtBottomFromElement,
+  ]);
 
   // Scroll down: after messages load on chat switch, or if user was already at the bottom (own message)
   useEffect(() => {
@@ -933,6 +957,7 @@ export const MessageList: React.FC<MessageListProps> = ({
                         onEmojiPickerOpen={ensureCustomEmojisLoaded}
                         resolveCustomEmojiImageUrl={resolveCustomEmojiImageUrl}
                         resolveCustomEmojiShortcodeImageUrl={resolveCustomEmojiShortcodeImageUrl}
+                        showTopicInSenderName={showTopicInSenderName}
                       />
                     ))}
                   </React.Fragment>
@@ -965,6 +990,7 @@ export const MessageList: React.FC<MessageListProps> = ({
                     onEmojiPickerOpen={ensureCustomEmojisLoaded}
                     resolveCustomEmojiImageUrl={resolveCustomEmojiImageUrl}
                     resolveCustomEmojiShortcodeImageUrl={resolveCustomEmojiShortcodeImageUrl}
+                    showTopicInSenderName={showTopicInSenderName}
                   />
                 </React.Fragment>
               );

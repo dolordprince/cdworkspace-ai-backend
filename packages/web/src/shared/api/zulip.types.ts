@@ -111,6 +111,8 @@ export interface RegisterQueueResult {
   realm_user_groups?: ZulipRealmUserGroup[];
   /** Present when `realm` is included in `fetch_event_types` (modern Zulip 10+). */
   realm_can_add_subscribers_group?: ZulipGroupSettingValue;
+  /** Present when `realm` is in `fetch_event_types` (Zulip 10+). */
+  realm_can_resolve_topics_group?: ZulipGroupSettingValue;
   /** Present when `realm` is included in `fetch_event_types` (Zulip 9.0+). */
   server_thumbnail_formats?: ZulipServerThumbnailFormat[];
   /** Present when `realm` is included in `fetch_event_types`. */
@@ -159,6 +161,8 @@ export interface ZulipCurrentUser {
   user_id: number;
   full_name: string;
   email: string;
+  /** Zulip realm role code (100=owner, 200=admin, 300=moderator, 400=member, 600=guest). */
+  role?: number;
 }
 
 /** Map of user_id to relative avatar_url path. */
@@ -318,6 +322,7 @@ export interface ZulipSubscription {
   can_remove_subscribers_group?: ZulipGroupSettingValue;
   // Что делает: group-setting администраторов конкретного канала.
   can_administer_channel_group?: ZulipGroupSettingValue;
+  can_resolve_topics_group?: ZulipGroupSettingValue;
 }
 
 export interface MessagesPageResult {
@@ -338,6 +343,8 @@ export interface SendMessageParams {
   sender_full_name?: string;
   /** For private/DM message: recipient user ids. When set, `stream` is ignored. */
   to?: number[];
+  /** Zulip local echo id (pairs with the active event queue `queue_id`). */
+  local_id?: string;
 }
 
 export interface CreateSavedSnippetParams {

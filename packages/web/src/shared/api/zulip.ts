@@ -39,11 +39,13 @@ import {
 } from "./client";
 import { parseCurrentUserFromApiData } from "./zulip-current-user.lib";
 import { mockMessageFromGetMessageApiData, rawMessageToMockMessage } from "./zulip-message-map.lib";
+import { postZulipSendMessage } from "./zulip-message-send.internal";
 import {
   getCachedUserTopicsForKey,
   getCurrentUserTopicsCacheKey,
 } from "./zulip-user-topics.internal";
 import { validateMessageIds } from "./zulip-validation.internal";
+import { ZulipAuthError } from "./zulip.types";
 import type { ReactionType, RealmEmoji } from "./zulip.types";
 
 if (typeof (globalThis as unknown as { Buffer?: unknown }).Buffer === "undefined") {
@@ -255,16 +257,7 @@ export function getRealmBaseUrl(): string {
 
 // --- Auth & current user (Zulip API) ---
 
-export class ZulipAuthError extends Error {
-  constructor(
-    message: string,
-    public readonly code?: string,
-    public readonly response?: unknown,
-  ) {
-    super(message);
-    this.name = "ZulipAuthError";
-  }
-}
+export { ZulipAuthError } from "./zulip.types";
 
 interface FetchApiKeyResult {
   api_key: string;
@@ -621,6 +614,7 @@ export {
   markMessagesAsRead,
   markStreamAsRead,
   markTopicAsRead,
+  renameStreamTopic,
   setTopicResolvedState,
 } from "./zulip-read-state";
 
@@ -1282,6 +1276,7 @@ export async function fetchSubscriptions(): Promise<ZulipSubscription[]> {
       can_add_subscribers_group?: unknown;
       can_remove_subscribers_group?: unknown;
       can_administer_channel_group?: unknown;
+      can_resolve_topics_group?: unknown;
     }[];
   };
   // Что делает: возвращает нормализованные подписки с channel-level permission metadata.
@@ -1301,6 +1296,7 @@ export async function fetchSubscriptions(): Promise<ZulipSubscription[]> {
     const canAdministerChannelGroup = normalizeGroupSettingValue(
       subscription.can_administer_channel_group,
     );
+    const canResolveTopicsGroup = normalizeGroupSettingValue(subscription.can_resolve_topics_group);
     return {
       stream_id: subscription.stream_id,
       name: subscription.name,
@@ -1321,6 +1317,7 @@ export async function fetchSubscriptions(): Promise<ZulipSubscription[]> {
       ...(canAdministerChannelGroup != null
         ? { can_administer_channel_group: canAdministerChannelGroup }
         : {}),
+      ...(canResolveTopicsGroup != null ? { can_resolve_topics_group: canResolveTopicsGroup } : {}),
     };
   });
 }
@@ -1790,6 +1787,8 @@ export interface SendMessageParams {
   sender_full_name?: string;
   // Для private/DM message: id получателей. Если поле задано, `stream` игнорируется.
   to?: number[];
+  /** Zulip local echo id (pairs with the active event queue `queue_id`). */
+  local_id?: string;
 }
 
 // Загружает saved snippets текущего пользователя.
@@ -1851,18 +1850,24 @@ export async function sendMessage(params: SendMessageParams): Promise<MockMessag
     throw new Error(t("message.sendRequiresStreamOrTo"));
   }
   const content = guard.nonEmpty(params.content, "sendMessage.content");
-  const client = await getClient();
+  const sendOptions =
+    params.local_id != null && params.local_id.trim().length > 0
+      ? { localId: params.local_id.trim() }
+      : undefined;
 
   if (isPrivate) {
     const recipients = params.to ?? [];
     for (const recipientId of recipients) {
       guard.userId(recipientId, "sendMessage.to");
     }
-    const result = await client.messages.send({
-      type: "private",
-      to: recipients,
-      content,
-    });
+    const result = await postZulipSendMessage(
+      {
+        type: "private",
+        to: recipients,
+        content,
+      },
+      sendOptions,
+    );
     const id = result.id ?? 0;
     const authoritative = id > 0 ? await fetchMessageById(id) : null;
     if (authoritative) return authoritative;
@@ -1883,12 +1888,15 @@ export async function sendMessage(params: SendMessageParams): Promise<MockMessag
     guard.streamId(params.streamId, "sendMessage.streamId");
   }
   const subject = params.subject ?? "";
-  const result = await client.messages.send({
-    type: "stream",
-    to: stream,
-    topic: subject,
-    content,
-  });
+  const result = await postZulipSendMessage(
+    {
+      type: "stream",
+      to: stream,
+      topic: subject,
+      content,
+    },
+    sendOptions,
+  );
   const id = result.id ?? 0;
   const authoritative = id > 0 ? await fetchMessageById(id) : null;
   if (authoritative) return authoritative;
