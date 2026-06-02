@@ -1,5 +1,5 @@
-import * as Dialog from "@radix-ui/react-dialog";
 import React, { useCallback, useMemo, useState } from "react";
+import { SYSTEM_ALL_FOLDER_ID } from "~/features/folder-sync/folder-sync-constants.lib";
 import { CreateFolderModal } from "~/features/manage-folders/create-folder-modal.ui";
 import {
   createFolder,
@@ -11,6 +11,8 @@ import { useSettingsStore } from "~/features/settings/settings.model";
 import { t } from "~/i18n/i18n";
 import { formatUserFacingError } from "~/shared/lib/toast/format-user-error.lib";
 import { toast } from "~/shared/lib/toast/toast";
+import { AppDialog, DialogCancelButton } from "~/shared/ui/app-dialog.ui";
+import { Spinner } from "~/shared/ui/spinner.ui";
 import { FolderRailHorizontalView } from "./folder-rail-horizontal-view.ui";
 import { FolderRailVerticalView } from "./folder-rail-vertical-view.ui";
 import type { IndexedFolderEntry } from "./folder-rail.lib";
@@ -30,6 +32,13 @@ export const FolderRail: React.FC<FolderRailProps> = ({
   onFoldersChanged,
   layout = "vertical",
 }) => {
+  const normalizedFolders = useMemo(() => {
+    return folders.map((folder) =>
+      folder.id === "all" ? { ...folder, id: SYSTEM_ALL_FOLDER_ID } : folder,
+    );
+  }, [folders]);
+  const resolvedSelectedFolderId =
+    selectedFolderId === "all" ? SYSTEM_ALL_FOLDER_ID : selectedFolderId;
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<FolderRailFolder | null>(null);
@@ -124,8 +133,8 @@ export const FolderRail: React.FC<FolderRailProps> = ({
 
   // Единая структура для обоих view, чтобы не дублировать map + передачу индекса.
   const indexedFolders = useMemo<IndexedFolderEntry[]>(
-    () => folders.map((folder, index) => ({ folder, index })),
-    [folders],
+    () => normalizedFolders.map((folder, index) => ({ folder, index })),
+    [normalizedFolders],
   );
 
   return (
@@ -133,7 +142,7 @@ export const FolderRail: React.FC<FolderRailProps> = ({
       {layout === "horizontal" ? (
         <FolderRailHorizontalView
           indexedFolders={indexedFolders}
-          selectedFolderId={selectedFolderId}
+          selectedFolderId={resolvedSelectedFolderId}
           showSystemFolders={showSystemFolders}
           onSelectFolder={onSelectFolder}
           onToggleLayout={handleToggleLayout}
@@ -145,7 +154,7 @@ export const FolderRail: React.FC<FolderRailProps> = ({
       ) : (
         <FolderRailVerticalView
           indexedFolders={indexedFolders}
-          selectedFolderId={selectedFolderId}
+          selectedFolderId={resolvedSelectedFolderId}
           showSystemFolders={showSystemFolders}
           onSelectFolder={onSelectFolder}
           onToggleLayout={handleToggleLayout}
@@ -168,52 +177,32 @@ export const FolderRail: React.FC<FolderRailProps> = ({
         initialBackgroundColor={renamingFolder?.backgroundColor}
         onSave={handleSaveRename}
       />
-      <Dialog.Root
+      <AppDialog
         open={deletingFolder != null}
         onOpenChange={(open) => {
           if (!open && !isDeletingFolder) setDeletingFolder(null);
         }}
+        title={t("folder.deleteConfirmTitle")}
+        description={t("folder.deleteConfirmText", { label: deletingFolder?.label ?? "" })}
+        footer={
+          <>
+            <DialogCancelButton disabled={isDeletingFolder}>
+              {t("common.cancel")}
+            </DialogCancelButton>
+            <button
+              type="button"
+              onClick={confirmDelete}
+              disabled={isDeletingFolder}
+              className="hover:bg-notice-base/20 bg-notice-base/10 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-notice-base transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isDeletingFolder ? <Spinner size="sm" variant="inherit" /> : null}
+              {t("common.delete")}
+            </button>
+          </>
+        }
       >
-        <Dialog.Portal>
-          <Dialog.Overlay className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-overlay bg-black/50" />
-          <Dialog.Content
-            className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-1/2 top-[20%] z-modal w-full max-w-sm -translate-x-1/2 rounded-xl border border-border-subtle bg-bg-elevated p-6 shadow-xl"
-            onCloseAutoFocus={(e) => e.preventDefault()}
-          >
-            <Dialog.Title className="mb-2 text-base font-semibold text-text-primary">
-              {t("folder.deleteConfirmTitle")}
-            </Dialog.Title>
-            <Dialog.Description className="mb-4 text-sm text-text-muted">
-              {t("folder.deleteConfirmText", { label: deletingFolder?.label ?? "" })}
-            </Dialog.Description>
-            <div className="flex justify-end gap-2">
-              <Dialog.Close asChild>
-                <button
-                  type="button"
-                  disabled={isDeletingFolder}
-                  className="hover:bg-bg/60 rounded-lg px-4 py-2 text-sm text-text-muted transition-colors"
-                >
-                  {t("common.cancel")}
-                </button>
-              </Dialog.Close>
-              <button
-                type="button"
-                onClick={confirmDelete}
-                disabled={isDeletingFolder}
-                className="hover:bg-notice-base/20 bg-notice-base/10 inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-notice-base transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isDeletingFolder && (
-                  <span
-                    className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent"
-                    aria-hidden="true"
-                  />
-                )}
-                {t("common.delete")}
-              </button>
-            </div>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
+        {null}
+      </AppDialog>
     </>
   );
 };

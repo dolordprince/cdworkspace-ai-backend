@@ -1,6 +1,10 @@
-import * as Dialog from "@radix-ui/react-dialog";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  applyChatListReadDecrement,
+  clearRemainingContextUnread,
+  readFallbackContextFromCurrentChat,
+} from "~/entities/chat-list/chat-list-apply-read-decrement.lib";
 import { resolvePersonalDmSidebarTitle } from "~/entities/chat-list/chat-list-format.lib";
 import { createOnDmMessagesAppliedHandler } from "~/entities/chat-list/chat-list-sync-dm-from-window.lib";
 import { createOnStreamMessagesAppliedHandler } from "~/entities/chat-list/chat-list-sync-stream-from-window.lib";
@@ -33,17 +37,15 @@ import {
 } from "~/features/typing-indicator/typing-key";
 import { t } from "~/i18n/i18n";
 import { getCurrentInstance } from "~/shared/api/client";
+import { getRealmBaseUrl } from "~/shared/api/zulip-client.internal";
 import {
   fetchMessageById,
-  getRealmBaseUrl,
   sendMessage,
-  markMessagesAsRead,
   updateMessage,
   deleteMessage,
-  markDmAsRead,
-  markTopicAsRead,
-  type MockMessage,
-} from "~/shared/api/zulip";
+} from "~/shared/api/zulip-messages";
+import { markMessagesAsRead, markDmAsRead, markTopicAsRead } from "~/shared/api/zulip-read-state";
+import type { MockMessage } from "~/shared/api/zulip.types";
 import { useOpenSearch } from "~/shared/contexts/open-search";
 import { useRightDrawer } from "~/shared/contexts/right-drawer";
 import { dmRouteKey } from "~/shared/lib/dm-key";
@@ -65,6 +67,7 @@ import { withCurrentOrgRoute } from "~/shared/lib/org-route";
 import { useShortcut } from "~/shared/lib/shortcuts";
 import { resolveCanonicalStreamName } from "~/shared/lib/stream-name.lib";
 import { normalizeTopicForIdentity } from "~/shared/lib/topic-identity.lib";
+import { AppDialogShell, APP_DIALOG_CONTENT_BASE_CLASS } from "~/shared/ui/app-dialog.ui";
 import { ChatHeader } from "~/widgets/chat-view/chat-header.ui";
 import { useSidebarConfigStore } from "~/widgets/sidebar/sidebar-config.model";
 import { parseDmSlugToUserIds } from "~/widgets/sidebar/sidebar.lib";
@@ -107,6 +110,13 @@ import { ChatPageSelectionBar } from "./chat-page-selection-bar.ui";
 import { executeChatPageSend } from "./chat-page-send-handler.lib";
 import { useChatToastAutoClear } from "./chat-page-toast.hook";
 import { ChatPageTypingLine } from "./chat-page-typing-line.ui";
+import {
+  buildReadFallbackContext,
+  resolveChatHeaderRightPanelLabel,
+  resolveDmGroupParticipantIds,
+  resolveDraftType,
+  type ReadFallbackContext,
+} from "./chat-page.lib";
 import { shouldLoadBoundaryPage } from "./chat-pagination.lib";
 import {
   buildOptimisticOutgoingMessage,
@@ -377,7 +387,7 @@ export const ChatPage: React.FC = () => {
   const activeDraftIdRef = useRef<number | null>(null);
   const pendingForwardPrefillRef = useRef<string | null>(null);
 
-  const draftType: DraftType | null = isDmView ? "private" : activeStream ? "stream" : null;
+  const draftType: DraftType | null = resolveDraftType(isDmView, activeStream);
   const draftTo: number[] = useMemo(() => {
     const ctx = useCurrentChatMessagesStore.getState().context;
     return resolveDraftTargetIds({
@@ -502,10 +512,6 @@ export const ChatPage: React.FC = () => {
       idleStopDelayMs: 3000,
     });
 
-  type ReadFallbackContext =
-    | { type: "stream"; streamId: number; topic: string }
-    | { type: "dm"; dmKey: string };
-
   const applyReadMessagesOptimistically = useCallback(
     (messageIds: number[], fallbackContext?: ReadFallbackContext) => {
       if (messageIds.length === 0) return;
@@ -528,31 +534,21 @@ export const ChatPage: React.FC = () => {
             requestedCount: messageIds.length,
           });
         }
-        return;
+      } else {
+        updateMessageFlagsInStore(unreadMessageIds, "read", "add");
       }
 
-      updateMessageFlagsInStore(unreadMessageIds, "read", "add");
+      const readFallback =
+        fallbackContext ??
+        readFallbackContextFromCurrentChat(useCurrentChatMessagesStore.getState().context);
 
       const chatListState = useChatListStore.getState();
-      const locationIndex = chatListState.messageIdToLocation;
-      let knownIdsCount = 0;
-      for (const messageId of unreadMessageIds) {
-        if (locationIndex.has(messageId)) {
-          knownIdsCount += 1;
-        }
-      }
-
-      chatListState.decrementUnreadForMessages(unreadMessageIds);
-
-      const missingIdsCount = unreadMessageIds.length - knownIdsCount;
-      if (missingIdsCount <= 0) return;
-
-      const context = fallbackContext ?? useCurrentChatMessagesStore.getState().context;
-      if (context?.type === "stream") {
-        chatListState.decrementUnreadForTopic(context.streamId, context.topic, missingIdsCount);
-      } else if (context?.type === "dm") {
-        chatListState.decrementUnreadForDmKey(context.dmKey, missingIdsCount);
-      }
+      applyChatListReadDecrement(() => useChatListStore.getState(), chatListState, {
+        messageIds,
+        fallbackContext: readFallback,
+        clampWhenAlreadyRead: unreadMessageIds.length === 0,
+        source: "chat:optimisticMarkRead",
+      });
     },
     [updateMessageFlagsInStore],
   );
@@ -574,13 +570,13 @@ export const ChatPage: React.FC = () => {
   );
 
   useEffect(() => {
-    const batchFallbackContext: ReadFallbackContext | undefined = isDmView
-      ? activeDmUserIds != null && activeDmUserIds.length > 0
-        ? { type: "dm", dmKey: dmRouteKey(activeDmUserIds, currentUserId) }
-        : undefined
-      : activeStreamId != null
-        ? { type: "stream", streamId: activeStreamId, topic: activeTopic ?? "" }
-        : undefined;
+    const batchFallbackContext = buildReadFallbackContext({
+      isDmView,
+      activeDmUserIds,
+      currentUserId,
+      activeStreamId,
+      activeTopic,
+    });
 
     const batcher = createMarkAsReadBatcher({
       debounceMs: 250,
@@ -668,9 +664,19 @@ export const ChatPage: React.FC = () => {
 
     request
       .then((ok) => {
-        if (ok && unreadIds.length > 0) {
+        if (!ok || markFallbackContext == null) {
+          return;
+        }
+        if (unreadIds.length > 0) {
           applyReadMessagesOptimistically(unreadIds, markFallbackContext);
         }
+        const chatListState = useChatListStore.getState();
+        clearRemainingContextUnread(
+          () => useChatListStore.getState(),
+          chatListState,
+          markFallbackContext,
+          "chat:markAllClearRemaining",
+        );
       })
       .catch(() => {});
   }, [
@@ -1653,12 +1659,11 @@ export const ChatPage: React.FC = () => {
 
   const dmGroup = useMemo(() => {
     if (!isGroupDmView || !dmChat) return undefined;
-    const participantIds =
-      dmChat.userIds != null && dmChat.userIds.length > 0
-        ? dmChat.userIds
-        : currentUserId != null
-          ? Array.from(new Set([...dmRecipientIds, currentUserId]))
-          : dmRecipientIds;
+    const participantIds = resolveDmGroupParticipantIds({
+      dmUserIds: dmChat.userIds,
+      currentUserId,
+      dmRecipientIds,
+    });
     const rawName = dmChat.name?.trim() ?? "";
     const resolvedName =
       rawName.length === 0 || rawName === t("dm.privateChat") ? t("dm.groupChat") : rawName;
@@ -1728,34 +1733,27 @@ export const ChatPage: React.FC = () => {
   return (
     <div className="flex max-h-full min-h-0 min-w-0 max-w-chat-page flex-1 flex-col overflow-hidden">
       {/* Forward message modal */}
-      <Dialog.Root
+      <AppDialogShell
         open={forwardMessages.length > 0}
-        onOpenChange={(open) => {
-          if (!open) {
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
             setForwardMessages([]);
             setForwardSelectedText(undefined);
           }
         }}
+        contentClassName={`${APP_DIALOG_CONTENT_BASE_CLASS} top-1/2 flex max-h-[70vh] max-w-md -translate-y-1/2 flex-col p-0`}
       >
-        <Dialog.Portal>
-          <Dialog.Overlay className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-overlay bg-black/50" />
-          <Dialog.Content
-            className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-1/2 top-1/2 z-modal flex max-h-[70vh] w-full max-w-md -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-border-subtle bg-bg-elevated shadow-xl"
-            onCloseAutoFocus={(e) => e.preventDefault()}
-          >
-            {forwardMessages.length > 0 && (
-              <ForwardMessageModalBody
-                streams={streams}
-                onForward={handleForwardTo}
-                onClose={() => {
-                  setForwardMessages([]);
-                  setForwardSelectedText(undefined);
-                }}
-              />
-            )}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
+        {forwardMessages.length > 0 && (
+          <ForwardMessageModalBody
+            streams={streams}
+            onForward={handleForwardTo}
+            onClose={() => {
+              setForwardMessages([]);
+              setForwardSelectedText(undefined);
+            }}
+          />
+        )}
+      </AppDialogShell>
 
       <ChatPageReadReceiptsDialog
         open={readReceiptsOpen}
@@ -1775,9 +1773,7 @@ export const ChatPage: React.FC = () => {
         onToggleRightPanel={rightDrawer ? handleToggleRightPanel : undefined}
         onOpenRightPanel={rightDrawer ? handleOpenRightPanel : undefined}
         rightPanelOpen={rightDrawer?.open ?? false}
-        rightPanelLabel={
-          isGroupDmView ? t("dm.groupChat") : isDmView ? t("info.partnerInfo") : undefined
-        }
+        rightPanelLabel={resolveChatHeaderRightPanelLabel(isGroupDmView, isDmView)}
         hideParticipants={isDmView}
         onCallClick={canStartCall ? handleCallClick : undefined}
         dmPartner={dmPartner}

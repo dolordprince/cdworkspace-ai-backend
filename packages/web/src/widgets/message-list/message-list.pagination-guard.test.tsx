@@ -6,8 +6,8 @@ import { MessageList } from "./message-list.ui";
 
 const fetchRealmEmojisMock = vi.hoisted(() => vi.fn());
 
-vi.mock("~/shared/api/zulip", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("~/shared/api/zulip")>();
+vi.mock("~/shared/api/zulip-users", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("~/shared/api/zulip-users")>();
   return {
     ...actual,
     fetchRealmEmojis: (...args: unknown[]) => fetchRealmEmojisMock(...args),
@@ -93,6 +93,7 @@ describe("MessageList boundary pagination guards", () => {
         messages={messages}
         currentUserId={7}
         firstUnreadId={3}
+        unreadCount={21}
         scrollToBottomKey="chat-a"
         onLoadMore={onLoadMore}
       />,

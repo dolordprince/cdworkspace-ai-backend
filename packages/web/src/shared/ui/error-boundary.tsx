@@ -2,6 +2,7 @@ import React from "react";
 import { t } from "~/i18n/i18n";
 import { createLogger } from "~/shared/lib/logger";
 import { captureException } from "~/shared/lib/sentry";
+import { Spinner } from "~/shared/ui/spinner.ui";
 import type { ErrorBoundaryProps, ErrorBoundaryState } from "./error-boundary.types";
 
 const log = createLogger("error-boundary");
@@ -29,32 +30,41 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
     this.props.onError?.(error, info);
   }
 
+  private renderErrorFallback(): React.ReactNode {
+    const { fallback } = this.props;
+    const error = this.state.error;
+    if (error == null) {
+      return null;
+    }
+    if (fallback != null) {
+      const content =
+        typeof fallback === "function"
+          ? fallback({
+              error,
+              resetErrorBoundary: this.resetErrorBoundary,
+            })
+          : fallback;
+      return <>{content}</>;
+    }
+
+    return (
+      <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-4 p-8 text-center">
+        <p className="text-lg font-medium text-text-primary">{t("app.error")}</p>
+        <p className="max-w-md text-sm text-text-muted">{error.message}</p>
+        <button
+          type="button"
+          onClick={this.resetErrorBoundary}
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-black"
+        >
+          {t("app.retry")}
+        </button>
+      </div>
+    );
+  }
+
   render(): React.ReactNode {
     if (this.state.error) {
-      const { fallback } = this.props;
-      if (fallback != null) {
-        if (typeof fallback === "function") {
-          return fallback({
-            error: this.state.error,
-            resetErrorBoundary: this.resetErrorBoundary,
-          });
-        }
-        return fallback;
-      }
-
-      return (
-        <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-4 p-8 text-center">
-          <p className="text-lg font-medium text-text-primary">{t("app.error")}</p>
-          <p className="max-w-md text-sm text-text-muted">{this.state.error.message}</p>
-          <button
-            type="button"
-            onClick={this.resetErrorBoundary}
-            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-black"
-          >
-            {t("app.retry")}
-          </button>
-        </div>
-      );
+      return this.renderErrorFallback();
     }
 
     return this.props.children;
@@ -105,10 +115,7 @@ export function PageLoader(): React.ReactElement {
       aria-label={label}
     >
       <div className="flex flex-col items-center gap-3">
-        <div
-          className="h-8 w-8 animate-spin rounded-full border-2 border-border-subtle border-t-accent"
-          aria-hidden
-        />
+        <Spinner size="lg" />
         <p className="text-sm text-text-muted">{label}</p>
       </div>
     </div>

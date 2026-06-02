@@ -10,7 +10,6 @@ import {
   ZULIP_DM_ANCHOR_NUM_BEFORE,
   ZULIP_STREAM_ANCHOR_NUM_AFTER,
   ZULIP_STREAM_ANCHOR_NUM_BEFORE,
-  ZULIP_STREAM_CHAT_NUM_BEFORE,
 } from "~/shared/lib/zulip-message-window.lib";
 const {
   mockGetChatMessagesAscending,
@@ -54,8 +53,8 @@ vi.mock("~/shared/lib/message-cache-db", async (importOriginal) => {
   };
 });
 
-vi.mock("~/shared/api/zulip", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("~/shared/api/zulip")>();
+vi.mock("~/shared/api/zulip-messages", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("~/shared/api/zulip-messages")>();
   return {
     ...actual,
     fetchMessages: mockFetchMessages,
@@ -146,7 +145,7 @@ describe("loadInitialMessagesForContext (IndexedDB hydrate + full API)", () => {
     expect(mockUpsertChatMessages).toHaveBeenCalledWith(
       expect.objectContaining({
         messages: boot,
-        windowSizeN: ZULIP_STREAM_CHAT_NUM_BEFORE,
+        windowSizeN: ZULIP_STREAM_ANCHOR_NUM_BEFORE,
       }),
     );
   });

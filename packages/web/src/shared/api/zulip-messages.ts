@@ -5,17 +5,18 @@ import { createLogger } from "~/shared/lib/logger";
 import { normalizeTopicForIdentity } from "~/shared/lib/topic-identity.lib";
 import {
   ZULIP_DM_CHAT_NUM_AFTER,
-  ZULIP_DM_CHAT_NUM_BEFORE,
+  ZULIP_DM_ANCHOR_NUM_BEFORE,
+  ZULIP_STREAM_ANCHOR_NUM_BEFORE,
   ZULIP_STREAM_CHAT_NUM_AFTER,
-  ZULIP_STREAM_CHAT_NUM_BEFORE,
 } from "~/shared/lib/zulip-message-window.lib";
 import {
   normalizeZulipMessagesNarrowForApi,
   zulipTopicNarrowOperandForApi,
 } from "~/shared/lib/zulip-topic-narrow.lib";
-import { getClient } from "./zulip-client.internal";
+import { getClient, buildMessagesQueryParams } from "./zulip-client.internal";
 import { mockMessageFromGetMessageApiData, rawMessageToMockMessage } from "./zulip-message-map.lib";
 import { postZulipSendMessage } from "./zulip-message-send.internal";
+import { mapMessagesPageFromApiData } from "./zulip-messages-page.lib";
 import {
   zulipPipelineDelete,
   zulipPipelineGet,
@@ -297,6 +298,21 @@ export async function fetchActivityMessagesPage(
 
 export { rawMessageToMockMessage };
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function throwIfZulipPipelineGetNull(
+  response: Awaited<ReturnType<typeof zulipPipelineGet>> | null,
+  signal?: AbortSignal,
+): asserts response is NonNullable<Awaited<ReturnType<typeof zulipPipelineGet>>> {
+  if (response != null) return;
+  if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  throw new Error(t("app.networkError"));
+}
+
 function mapZulipMessage(m: RawMessageToMockInput): MockMessage {
   return rawMessageToMockMessage(m);
 }
@@ -305,6 +321,7 @@ export async function fetchMessages(
   stream?: string,
   topic?: string,
   q?: string,
+  options?: { signal?: AbortSignal },
 ): Promise<MockMessage[]> {
   const normalizedStream =
     stream == null ? undefined : guard.nonEmpty(stream, "fetchMessages.stream");
@@ -312,27 +329,20 @@ export async function fetchMessages(
   if (normalizedTopic !== undefined && normalizedStream === undefined) {
     throw new Error("fetchMessages.stream is required when topic is provided");
   }
-  const client = await getClient();
   const narrow: { operator: string; operand: string }[] = [];
   if (normalizedStream) narrow.push({ operator: "stream", operand: normalizedStream });
   if (normalizedTopic !== undefined) {
     narrow.push({ operator: "topic", operand: zulipTopicNarrowOperandForApi(normalizedTopic) });
   }
   if (q?.trim()) narrow.push({ operator: "search", operand: q.trim() });
-  try {
-    const data = (await client.messages.retrieve({
-      narrow: narrow.length ? narrow : undefined,
-      anchor: "newest",
-      num_before: ZULIP_STREAM_CHAT_NUM_BEFORE,
-      num_after: ZULIP_STREAM_CHAT_NUM_AFTER,
-      apply_markdown: true,
-    })) as { result?: string; messages?: RawMessageToMockInput[] };
-    if (data.result === "error") return [];
-    const list = data.messages ?? [];
-    return list.map(mapZulipMessage);
-  } catch {
-    return [];
-  }
+  const page = await fetchMessagesWithNarrowPage(
+    narrow,
+    "newest",
+    ZULIP_STREAM_ANCHOR_NUM_BEFORE,
+    ZULIP_STREAM_CHAT_NUM_AFTER,
+    { ...options, applyMarkdown: false },
+  );
+  return page.messages;
 }
 
 // Универсальная загрузка сообщений по narrow
@@ -340,12 +350,57 @@ export async function fetchMessages(
 export async function fetchMessagesWithNarrow(
   narrow: { operator: string; operand: string | number | number[] }[],
   anchor: string | number = "newest",
-  numBefore = ZULIP_STREAM_CHAT_NUM_BEFORE,
+  numBefore = ZULIP_STREAM_ANCHOR_NUM_BEFORE,
   numAfter = ZULIP_STREAM_CHAT_NUM_AFTER,
-  options?: { applyMarkdown?: boolean },
+  options?: { signal?: AbortSignal; applyMarkdown?: boolean },
 ): Promise<MockMessage[]> {
   const page = await fetchMessagesWithNarrowPage(narrow, anchor, numBefore, numAfter, options);
   return page.messages;
+}
+
+async function fetchMessagesWithNarrowPageViaPipeline(args: {
+  apiNarrow: { operator: string; operand: string | number | number[] }[];
+  validatedAnchor: string | number;
+  validatedNumBefore: number;
+  validatedNumAfter: number;
+  applyMarkdown: boolean;
+  signal: AbortSignal;
+}): Promise<MessagesPageResult> {
+  const query = buildMessagesQueryParams({
+    narrow: args.apiNarrow.length > 0 ? args.apiNarrow : undefined,
+    anchor: args.validatedAnchor,
+    num_before: args.validatedNumBefore,
+    num_after: args.validatedNumAfter,
+  });
+  query.apply_markdown = args.applyMarkdown ? "true" : "false";
+  const response = await zulipPipelineGet("/messages", query, args.signal);
+  throwIfZulipPipelineGetNull(response, args.signal);
+  if (!response.ok) {
+    throw new Error(t("app.errorStatus", { status: String(response.status) }));
+  }
+  const data = response.data as Parameters<typeof mapMessagesPageFromApiData>[0];
+  if (args.signal.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
+  return mapMessagesPageFromApiData(data, mapZulipMessage);
+}
+
+async function fetchMessagesWithNarrowPageViaClient(args: {
+  apiNarrow: { operator: string; operand: string | number | number[] }[];
+  validatedAnchor: string | number;
+  validatedNumBefore: number;
+  validatedNumAfter: number;
+  applyMarkdown: boolean;
+}): Promise<MessagesPageResult> {
+  const client = await getClient();
+  const data = (await client.messages.retrieve({
+    narrow: args.apiNarrow.length > 0 ? args.apiNarrow : undefined,
+    anchor: args.validatedAnchor,
+    num_before: args.validatedNumBefore,
+    num_after: args.validatedNumAfter,
+    apply_markdown: args.applyMarkdown,
+  })) as Parameters<typeof mapMessagesPageFromApiData>[0];
+  return mapMessagesPageFromApiData(data, mapZulipMessage);
 }
 
 // Универсальная загрузка страницы сообщений по narrow
@@ -353,38 +408,44 @@ export async function fetchMessagesWithNarrow(
 export async function fetchMessagesWithNarrowPage(
   narrow: { operator: string; operand: string | number | number[] }[],
   anchor: string | number = "newest",
-  numBefore = ZULIP_STREAM_CHAT_NUM_BEFORE,
+  numBefore = ZULIP_STREAM_ANCHOR_NUM_BEFORE,
   numAfter = ZULIP_STREAM_CHAT_NUM_AFTER,
-  options?: { applyMarkdown?: boolean },
+  options?: { signal?: AbortSignal; applyMarkdown?: boolean },
 ): Promise<MessagesPageResult> {
   const validatedAnchor = validateMessagesApiAnchor(anchor, "fetchMessagesWithNarrowPage");
   const validatedNumBefore = validateNonNegativeInteger(numBefore, "numBefore");
   const validatedNumAfter = validateNonNegativeInteger(numAfter, "numAfter");
   const applyMarkdown = options?.applyMarkdown ?? false;
   const apiNarrow = normalizeZulipMessagesNarrowForApi(narrow);
-  const client = await getClient();
+  if (options?.signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
   try {
-    const data = (await client.messages.retrieve({
-      narrow: apiNarrow.length > 0 ? apiNarrow : undefined,
-      anchor: validatedAnchor,
-      num_before: validatedNumBefore,
-      num_after: validatedNumAfter,
-      apply_markdown: applyMarkdown,
-    })) as {
-      result?: string;
-      messages?: RawMessageToMockInput[];
-      found_oldest?: boolean;
-      foundOldest?: boolean;
-      found_newest?: boolean;
-      foundNewest?: boolean;
-    };
-    if (data.result === "error") return { messages: [], foundOldest: false, foundNewest: false };
-    return {
-      messages: (data.messages ?? []).map(mapZulipMessage),
-      foundOldest: data.found_oldest ?? data.foundOldest ?? false,
-      foundNewest: data.found_newest ?? data.foundNewest ?? false,
-    };
-  } catch {
+    if (options?.signal) {
+      return await fetchMessagesWithNarrowPageViaPipeline({
+        apiNarrow,
+        validatedAnchor,
+        validatedNumBefore,
+        validatedNumAfter,
+        applyMarkdown,
+        signal: options.signal,
+      });
+    }
+
+    return await fetchMessagesWithNarrowPageViaClient({
+      apiNarrow,
+      validatedAnchor,
+      validatedNumBefore,
+      validatedNumAfter,
+      applyMarkdown,
+    });
+  } catch (error) {
+    if (isAbortError(error) || options?.signal?.aborted) {
+      throw error;
+    }
+    if (options?.signal) {
+      throw error instanceof Error ? error : new Error(t("app.networkError"));
+    }
     return { messages: [], foundOldest: false, foundNewest: false };
   }
 }
@@ -443,30 +504,65 @@ const GROUP_DM_ID_OFFSET = 2_000_000;
 
 // Загружает сообщения DM, то есть 1:1 или групповые.
 // Для 1:1 передайте `userId` собеседника.
-export async function fetchDmMessages(userIds: number | number[]): Promise<MockMessage[]> {
-  const client = await getClient();
+export async function fetchDmMessages(
+  userIds: number | number[],
+  options?: { signal?: AbortSignal },
+): Promise<MockMessage[]> {
   const rawIds = Array.isArray(userIds) ? userIds : [userIds];
   if (rawIds.length === 0) return [];
   const ids = rawIds.map((userId, index) =>
     guard.userId(userId, `fetchDmMessages.userIds[${index}]`),
   );
   if (ids.some((id) => id >= GROUP_DM_ID_OFFSET)) return [];
+  if (options?.signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+  }
   const params = {
     narrow: [{ negated: false, operator: "dm", operand: ids }] as DmNarrow[],
     anchor: "newest",
-    num_before: ZULIP_DM_CHAT_NUM_BEFORE,
+    num_before: ZULIP_DM_ANCHOR_NUM_BEFORE,
     num_after: ZULIP_DM_CHAT_NUM_AFTER,
     client_gravatar: true,
     allow_empty_topic_name: true,
     apply_markdown: true,
   };
   try {
+    if (options?.signal) {
+      const response = await zulipPipelineGet(
+        "/messages",
+        buildMessagesQueryParams({
+          narrow: params.narrow,
+          anchor: params.anchor,
+          num_before: params.num_before,
+          num_after: params.num_after,
+        }),
+        options.signal,
+      );
+      throwIfZulipPipelineGetNull(response, options.signal);
+      if (!response.ok) {
+        throw new Error(t("app.errorStatus", { status: String(response.status) }));
+      }
+      const data = response.data as { result?: string; messages?: RawMessageToMockInput[] };
+      if (data.result === "error") return [];
+      if (options.signal.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      return (data.messages ?? []).map(mapZulipMessage);
+    }
+
+    const client = await getClient();
     const data = await client.messages.retrieve(params);
     const raw = data as { result?: string; messages?: RawMessageToMockInput[] };
     if (raw.result === "error") return [];
     const list = raw.messages ?? [];
     return list.map(mapZulipMessage);
-  } catch {
+  } catch (error) {
+    if (isAbortError(error) || options?.signal?.aborted) {
+      throw error;
+    }
+    if (options?.signal) {
+      throw error instanceof Error ? error : new Error(t("app.networkError"));
+    }
     return [];
   }
 }
@@ -576,12 +672,12 @@ export async function fetchMessageRenderedHtmlById(
   if (data.result === "error") {
     return null;
   }
-  const content =
-    typeof data.message?.content === "string"
-      ? data.message.content
-      : typeof data.content === "string"
-        ? data.content
-        : null;
+  let content: string | null = null;
+  if (typeof data.message?.content === "string") {
+    content = data.message.content;
+  } else if (typeof data.content === "string") {
+    content = data.content;
+  }
   const trimmed = content?.trim() ?? "";
   return trimmed.length > 0 ? trimmed : null;
 }
@@ -606,12 +702,12 @@ export async function fetchSavedSnippets(): Promise<SavedSnippet[]> {
     const id = typeof row.id === "number" ? row.id : 0;
     const title = typeof row.title === "string" ? row.title : "";
     const content = typeof row.content === "string" ? row.content : "";
-    const dateCreated =
-      typeof row.date_created === "number"
-        ? row.date_created
-        : typeof row.dateCreated === "number"
-          ? row.dateCreated
-          : 0;
+    let dateCreated = 0;
+    if (typeof row.date_created === "number") {
+      dateCreated = row.date_created;
+    } else if (typeof row.dateCreated === "number") {
+      dateCreated = row.dateCreated;
+    }
     if (id <= 0 || title.trim().length === 0 || content.trim().length === 0) continue;
     snippets.push({
       id,

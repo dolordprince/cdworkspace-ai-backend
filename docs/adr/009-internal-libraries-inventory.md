@@ -10,30 +10,38 @@ Large orchestrator files and duplicated UI patterns increase cognitive load. We 
 
 ## Baseline (hot files, lines)
 
-| Priority | File                                                | Lines | Notes                                |
-| -------- | --------------------------------------------------- | ----: | ------------------------------------ |
-| P0       | `pages/chat/chat-page.ui.tsx`                       | ~1966 | Many `useEffect` clusters            |
-| P0       | `widgets/message-composer/message-composer.ui.tsx`  | ~1118 | 14+ `useState`                       |
-| P0       | `shared/api/zulip.ts`                               | ~2057 | Legacy monolith; prefer `zulip-*.ts` |
-| P1       | `entities/chat-list/chat-list.model.ts`             | ~2540 | Mega-store                           |
-| P1       | `widgets/layout/layout-zulip-event-dispatch.lib.ts` |  ~794 | Event switchboard                    |
-| P1       | `features/folder-sync/folder-sync.model.ts`         | ~1195 | Reconcile + cache                    |
-| P2       | `shared/lib/message-cache-db.ts`                    |  ~802 | Overlaps `*-snapshot-db.ts`          |
+| Priority | File                                                |   Lines | Notes                                        |
+| -------- | --------------------------------------------------- | ------: | -------------------------------------------- |
+| P0       | `pages/chat/chat-page.ui.tsx`                       |   ~1966 | Many `useEffect` clusters                    |
+| P0       | `widgets/message-composer/message-composer.ui.tsx`  |   ~1118 | 14+ `useState`                               |
+| P0       | `shared/api/zulip.ts`                               | removed | Split complete — import `zulip-*.ts` modules |
+| P1       | `entities/chat-list/chat-list.model.ts`             |   ~2540 | Mega-store                                   |
+| P1       | `widgets/layout/layout-zulip-event-dispatch.lib.ts` |    ~794 | Event switchboard                            |
+| P1       | `features/folder-sync/folder-sync.model.ts`         |   ~1195 | Reconcile + cache                            |
+| P2       | `shared/lib/message-cache-db.ts`                    |    ~802 | Overlaps `*-snapshot-db.ts`                  |
 
 ## Duplication map
 
-| Pattern                   | Locations                        | Target module                                |
-| ------------------------- | -------------------------------- | -------------------------------------------- |
-| Message time (HH:MM)      | `shared/lib/format.ts`           | `datetime.lib.ts` → `formatMessageTimeShort` |
-| Sidebar relative time     | `chat-list-format.lib.ts`        | `formatMessageTimeRelative`                  |
-| Feed/inbox date+time      | `feed-page`, `activity-page`     | `formatMessageTimeWithDate`                  |
-| `formatDateJoined`        | `right-panel.lib`, settings page | `datetime.lib.ts`                            |
-| Folder create/edit modals | `manage-folders/*`               | `shared/ui/folder-form-modal`                |
-| Radix Dialog markup       | 14+ features/pages               | `shared/ui/app-dialog`                       |
-| `ZulipAuthError`          | `zulip.ts`, `zulip.types.ts`     | `zulip.types.ts` only                        |
-| User picker list UI       | add-stream-members, create-chat  | `shared/ui/user-picker-list`                 |
-| Cache-first lifecycle     | feed, inbox, activity            | `use-cache-first-page.hook`                  |
-| Optimistic mute           | `mute-chat.optimistic.lib`       | `optimistic-mutation.lib`                    |
+| Pattern                   | Locations                        | Target module                                            |
+| ------------------------- | -------------------------------- | -------------------------------------------------------- |
+| Message time (HH:MM)      | `shared/lib/format.ts`           | `datetime.lib.ts` → `formatMessageTimeShort`             |
+| Sidebar relative time     | `chat-list-format.lib.ts`        | `formatMessageTimeRelative`                              |
+| Feed/inbox date+time      | `feed-page`, `activity-page`     | `formatMessageTimeWithDate`                              |
+| `formatDateJoined`        | `right-panel.lib`, settings page | `datetime.lib.ts`                                        |
+| Folder create/edit modals | `manage-folders/*`               | `shared/ui/folder-form-modal`                            |
+| Radix Dialog markup       | 14+ features/pages               | `shared/ui/app-dialog`                                   |
+| `ZulipAuthError`          | `zulip.ts`, `zulip.types.ts`     | `zulip.types.ts` only                                    |
+| User picker list UI       | add-stream-members, create-chat  | `shared/ui/user-picker-list`                             |
+| Cache-first lifecycle     | feed, inbox, activity            | `use-cache-first-page.hook`                              |
+| Optimistic mute           | `mute-chat.optimistic.lib`       | `optimistic-mutation.lib`                                |
+| Spinner markup            | 6+ pages/widgets                 | `shared/ui/spinner.ui` (done)                            |
+| Dismiss outside/Escape    | download center, composer        | `use-dismiss-on-outside-escape.hook` (done)              |
+| Composer popover shell    | 4 composer popovers              | `shared/ui/anchored-popover.ui` (done)                   |
+| Radix Dialog overlay      | jitsi, chat forward, add-members | `AppDialogShell` (migrated); chat-page other dialogs TBD |
+| Section micro-labels      | settings, right-panel, mentions  | `shared/ui/section-label.ui` (done)                      |
+| List row hover            | search-modal results             | `shared/ui/selectable-row.ui` (partial)                  |
+| Link preview skeleton     | message-link-preview             | `shared/ui/skeleton.ui` (done)                           |
+| Form labels               | login                            | `shared/ui/form-field.ui` (partial)                      |
 
 ## Decision
 

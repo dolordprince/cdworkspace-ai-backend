@@ -6,7 +6,7 @@ import { useUsersStore } from "~/entities/user/user.model";
 import { useSettingsStore } from "~/features/settings/settings.model";
 import { useTypingIndicatorStore } from "~/features/typing-indicator/typing-indicator.model";
 import { t } from "~/i18n/i18n";
-import { getRealmBaseUrl } from "~/shared/api/zulip";
+import { getRealmBaseUrl } from "~/shared/api/zulip-client.internal";
 import { resolveAvatarUrl } from "~/shared/lib/avatar";
 import { effectiveDmIsGroupFromSlug } from "~/shared/lib/dm-route.lib";
 import { getPresenceState, sidebarRowClass } from "~/shared/lib/format";
@@ -201,15 +201,19 @@ export const SidebarDmList: React.FC<SidebarDmListProps> = ({ activeDmId, dms })
                     </span>
                     <SidebarUserStatusEmoji status={user.status} />
                   </div>
-                  {!isCompactDensity && isTyping ? (
-                    <span className="block truncate text-[11px] italic text-text-primary">
-                      {t("chat.typing")}
-                    </span>
-                  ) : !isCompactDensity ? (
-                    <span className="block truncate text-[11px] text-text-secondary">
-                      {user.email ?? ""}
-                    </span>
-                  ) : null}
+                  {!isCompactDensity && (
+                    <>
+                      {isTyping ? (
+                        <span className="block truncate text-[11px] italic text-text-primary">
+                          {t("chat.typing")}
+                        </span>
+                      ) : (
+                        <span className="block truncate text-[11px] text-text-secondary">
+                          {user.email ?? ""}
+                        </span>
+                      )}
+                    </>
+                  )}
                 </div>
               </Link>
             );

@@ -4,8 +4,10 @@
 import { guard } from "~/shared/lib/guards";
 import { parseCurrentUserFromApiData } from "./zulip-current-user.lib";
 import { zulipPipelineGet } from "./zulip-pipeline.internal";
+import { normalizeRealmEmojiMap } from "./zulip-realm-emoji.lib";
 import type {
   AvatarUrlByUserId,
+  RealmEmoji,
   RealmPresenceResponse,
   ZulipCurrentUser,
   ZulipUserMember,
@@ -34,7 +36,13 @@ export async function fetchUsers(): Promise<ZulipUserMember[]> {
     users?: ZulipUserMember[];
   };
   if (data.result === "error") return [];
-  return Array.isArray(data.members) ? data.members : Array.isArray(data.users) ? data.users : [];
+  if (Array.isArray(data.members)) {
+    return data.members;
+  }
+  if (Array.isArray(data.users)) {
+    return data.users;
+  }
+  return [];
 }
 
 /** Fetches a single user by ID (GET /users/{user_id}). Used for DM profile panel. */
@@ -62,6 +70,25 @@ export async function fetchRealmPresence(): Promise<RealmPresenceResponse> {
     return { result: "error" };
   }
   return res.data as RealmPresenceResponse;
+}
+
+/** Fetches custom realm emoji in emoji-picker-react compatible shape (GET /realm/emoji). */
+export async function fetchRealmEmojis(): Promise<RealmEmoji[]> {
+  const res = await zulipPipelineGet("/realm/emoji");
+  if (!res?.ok) {
+    return [];
+  }
+  const data = res.data as {
+    result?: string;
+    emoji?: Record<
+      string,
+      { id?: string | number; name?: string; source_url?: string; deactivated?: boolean }
+    >;
+  };
+  if (data.result === "error") {
+    return [];
+  }
+  return normalizeRealmEmojiMap(data.emoji);
 }
 
 /**

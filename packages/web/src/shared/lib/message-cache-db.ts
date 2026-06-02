@@ -8,14 +8,14 @@ import { runMessageCacheDbUpgrade } from "~/shared/lib/message-cache-db-upgrade.
 import { instanceChatKey } from "~/shared/lib/message-cache-keys.lib";
 import { normalizeTopicForIdentity } from "~/shared/lib/topic-identity.lib";
 import { resolveTopicMoveTargetMessageIds } from "~/shared/lib/update-message-topic-move.lib";
-import { ZULIP_CHAT_MESSAGE_CACHE_MAX_WINDOW } from "~/shared/lib/zulip-message-window.lib";
+import { ZULIP_DM_INITIAL_WINDOW_TOTAL } from "~/shared/lib/zulip-message-window.lib";
 
 function idbError(reason: unknown): Error {
   return reason instanceof Error ? reason : new Error("indexedDB error", { cause: reason });
 }
 
 const DB_NAME = "workspace-message-cache-v1";
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 
 /** IndexedDB database name for message/chat bootstrap cache (tests, cold-start wipe). */
 export const MESSAGE_CACHE_DB_NAME = DB_NAME;
@@ -26,7 +26,7 @@ export const MESSAGE_CACHE_DB_VERSION = DB_VERSION;
 const IDB_DELETE_BLOCKED_TIMEOUT_MS = 3_000;
 
 // Размер retention по умолчанию, если caller явно не передал windowSizeN.
-export const MESSAGE_CACHE_DEFAULT_WINDOW_SIZE = ZULIP_CHAT_MESSAGE_CACHE_MAX_WINDOW;
+export const MESSAGE_CACHE_DEFAULT_WINDOW_SIZE = ZULIP_DM_INITIAL_WINDOW_TOTAL;
 
 const STORE_MESSAGES = "messages";
 const STORE_CHAT_META = "chatMeta";
@@ -77,7 +77,8 @@ export function openMessageCacheDb(): Promise<IDBDatabase> {
     };
     req.onsuccess = () => resolve(req.result);
     req.onupgradeneeded = (event) => {
-      runMessageCacheDbUpgrade(req.result, event.oldVersion, req.transaction);
+      void event;
+      runMessageCacheDbUpgrade(req.result);
     };
   });
   return dbPromise;

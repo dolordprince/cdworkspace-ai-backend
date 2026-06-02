@@ -4,7 +4,12 @@
 import { useMemo } from "react";
 import { useMessageReadersStore } from "~/features/message-readers/message-readers.model";
 import { t } from "~/i18n/i18n";
-import { addMessageFlag, addReaction, removeMessageFlag, removeReaction } from "~/shared/api/zulip";
+import {
+  addMessageFlag,
+  addReaction,
+  removeMessageFlag,
+  removeReaction,
+} from "~/shared/api/zulip-messages";
 import { writeText } from "~/shared/lib/clipboard";
 import { plainTextPreviewFromMessageBody } from "~/shared/lib/message-markdown-display.lib";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
@@ -13,6 +18,7 @@ import { encodeTopicForRoute } from "~/shared/lib/topic-identity.lib";
 import { buildZulipMessageWebPermalink } from "~/shared/lib/zulip-web-permalink.lib";
 import type { MessageListCallbacks } from "~/widgets/message-list/message-list.types";
 import { slugForStream } from "~/widgets/sidebar/sidebar.lib";
+import { buildReplyPermalinkStreamNameResolver } from "./chat-message-list-stream-name.lib";
 import { resolveReplyQuoteContent } from "./chat-reply-quote.lib";
 import type { UseChatMessageListCallbacksParams } from "./chat-message-list-callbacks.types";
 
@@ -44,16 +50,17 @@ export function useChatMessageListCallbacks(
     onRemoveFailedOutgoing: removeFailedOutgoing,
   } = params;
 
+  const resolveStreamNameForPermalink = useMemo(
+    () => buildReplyPermalinkStreamNameResolver(streams),
+    [streams],
+  );
+
   return useMemo(
     () => ({
       onMessageReply(msg, selectedText) {
         const permalinkUrl =
           realmBaseUrl.trim().length > 0
-            ? buildZulipMessageWebPermalink(
-                realmBaseUrl,
-                msg,
-                (streamId) => streams.find((s) => s.stream_id === streamId)?.name,
-              )
+            ? buildZulipMessageWebPermalink(realmBaseUrl, msg, resolveStreamNameForPermalink)
             : null;
         setReplyQuote({
           id: msg.id,
@@ -192,7 +199,7 @@ export function useChatMessageListCallbacks(
       realmBaseUrl,
       updateMessageFlagsInStore,
       updateMessageReactionInStore,
-      streams,
+      resolveStreamNameForPermalink,
       locationPathname,
       navigate,
       rightDrawer,

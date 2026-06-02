@@ -1,5 +1,7 @@
 import { t } from "~/i18n/i18n";
-import { sendMessage, uploadFile, type MockMessage } from "~/shared/api/zulip";
+import { sendMessage } from "~/shared/api/zulip-messages";
+import { uploadFile } from "~/shared/api/zulip-upload";
+import type { MockMessage } from "~/shared/api/zulip.types";
 import { createLogger } from "~/shared/lib/logger";
 import { normalizeTopicForIdentity } from "~/shared/lib/topic-identity.lib";
 import { isAbortLikeError } from "./chat-page-ai.lib";
@@ -66,11 +68,14 @@ async function prepareComposerBodyWithUploads(options: {
     return content + "\n" + uploadedLinks.join("\n");
   } catch (err) {
     const wasCancelled = isAbortLikeError(err) || uploadController.signal.aborted;
-    const errorMessage = wasCancelled
-      ? t("composer.uploadCancelled")
-      : err instanceof Error
-        ? err.message
-        : t("message.sendFailed");
+    let errorMessage: string;
+    if (wasCancelled) {
+      errorMessage = t("composer.uploadCancelled");
+    } else if (err instanceof Error) {
+      errorMessage = err.message;
+    } else {
+      errorMessage = t("message.sendFailed");
+    }
     setSendError(errorMessage);
     setUploadProgress(null);
     throw new Error(errorMessage, { cause: err });
