@@ -19,6 +19,7 @@ import type {
   ZulipSubscription,
 } from "~/shared/api/zulip.types";
 import { logChatListFlow } from "~/shared/lib/message-flow-debug.lib";
+import { reportUnexpectedError } from "~/shared/lib/unexpected-error.lib";
 import { setCachedRegisterUnreadSnapshot } from "./layout-instance-register-unread.lib";
 import {
   flushReconnectStreamPreviewsAfterRegister,
@@ -211,10 +212,6 @@ export function createLayoutBootstrapQueueRegisteredHandler(
         deps.persistDmIndexFromStore(deps.currentInstanceId);
       }
     }
-    deps.reconcileSidebarUnreadFromRegister(
-      registration,
-      useChatListStore.getState().currentUserId,
-    );
     deps.streamPreviewCoordinator.markRegisterHydrationReady();
     markReconnectStreamPreviewRegisterReady();
     deps.tryFlushMetadataStreamPreviews();
@@ -252,6 +249,6 @@ export function createLayoutBootstrapQueueRegisteredHandler(
           ),
         }),
       )
-      .catch(() => {});
+      .catch((err) => reportUnexpectedError("layout:registerMuteSnapshot", err));
   };
 }

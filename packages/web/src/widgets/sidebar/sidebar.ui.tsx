@@ -9,6 +9,7 @@ import { withCurrentOrgRoute } from "~/shared/lib/org-route";
 import { buildStreamSlug } from "~/shared/lib/stream-slug.lib";
 import { encodeTopicForRoute } from "~/shared/lib/topic-identity.lib";
 import { ScrollArea } from "~/shared/ui/scroll-area";
+import { WidgetErrorBoundary } from "~/shared/ui/widget-error-boundary.ui";
 import { SidebarActivity } from "./sidebar-activity.ui";
 import { useSidebarConfigStore } from "./sidebar-config.model";
 import { SidebarDmList } from "./sidebar-dm-list.ui";
@@ -19,12 +20,10 @@ import { SidebarStreamList } from "./sidebar-stream-list.ui";
 import { getStreamChats, isSidebarSystemFolderScope } from "./sidebar.lib";
 import type { SidebarChat, SidebarUiProps } from "./sidebar.types";
 
-// Убирает org-префикс, чтобы дальше одинаково разбирать пути с /org/:id и без него.
 function stripOrgPrefix(pathname: string): string {
   return pathname.replace(/^\/org\/[^/]+(?=\/|$)/, "");
 }
 
-// Безопасный decode сегмента пути: не роняем UI на битом %encoding.
 function decodePathSegment(value: string): string {
   try {
     return decodeURIComponent(value);
@@ -45,7 +44,7 @@ function extractDmIdFromPath(pathname: string): string | null {
   return match?.[1] ? decodePathSegment(match[1]) : null;
 }
 
-export const Sidebar: React.FC<SidebarUiProps> = ({
+export const SidebarInner: React.FC<SidebarUiProps> = ({
   streams: streamsProp,
   selectedFolderId: selectedFolderIdProp,
   pinFolderId: pinFolderIdProp,
@@ -84,8 +83,7 @@ export const Sidebar: React.FC<SidebarUiProps> = ({
   const activeStreamSlug = activeStreamSlugProp ?? streamSlug ?? null;
   const activeTopic = activeTopicProp ?? topicName ?? null;
   const activeDmIdParam = activeDmIdParamProp ?? dmIdParamFromRoute ?? null;
-  // route* значения используются только для route-sync.
-  // Приоритет: явные пропсы -> parsed pathname.
+  // Route-sync: props override pathname parse.
   const routeStreamSlug = activeStreamSlug ?? extractStreamSlugFromPath(location.pathname);
   const routeDmIdParam = activeDmIdParam ?? extractDmIdFromPath(location.pathname);
   const activityOpen = useSidebarConfigStore((s) => s.activityOpen);
@@ -103,8 +101,7 @@ export const Sidebar: React.FC<SidebarUiProps> = ({
   const users = useUsersStore((s) => s.users);
 
   useEffect(() => {
-    // Route-sync раскрытий:
-    // stream -> оставить только целевой, dm/non-chat -> свернуть все.
+    // Route-sync expansions: stream -> target only; dm/other -> collapse all.
     if (routeStreamSlug != null && routeStreamSlug !== "") {
       collapseExpandedStreamsExcept(routeStreamSlug);
       return;
@@ -254,3 +251,9 @@ export const Sidebar: React.FC<SidebarUiProps> = ({
     </aside>
   );
 };
+
+export const Sidebar: React.FC<SidebarUiProps> = (props) => (
+  <WidgetErrorBoundary sectionLabel={t("nav.messenger")}>
+    <SidebarInner {...props} />
+  </WidgetErrorBoundary>
+);

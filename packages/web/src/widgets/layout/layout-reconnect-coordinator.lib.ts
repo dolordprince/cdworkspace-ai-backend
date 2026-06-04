@@ -1,6 +1,7 @@
 /**
  * Coalesces reconnect refreshes (debounce + single in-flight) and splits full vs light paths.
  */
+import { ensureMentionsUnreadSynced } from "~/entities/chat-list/chat-list-mentions-sync.lib";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { useInstancesStore } from "~/entities/instance/instance.model";
 import { useFolderSyncStore } from "~/features/folder-sync/folder-sync.model";
@@ -31,6 +32,7 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingMode: LayoutReconnectRefreshMode = "light";
 let pendingParams: LayoutReconnectRefreshParams | null = null;
 let inFlight = false;
+let activeFlightId = 0;
 let rerunAfterFlight: LayoutReconnectRefreshParams | null = null;
 let rerunMode: LayoutReconnectRefreshMode = "light";
 
@@ -105,6 +107,7 @@ async function executeLayoutReconnectRefresh(
     return;
   }
 
+  const flightId = ++activeFlightId;
   inFlight = true;
   try {
     if (mode === "full") {
@@ -113,7 +116,9 @@ async function executeLayoutReconnectRefresh(
       refreshLayoutReconnectLightPass(params);
     }
   } finally {
-    inFlight = false;
+    if (flightId === activeFlightId) {
+      inFlight = false;
+    }
     const rerunParams = rerunAfterFlight;
     const rerun = rerunMode;
     rerunAfterFlight = null;
@@ -179,6 +184,20 @@ function refreshSharedLayers(
     logScope: "reconnect: refreshSharedLayers",
     snapshotSource: "cached-register",
   });
+  syncMentionsUnreadAfterReconnect(params.instanceId, params.isCancelled);
+}
+
+function syncMentionsUnreadAfterReconnect(
+  instanceId: string | null | undefined,
+  isCancelled?: () => boolean,
+): void {
+  if (instanceId == null || isCancelled?.()) return;
+  const currentUserId = useChatListStore.getState().currentUserId ?? null;
+  void ensureMentionsUnreadSynced({
+    currentInstanceId: instanceId,
+    currentUserId,
+    forceRefresh: true,
+  });
 }
 
 async function refreshChatListReconnectBootstrap(
@@ -210,6 +229,7 @@ async function refreshChatListReconnectBootstrap(
         skipDmIndexHydrate: true,
       });
     }
+    syncMentionsUnreadAfterReconnect(instanceId, isCancelled);
   } catch (error: unknown) {
     if (isCancelled?.()) return;
     log.warn("reconnectBootstrap: chat list bootstrap failed", {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { ensureStarredLoaded } from "~/entities/activity/activity-starred-loader.lib";
 import { useActivityStore } from "~/entities/activity/activity.model";
+import { ensureMentionsUnreadSynced } from "~/entities/chat-list/chat-list-mentions-sync.lib";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import type { ZulipSubscription, ZulipUserTopic } from "~/shared/api/zulip.types";
 
@@ -25,8 +26,9 @@ export function useLayoutInstanceBootstrap(options: {
   const { currentInstanceId, currentUserStatus } = options;
   const starredSummaryStale = useActivityStore((s) => s.starredSummary.stale);
   const starredBootstrapInstanceRef = useRef<string | null>(null);
+  const mentionsBootstrapInstanceRef = useRef<string | null>(null);
 
-  // Загружает mute-снимок инстанса (muted streams/topics) для консистентной UI-модели.
+  // Load instance mute snapshot (muted streams/topics) for consistent UI.
   const loadMuteSnapshot = useCallback(
     (bootstrap?: LayoutMuteBootstrapData): Promise<LayoutMuteSnapshot> => {
       const subscriptions = bootstrap?.subscriptions ?? [];
@@ -50,8 +52,7 @@ export function useLayoutInstanceBootstrap(options: {
   );
 
   useEffect(() => {
-    // Единый bootstrap starred для общего activity-store.
-    // Срабатывает на смену инстанса и на явную invalidation (stale=true).
+    // Shared starred bootstrap for activity store — on instance switch or stale invalidation.
     if (!currentInstanceId || (currentUserStatus !== "ready" && currentUserStatus !== "degraded")) {
       starredBootstrapInstanceRef.current = null;
       return;
@@ -68,6 +69,25 @@ export function useLayoutInstanceBootstrap(options: {
       forceRefresh: starredSummaryStale,
     });
   }, [currentInstanceId, currentUserStatus, starredSummaryStale]);
+
+  useEffect(() => {
+    if (!currentInstanceId || (currentUserStatus !== "ready" && currentUserStatus !== "degraded")) {
+      mentionsBootstrapInstanceRef.current = null;
+      return;
+    }
+
+    const instanceChanged = mentionsBootstrapInstanceRef.current !== currentInstanceId;
+    const needsSync = instanceChanged || !useChatListStore.getState().mentionsUnreadApiSynced;
+    if (!needsSync) return;
+
+    mentionsBootstrapInstanceRef.current = currentInstanceId;
+    const currentUserId = useChatListStore.getState().currentUserId ?? null;
+    void ensureMentionsUnreadSynced({
+      currentInstanceId,
+      currentUserId,
+      forceRefresh: instanceChanged,
+    });
+  }, [currentInstanceId, currentUserStatus]);
 
   return { loadMuteSnapshot };
 }

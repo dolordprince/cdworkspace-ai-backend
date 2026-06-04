@@ -6,6 +6,8 @@ export interface TopicWithLast {
   lastMessageSenderName?: string;
   time?: string;
   badge?: number;
+  /** True when this topic has at least one unread @mention. */
+  hasMention?: boolean;
 }
 
 export type SidebarChat =
@@ -18,6 +20,7 @@ export type SidebarChat =
       time?: string;
       topics?: TopicWithLast[];
       badge?: number;
+      hasMention?: boolean;
     }
   | {
       type: "dm";
@@ -28,6 +31,7 @@ export type SidebarChat =
       lastMessage?: string;
       time?: string;
       badge?: number;
+      hasMention?: boolean;
       pinned?: boolean;
       userIds?: number[];
       avatar_url?: string;
@@ -49,7 +53,6 @@ export interface SidebarProps {
   activeDmIdParam?: string | null;
   sidebarDms?: Extract<SidebarChat, { type: "dm" }>[];
   sidebarChats?: SidebarChat[];
-  // Признак загрузки списка чатов выбранной папки.
   sidebarChatsLoading?: boolean;
 }
 
@@ -61,6 +64,7 @@ export interface StreamWithLast {
   time?: string;
   topics?: TopicWithLast[];
   badge?: number;
+  hasMention?: boolean;
 }
 
 export interface StreamEntryInternal {
@@ -70,17 +74,11 @@ export interface StreamEntryInternal {
   lastMessageSenderName?: string;
   time: string;
   ts: number;
-  // Что делает: локальный признак архивированного канала для фильтрации sidebar.
   isArchived?: boolean;
-  // Что делает: id создателя канала (metadata из подписок/streams API).
   creatorId?: number;
-  // Что делает: флаг приватности канала из metadata подписок.
   inviteOnly?: boolean;
-  // Что делает: channel-level group-setting для добавления участников.
   canAddSubscribersGroup?: ZulipGroupSettingValue;
-  // Что делает: channel-level group-setting для удаления участников.
   canRemoveSubscribersGroup?: ZulipGroupSettingValue;
-  // Что делает: channel-level group-setting админов канала.
   canAdministerChannelGroup?: ZulipGroupSettingValue;
   canResolveTopicsGroup?: ZulipGroupSettingValue;
   topics: Map<

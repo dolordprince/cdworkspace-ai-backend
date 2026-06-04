@@ -1,7 +1,4 @@
-// Страница /activity/:filter.
-// Для mentions/starred/reactions используем cache-first паттерн:
-// локальный hydrate -> фоновый refresh -> authoritative replace на newest.
-// Для drafts берём уже гидрейтнутый global store без дополнительного initial fetch.
+// /activity/:filter — cache-first for mentions/starred/reactions (IDB hydrate → background refresh → newest replace); drafts use hydrated global store.
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
@@ -37,7 +34,11 @@ import { FloatingLoadingOverlay } from "~/shared/ui/floating-loading-overlay";
 import { Icon } from "~/shared/ui/icon";
 import { ChatHeader } from "~/widgets/chat-view/chat-header.ui";
 import { MY_ACTIVITY, messageToDmEntry, slugForStream } from "~/widgets/sidebar/sidebar.lib";
-import { buildMessageNavigateRoute, formatActivityMessageContext } from "./activity-page.lib";
+import {
+  buildMessageNavigateRoute,
+  formatActivityMessageContext,
+  formatDraftMessageContext,
+} from "./activity-page.lib";
 import type { ActivityPageExtendedFilter } from "./activity-page.types";
 
 const log = createLogger("activity-page");
@@ -73,6 +74,27 @@ function ActivitySenderName({ senderId, fallback }: { senderId: number; fallback
   const displayName = useUsersStore((s) => s.getDisplayName(senderId));
   return <>{displayName !== "Unknown" ? displayName : fallback}</>;
 }
+
+const DraftChatContextLabel = React.memo<{ draft: Draft }>(({ draft }) => {
+  const streamsMap = useChatListStore((s) => s.streamsMap);
+  const currentUserId = useChatListStore((s) => s.currentUserId ?? null);
+  const context = useUsersStore((s) =>
+    formatDraftMessageContext({
+      draft,
+      streamsMap,
+      currentUserId,
+      getUserDisplayName: (userId) => {
+        const name = s.users.get(userId)?.full_name?.trim();
+        return name != null && name.length > 0 ? name : "Unknown";
+      },
+      generalChatLabel: t("chat.generalChat"),
+      privateLabel: t("dm.private"),
+      groupChatLabel: t("dm.groupChat"),
+    }),
+  );
+  return <>{context}</>;
+});
+DraftChatContextLabel.displayName = "DraftChatContextLabel";
 
 const ACTIVITY_PAGE_SIZE = STARRED_SUMMARY_PAGE_SIZE;
 
@@ -137,7 +159,7 @@ export const ActivityPage: React.FC = () => {
     let cancelled = false;
     void (async () => {
       const activityFilter = validFilter;
-      // 1) Локальный bootstrap фильтра из IDB.
+      // Local filter bootstrap from IDB.
       const cached = await hydrateActivityMessagesFromCache(
         currentInstanceId,
         activityFilter,
@@ -147,8 +169,7 @@ export const ActivityPage: React.FC = () => {
       if (cancelled) return;
 
       const currentMessages = useActivityStore.getState().filters[activityFilter].messages;
-      // Применяем cached snapshot только если он объективно свежее текущего in-memory состояния.
-      // Это защищает UI от отката на устаревший IDB-кэш.
+      // Apply cached snapshot only when objectively fresher than in-memory — avoids IDB rollback.
       const shouldApplyCached =
         cached.length > 0 &&
         (currentMessages.length === 0 ||
@@ -157,7 +178,7 @@ export const ActivityPage: React.FC = () => {
         setFilterCache(activityFilter, cached, true);
       }
 
-      // 2) Серверный refresh с защитой от гонок и dedupe одинаковых запросов.
+      // Server refresh with race protection and in-flight dedupe.
       const hasCachedData =
         shouldApplyCached ||
         useActivityStore.getState().filters[activityFilter].messages.length > 0;
@@ -165,7 +186,7 @@ export const ActivityPage: React.FC = () => {
       const requestKey = `${currentInstanceId ?? "none"}:activity:${activityFilter}:newest:${ACTIVITY_PAGE_SIZE}`;
 
       try {
-        // Используем fetch с best-effort persist, чтобы после refresh локальный IDB тоже обновлялся.
+        // Best-effort IDB persist after refresh.
         const page = await runInFlightDeduped(requestKey, () =>
           fetchActivityMessagesPageWithPersist(
             activityFilter,
@@ -409,14 +430,9 @@ export const ActivityPage: React.FC = () => {
                         {formatItemTime(d.timestamp)}
                       </span>
                       <span className="truncate text-[11px] text-text-muted">
-                        {d.type === "stream" ? t("draft.streamDraft") : t("draft.privateDraft")}
+                        <DraftChatContextLabel draft={d} />
                       </span>
                     </div>
-                    {d.type === "stream" && d.topic && (
-                      <p className="mt-0.5 text-xs text-sidebar-sender">
-                        {t("draft.topic", { topic: d.topic })}
-                      </p>
-                    )}
                     <p className="mt-1 line-clamp-2 text-sm text-text-primary">
                       {truncateText(d.content)}
                     </p>

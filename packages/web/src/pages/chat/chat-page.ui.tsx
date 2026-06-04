@@ -1,13 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import {
-  applyChatListReadDecrement,
-  clearRemainingContextUnread,
-  readFallbackContextFromCurrentChat,
-} from "~/entities/chat-list/chat-list-apply-read-decrement.lib";
 import { resolvePersonalDmSidebarTitle } from "~/entities/chat-list/chat-list-format.lib";
-import { createOnDmMessagesAppliedHandler } from "~/entities/chat-list/chat-list-sync-dm-from-window.lib";
-import { createOnStreamMessagesAppliedHandler } from "~/entities/chat-list/chat-list-sync-stream-from-window.lib";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import {
   reconcileCreatedDraftServerId,
@@ -19,13 +12,10 @@ import { resolveDraftTargetIds } from "~/entities/draft/draft-chat-target.lib";
 import { createDraft, deleteDraftOnServer, updateDraftOnServer } from "~/entities/draft/draft.api";
 import { useDraftStore } from "~/entities/draft/draft.model";
 import type { DraftType } from "~/entities/draft/draft.types";
-import { useInstancesStore } from "~/entities/instance/instance.model";
-import { isMessageForContext } from "~/entities/message/message-chat-context.lib";
 import { useCurrentChatMessagesStore } from "~/entities/message/message.model";
 import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
 import { useUsersStore } from "~/entities/user/user.model";
 import type { AiMessageContext, AiReplyRequest } from "~/features/ai-reply/ai-reply.types";
-import { useChatDmCallBridgeStore } from "~/features/chat-dm-call-bridge/chat-dm-call-bridge.model";
 import { useChatInfoStore } from "~/features/chat-info/chat-info.model";
 import { useJitsiCallStore } from "~/features/jitsi-call/jitsi-call.model";
 import { useMessageReadersStore } from "~/features/message-readers/message-readers.model";
@@ -36,48 +26,27 @@ import {
   buildStreamTypingChatKey,
 } from "~/features/typing-indicator/typing-key";
 import { t } from "~/i18n/i18n";
-import { getCurrentInstance } from "~/shared/api/client";
 import { getRealmBaseUrl } from "~/shared/api/zulip-client.internal";
-import {
-  fetchMessageById,
-  sendMessage,
-  updateMessage,
-  deleteMessage,
-} from "~/shared/api/zulip-messages";
-import { markMessagesAsRead, markDmAsRead, markTopicAsRead } from "~/shared/api/zulip-read-state";
+import { fetchMessageById, updateMessage, deleteMessage } from "~/shared/api/zulip-messages";
 import type { MockMessage } from "~/shared/api/zulip.types";
 import { useOpenSearch } from "~/shared/contexts/open-search";
 import { useRightDrawer } from "~/shared/contexts/right-drawer";
-import { dmRouteKey } from "~/shared/lib/dm-key";
-import { normalizeDmRouteUserIds } from "~/shared/lib/dm-route.lib";
 import { getPresenceState, formatLastSeen } from "~/shared/lib/format";
-import { buildJitsiMeetingUrl, type JitsiLinkOptions } from "~/shared/lib/jitsi";
 import { createLogger } from "~/shared/lib/logger";
 import {
   logMessageFlow,
   logScrollReadFlow,
   summarizeChatContextForLog,
 } from "~/shared/lib/message-flow-debug.lib";
-import {
-  createMessageIdSet,
-  messageIdsMissingFromBothLists,
-} from "~/shared/lib/message-id-index.lib";
 import { isLikelyRenderedMessageHtml } from "~/shared/lib/message-markdown-display.lib";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
 import { useShortcut } from "~/shared/lib/shortcuts";
 import { resolveCanonicalStreamName } from "~/shared/lib/stream-name.lib";
-import { normalizeTopicForIdentity } from "~/shared/lib/topic-identity.lib";
+import { reportUnexpectedError } from "~/shared/lib/unexpected-error.lib";
 import { AppDialogShell, APP_DIALOG_CONTENT_BASE_CLASS } from "~/shared/ui/app-dialog.ui";
 import { ChatHeader } from "~/widgets/chat-view/chat-header.ui";
 import { useSidebarConfigStore } from "~/widgets/sidebar/sidebar-config.model";
-import { parseDmSlugToUserIds } from "~/widgets/sidebar/sidebar.lib";
 import { isFocusedMessageLoadedInRoute } from "./chat-anchor-load.lib";
-import { startCallFromHeader } from "./chat-call-start.lib";
-import {
-  buildCallRoomName,
-  canStartCallFromHeader,
-  resolveCallMessageTargetParams,
-} from "./chat-call.lib";
 import { resolveLastOwnMessageForEdit } from "./chat-edit-last-message.lib";
 import { countUnreadMessages, resolveFirstUnreadBoundaryMessageId } from "./chat-first-unread.lib";
 import {
@@ -86,42 +55,33 @@ import {
   resolveForwardDraftTarget,
   setPendingForwardPrefill,
 } from "./chat-forward.lib";
-import {
-  collectUnreadMessageIds,
-  filterMessageIdsStillUnreadForOptimisticApply,
-  resolveMarkAllAsReadTarget,
-} from "./chat-mark-all-read.lib";
-import { createMarkAsReadBatcher } from "./chat-mark-as-read.lib";
 import { useChatMessageListCallbacks } from "./chat-message-list-callbacks.hook";
 import { resolveNextUnreadTopicRoute } from "./chat-next-unread-topic.lib";
-import { isAbortLikeError, normalizeAiContextContent } from "./chat-page-ai.lib";
+import { normalizeAiContextContent } from "./chat-page-ai.lib";
+import { useChatPageCall } from "./chat-page-call.hook";
 import { ChatPageComposerSection } from "./chat-page-composer-section.ui";
 import { ChatPageDeleteConfirmBar } from "./chat-page-delete-confirm-bar.ui";
 import { useChatPageDraftHydration } from "./chat-page-draft-sync.hook";
 import { ChatPageFloatingToast } from "./chat-page-floating-toast.ui";
 import { useChatForwardHydration } from "./chat-page-forward-hydration.hook";
 import { ForwardMessageModalBody } from "./chat-page-forward-modal.ui";
+import { useChatPageInitialLoad } from "./chat-page-initial-load.hook";
 import { ChatPageInlineAlerts } from "./chat-page-inline-alerts.ui";
+import { useChatPageMarkRead } from "./chat-page-mark-read.hook";
 import { ChatPageMessageListSection } from "./chat-page-message-list-section.ui";
 import { useChatPartnerProfileHydration } from "./chat-page-partner-profile.hook";
+import { useChatPageReaction } from "./chat-page-reaction.hook";
 import { ChatPageReadReceiptsDialog } from "./chat-page-read-receipts-dialog.ui";
 import { useChatRouteContext } from "./chat-page-route-context.hook";
 import { ChatPageSelectionBar } from "./chat-page-selection-bar.ui";
-import { executeChatPageSend } from "./chat-page-send-handler.lib";
+import { useChatPageSendMessage } from "./chat-page-send-message.hook";
 import { useChatToastAutoClear } from "./chat-page-toast.hook";
 import { ChatPageTypingLine } from "./chat-page-typing-line.ui";
 import {
-  buildReadFallbackContext,
   resolveChatHeaderRightPanelLabel,
   resolveDmGroupParticipantIds,
   resolveDraftType,
-  type ReadFallbackContext,
 } from "./chat-page.lib";
-import { shouldLoadBoundaryPage } from "./chat-pagination.lib";
-import {
-  buildOptimisticOutgoingMessage,
-  markOutgoingMessageFailed,
-} from "./chat-send-delivery.lib";
 import type { ComposerUploadProgressState } from "./chat-upload.lib";
 
 const log = createLogger("chat-page");
@@ -195,11 +155,6 @@ export const ChatPage: React.FC = () => {
 
   const chatContextForMessages = useCurrentChatMessagesStore((s) => s.context);
   const messages = useCurrentChatMessagesStore((s) => s.messages);
-  const latestMessagesRef = useRef<MockMessage[]>([]);
-  // Держим свежие messages без пересоздания mark-as-read batcher при каждом refresh.
-  useEffect(() => {
-    latestMessagesRef.current = messages;
-  }, [messages]);
   const isFocusedMessageLoadedInCurrentRoute = useMemo(() => {
     return isFocusedMessageLoadedInRoute({
       focusedMessageId,
@@ -253,7 +208,6 @@ export const ChatPage: React.FC = () => {
     });
   }, [firstUnreadId, unreadCount, chatContextForMessages]);
 
-  const setContext = useCurrentChatMessagesStore((s) => s.setContext);
   const appendMessageToStore = useCurrentChatMessagesStore((s) => s.appendMessage);
   const commitOutgoingMessageToStore = useCurrentChatMessagesStore((s) => s.commitOutgoingMessage);
   const removeMessageFromStore = useCurrentChatMessagesStore((s) => s.removeMessage);
@@ -264,20 +218,6 @@ export const ChatPage: React.FC = () => {
   const isLoadingMore = useCurrentChatMessagesStore((s) => s.isLoadingMore);
   const isLoadingNewer = useCurrentChatMessagesStore((s) => s.isLoadingNewer);
   const hasNewerMessages = useCurrentChatMessagesStore((s) => s.hasNewerMessages);
-  const loadInitialMessagesForContext = useCurrentChatMessagesStore(
-    (s) => s.loadInitialMessagesForContext,
-  );
-  const onDmMessagesApplied = useMemo(
-    () =>
-      createOnDmMessagesAppliedHandler({
-        getInstanceId: () => getCurrentInstance()?.id ?? null,
-        getCurrentUserId: () => useChatListStore.getState().currentUserId,
-      }),
-    [],
-  );
-  const onStreamMessagesApplied = useMemo(() => createOnStreamMessagesAppliedHandler(), []);
-  const loadOlderBoundaryPage = useCurrentChatMessagesStore((s) => s.loadOlderBoundaryPage);
-  const loadNewerBoundaryPage = useCurrentChatMessagesStore((s) => s.loadNewerBoundaryPage);
   const boundaryLoadFailed = useCurrentChatMessagesStore((s) => s.boundaryLoadFailed);
   const clearBoundaryLoadFailed = useCurrentChatMessagesStore((s) => s.clearBoundaryLoadFailed);
   const [uploadProgress, setUploadProgress] = useState<ComposerUploadProgressState | null>(null);
@@ -299,21 +239,10 @@ export const ChatPage: React.FC = () => {
   const [actionError, setActionError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [readReceiptsOpen, setReadReceiptsOpen] = useState(false);
-  const [messagesLoading, setMessagesLoading] = useState(false);
-  // Что делает: отделяет "данные уже есть" от "network refresh всё ещё идёт".
-  // Зачем: показывать blocking-loader только на реальном cold-start/cold-switch.
-  const [hasInitialMessagesPayload, setHasInitialMessagesPayload] = useState(false);
-  const [messagesLoadError, setMessagesLoadError] = useState<"initial" | "refresh" | null>(null);
-  const [messagesReloadNonce, setMessagesReloadNonce] = useState(0);
-  const cacheHydratedBeforeApiRef = useRef(false);
-  const markAsReadBatcherRef = useRef<ReturnType<typeof createMarkAsReadBatcher> | null>(null);
-  const optimisticMessageIdRef = useRef(-1);
   const [scrollToBottomAfterSendNonce, setScrollToBottomAfterSendNonce] = useState(0);
   const requestScrollToBottomAfterSend = useCallback(() => {
     setScrollToBottomAfterSendNonce((nonce) => nonce + 1);
   }, []);
-  const jitsiHeaderCallInFlightRef = useRef(false);
-  const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const editRequestTokenRef = useRef(0);
   const [deleteConfirm, setDeleteConfirm] = useState<
     { type: "single"; messageId: number } | { type: "bulk"; messageIds: number[] } | null
@@ -400,7 +329,7 @@ export const ChatPage: React.FC = () => {
   const draftTopic = activeTopic ?? "";
 
   useEffect(() => {
-    // При смене маршрута закрываем edit-сессию и инвалидируем незавершённые загрузки markdown.
+    // On route change close edit session and invalidate in-flight markdown loads.
     editRequestTokenRef.current += 1;
     setComposerEditSession(null);
   }, [location.pathname]);
@@ -491,7 +420,9 @@ export const ChatPage: React.FC = () => {
               deleteDraftOnServer,
             });
           })
-          .catch(() => {});
+          .catch((err) =>
+            reportUnexpectedError("chat:draftSync", err, { phase: "linkDraftToServerId" }),
+          );
       }
     };
   }, [draftType, draftTo, draftTopic]);
@@ -512,103 +443,18 @@ export const ChatPage: React.FC = () => {
       idleStopDelayMs: 3000,
     });
 
-  const applyReadMessagesOptimistically = useCallback(
-    (messageIds: number[], fallbackContext?: ReadFallbackContext) => {
-      if (messageIds.length === 0) return;
-
-      const storeMessages = useCurrentChatMessagesStore.getState().messages;
-      const effectiveMessages = latestMessagesRef.current;
-      const unreadMessageIds = filterMessageIdsStillUnreadForOptimisticApply(messageIds, {
-        storeMessages,
-        effectiveMessages,
-      });
-      if (unreadMessageIds.length === 0) {
-        const missingFromBothLists = messageIdsMissingFromBothLists(
-          messageIds,
-          createMessageIdSet(storeMessages),
-          createMessageIdSet(effectiveMessages),
-        );
-        if (missingFromBothLists.length > 0) {
-          log.warn("markAsRead optimistic: ids missing from store and effective message lists", {
-            missingCount: missingFromBothLists.length,
-            requestedCount: messageIds.length,
-          });
-        }
-      } else {
-        updateMessageFlagsInStore(unreadMessageIds, "read", "add");
-      }
-
-      const readFallback =
-        fallbackContext ??
-        readFallbackContextFromCurrentChat(useCurrentChatMessagesStore.getState().context);
-
-      const chatListState = useChatListStore.getState();
-      applyChatListReadDecrement(() => useChatListStore.getState(), chatListState, {
-        messageIds,
-        fallbackContext: readFallback,
-        clampWhenAlreadyRead: unreadMessageIds.length === 0,
-        source: "chat:optimisticMarkRead",
-      });
-    },
-    [updateMessageFlagsInStore],
-  );
-
-  const handleUnreadMessagesVisible = useCallback(
-    (messageIds: number[]) => {
-      if (!isDmView && activeTopic == null) return;
-      markAsReadBatcherRef.current?.schedule(messageIds);
-    },
-    [isDmView, activeTopic],
-  );
-
-  const handleUnreadMessagesAtBottom = useCallback(
-    (messageIds: number[]) => {
-      if (!isDmView && activeTopic == null) return;
-      markAsReadBatcherRef.current?.schedule(messageIds);
-    },
-    [isDmView, activeTopic],
-  );
-
-  useEffect(() => {
-    const batchFallbackContext = buildReadFallbackContext({
-      isDmView,
-      activeDmUserIds,
-      currentUserId,
-      activeStreamId,
-      activeTopic,
-    });
-
-    const batcher = createMarkAsReadBatcher({
-      debounceMs: 250,
-      markAsRead: markMessagesAsRead,
-      onMarked: (messageIds) => {
-        applyReadMessagesOptimistically(messageIds, batchFallbackContext);
-      },
-      onError: (error, messageIds) => {
-        log.warn("markAsRead failed", {
-          requestedCount: messageIds.length,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-    });
-    markAsReadBatcherRef.current = batcher;
-    return () => {
-      batcher.cancel();
-      if (markAsReadBatcherRef.current === batcher) {
-        markAsReadBatcherRef.current = null;
-      }
-    };
-  }, [
+  const { handleUnreadMessagesVisible, handleUnreadMessagesAtBottom } = useChatPageMarkRead({
+    messages,
+    currentUserId,
+    isDmView,
+    activeDmUserIds,
+    activeStreamId,
+    activeTopic,
     streamSlug,
     topicName,
     dmIdParam,
-    isDmView,
-    activeDmUserIds,
-    currentUserId,
-    activeStreamId,
-    activeTopic,
-    applyReadMessagesOptimistically,
-  ]);
+    updateMessageFlagsInStore,
+  });
 
   const isTextInputFocused = useCallback((): boolean => {
     if (typeof document === "undefined") return false;
@@ -641,60 +487,6 @@ export const ChatPage: React.FC = () => {
   ]);
 
   useShortcut("shift+n", handleOpenNextUnreadTopic, { context: "chat", enabled: !isDmView });
-
-  const handleMarkAllAsRead = useCallback(() => {
-    const target = resolveMarkAllAsReadTarget({
-      isDmView,
-      activeDmUserIds,
-      activeStreamId,
-      activeTopic,
-    });
-    if (!target) return;
-
-    const unreadIds = collectUnreadMessageIds(messages);
-    const request =
-      target.type === "dm"
-        ? markDmAsRead(target.userIds)
-        : markTopicAsRead(target.streamId, target.topic);
-
-    const markFallbackContext: ReadFallbackContext | undefined =
-      target.type === "dm"
-        ? { type: "dm", dmKey: dmRouteKey(target.userIds, currentUserId) }
-        : { type: "stream", streamId: target.streamId, topic: target.topic };
-
-    request
-      .then((ok) => {
-        if (!ok || markFallbackContext == null) {
-          return;
-        }
-        if (unreadIds.length > 0) {
-          applyReadMessagesOptimistically(unreadIds, markFallbackContext);
-        }
-        const chatListState = useChatListStore.getState();
-        clearRemainingContextUnread(
-          () => useChatListStore.getState(),
-          chatListState,
-          markFallbackContext,
-          "chat:markAllClearRemaining",
-        );
-      })
-      .catch(() => {});
-  }, [
-    isDmView,
-    activeDmUserIds,
-    activeStreamId,
-    activeTopic,
-    messages,
-    currentUserId,
-    applyReadMessagesOptimistically,
-  ]);
-
-  useShortcut("mod+shift+m", handleMarkAllAsRead, {
-    context: "chat",
-    enabled: isDmView
-      ? (activeDmUserIds?.length ?? 0) > 0
-      : activeStreamId != null && activeTopic != null,
-  });
 
   const handleComposerValueChange = useCallback(
     (v: string) => {
@@ -736,17 +528,9 @@ export const ChatPage: React.FC = () => {
 
   useEffect(() => stopTypingNow, [stopTypingNow]);
 
-  useEffect(() => {
-    return () => {
-      uploadAbortControllerRef.current?.abort();
-      uploadAbortControllerRef.current = null;
-    };
-  }, []);
-
   const handleExpandCurrentStreamTopics = useCallback(() => {
     if (!streamSlug) return;
-    // Используется кнопкой "выбрать топик" в композере:
-    // раскрывает текущий stream в sidebar без дублирования slug в store.
+    // Composer "pick topic" — expand current stream in sidebar without duplicating slug in store.
     expandStreamSlug(streamSlug);
   }, [expandStreamSlug, streamSlug]);
 
@@ -756,670 +540,94 @@ export const ChatPage: React.FC = () => {
     timeoutMs: 2000,
   });
 
-  // Синхронизируем stream-контекст с маршрутом без загрузки сообщений.
-  useEffect(() => {
-    if (!streamSlug) {
-      if (!dmIdParam || dmIdParam === "") {
-        logMessageFlow("ui:stream route effect → setContext(null)", { reason: "no stream slug" });
-        setContext(null);
-      }
-      return;
-    }
-    if (!activeStreamCanonicalName || resolvedStreamId == null) {
-      logMessageFlow("ui:stream route effect → setContext(null)", {
-        reason: "stream name/id not resolved",
-      });
-      setContext(null);
-      return;
-    }
-    const streamWideView = topicName == null;
-    logMessageFlow("ui:stream route effect → setContext(stream)", {
-      streamId: resolvedStreamId,
-      topic: streamRouteTopic,
-      streamWideView,
-    });
-    setContext({
-      type: "stream",
-      streamId: resolvedStreamId,
-      streamName: activeStreamCanonicalName,
-      topic: streamRouteTopic,
-      streamWideView,
-    });
-  }, [
-    dmIdParam,
+  const navigateToDm = useCallback(
+    (targetUserId: number) => {
+      void navigate(withCurrentOrgRoute(`/dm/${targetUserId}`));
+    },
+    [navigate],
+  );
+
+  const {
+    messagesLoading,
+    hasInitialMessagesPayload,
+    messagesLoadError,
+    loadOlderMessages,
+    loadNewerMessages,
+    handleRetryMessagesLoad,
+  } = useChatPageInitialLoad({
     streamSlug,
-    setContext,
-    resolvedStreamId,
-    activeStreamCanonicalName,
-    streamRouteTopic,
     topicName,
-  ]);
-
-  // Загружаем стартовую порцию stream-сообщений только по параметрам маршрута и фокусу.
-  useEffect(() => {
-    if (!streamSlug) {
-      setHasInitialMessagesPayload(false);
-      setMessagesLoading(false);
-      return;
-    }
-    if (!activeStreamCanonicalName) {
-      setHasInitialMessagesPayload(false);
-      setMessagesLoading(false);
-      return;
-    }
-    if (resolvedStreamId == null) {
-      setHasInitialMessagesPayload(false);
-      setMessagesLoading(false);
-      return;
-    }
-    if (focusedMessageId != null && isFocusedMessageLoadedInCurrentRoute) {
-      setHasInitialMessagesPayload(true);
-      setMessagesLoading(false);
-      return;
-    }
-
-    // Что делает: каждый route-switch стартует с чистого признака initial payload.
-    // Далее он поднимется через onCacheHydrated или после успешного API.
-    cacheHydratedBeforeApiRef.current = false;
-    setMessagesLoadError(null);
-    setHasInitialMessagesPayload(false);
-    if (focusedMessageId != null) {
-      setActionError(null);
-    }
-    setMessagesLoading(true);
-    const initialLoadController = new AbortController();
-    logMessageFlow("ui:stream loadInitial effect → invoke store.loadInitialMessagesForContext", {
-      streamId: resolvedStreamId,
-      topic: streamRouteTopic,
-      focusedMessageId,
-    });
-    loadInitialMessagesForContext({
-      context: {
-        type: "stream",
-        streamId: resolvedStreamId,
-        streamName: activeStreamCanonicalName,
-        topic: streamRouteTopic,
-        streamWideView: topicName == null,
-      },
-      focusedMessageId,
-      currentUserId,
-      signal: initialLoadController.signal,
-      onStreamMessagesApplied,
-      // Что делает: фиксирует момент cache-first гидрации для UI-флагов.
-      onCacheHydrated: () => {
-        if (!initialLoadController.signal.aborted) {
-          cacheHydratedBeforeApiRef.current = true;
-          setHasInitialMessagesPayload(true);
-        }
-      },
-    })
-      .then(() => {
-        if (!initialLoadController.signal.aborted) {
-          logMessageFlow("ui:stream loadInitial effect → fulfilled", { cancelled: false });
-          setMessagesLoadError(null);
-          setHasInitialMessagesPayload(true);
-          if (
-            focusedMessageId != null &&
-            useCurrentChatMessagesStore.getState().messages.length === 0
-          ) {
-            setActionError(t("message.anchorAccessDenied"));
-          }
-          setMessagesLoading(false);
-        } else {
-          logMessageFlow("ui:stream loadInitial effect → fulfilled (ignored, unmounted)", {
-            cancelled: true,
-          });
-        }
-      })
-      .catch((e) => {
-        if (isAbortLikeError(e) || initialLoadController.signal.aborted) {
-          return;
-        }
-        logMessageFlow("ui:stream loadInitial rejected", { error: String(e) });
-        if (focusedMessageId != null) {
-          setActionError(t("message.anchorAccessDenied"));
-        }
-        const hadCachedMessages = useCurrentChatMessagesStore.getState().messages.length > 0;
-        setMessagesLoadError(
-          cacheHydratedBeforeApiRef.current && hadCachedMessages ? "refresh" : "initial",
-        );
-        setMessagesLoading(false);
-      });
-    return () => {
-      initialLoadController.abort();
-    };
-  }, [
-    streamSlug,
+    dmIdParam,
     activeStreamCanonicalName,
     resolvedStreamId,
     streamRouteTopic,
-    topicName,
     focusedMessageId,
     currentUserId,
-    loadInitialMessagesForContext,
-    onStreamMessagesApplied,
     isFocusedMessageLoadedInCurrentRoute,
-    messagesReloadNonce,
     setActionError,
-    t,
-  ]);
-
-  // Синхронизируем контекст активного DM с маршрутом и текущим пользователем.
-  useEffect(() => {
-    if (!dmIdParam || dmIdParam === "") {
-      if (!streamSlug) {
-        logMessageFlow("ui:dm route effect → setContext(null)", { reason: "empty dm param" });
-        setContext(null);
-      }
-      return;
-    }
-    if (currentUserId == null) return;
-
-    const routeUserIds = parseDmSlugToUserIds(dmIdParam);
-    const userIds = normalizeDmRouteUserIds(routeUserIds, currentUserId);
-    if (userIds.length === 0) return;
-
-    const dmKey = dmRouteKey(userIds, currentUserId);
-    logMessageFlow("ui:dm route effect → setContext(dm)", { dmKey });
-    setContext({ type: "dm", dmKey });
-  }, [dmIdParam, streamSlug, currentUserId, setContext]);
-
-  // Загружаем сообщения DM при изменении маршрута или фокуса на сообщении.
-  useEffect(() => {
-    if (!dmIdParam || dmIdParam === "") return;
-
-    const routeUserIds = parseDmSlugToUserIds(dmIdParam);
-    const userIds = Array.from(new Set(routeUserIds)).filter(
-      (userId) => Number.isSafeInteger(userId) && userId > 0,
-    );
-    if (userIds.length === 0) return;
-    if (focusedMessageId != null && isFocusedMessageLoadedInCurrentRoute) {
-      setHasInitialMessagesPayload(true);
-      setMessagesLoading(false);
-      return;
-    }
-
-    // Что делает: для нового DM-роута заново ожидаем initial payload.
-    cacheHydratedBeforeApiRef.current = false;
-    setMessagesLoadError(null);
-    setHasInitialMessagesPayload(false);
-    if (focusedMessageId != null) {
-      setActionError(null);
-    }
-    setMessagesLoading(true);
-    const initialLoadController = new AbortController();
-    const dmKey = dmRouteKey(userIds, currentUserId);
-    logMessageFlow("ui:dm loadInitial effect → invoke store.loadInitialMessagesForContext", {
-      dmKey,
-      focusedMessageId,
-    });
-    loadInitialMessagesForContext({
-      context: { type: "dm", dmKey },
-      focusedMessageId,
-      currentUserId,
-      signal: initialLoadController.signal,
-      onDmMessagesApplied,
-      // Что делает: фиксирует момент cache-first гидрации для UI-флагов.
-      onCacheHydrated: () => {
-        if (!initialLoadController.signal.aborted) {
-          cacheHydratedBeforeApiRef.current = true;
-          setHasInitialMessagesPayload(true);
-        }
-      },
-    })
-      .then(() => {
-        if (!initialLoadController.signal.aborted) {
-          logMessageFlow("ui:dm loadInitial effect → fulfilled", { cancelled: false });
-          setMessagesLoadError(null);
-          setHasInitialMessagesPayload(true);
-          if (
-            focusedMessageId != null &&
-            useCurrentChatMessagesStore.getState().messages.length === 0
-          ) {
-            setActionError(t("message.anchorAccessDenied"));
-          }
-          setMessagesLoading(false);
-        } else {
-          logMessageFlow("ui:dm loadInitial effect → fulfilled (ignored, unmounted)", {
-            cancelled: true,
-          });
-        }
-      })
-      .catch((e) => {
-        if (isAbortLikeError(e) || initialLoadController.signal.aborted) {
-          return;
-        }
-        logMessageFlow("ui:dm loadInitial rejected", { error: String(e) });
-        if (focusedMessageId != null) {
-          setActionError(t("message.anchorAccessDenied"));
-        }
-        const hadCachedMessages = useCurrentChatMessagesStore.getState().messages.length > 0;
-        setMessagesLoadError(
-          cacheHydratedBeforeApiRef.current && hadCachedMessages ? "refresh" : "initial",
-        );
-        setMessagesLoading(false);
-      });
-    return () => {
-      initialLoadController.abort();
-    };
-  }, [
-    dmIdParam,
-    focusedMessageId,
-    currentUserId,
-    loadInitialMessagesForContext,
-    onDmMessagesApplied,
-    isFocusedMessageLoadedInCurrentRoute,
-    messagesReloadNonce,
-    setActionError,
-    t,
-  ]);
-
-  const PAGE_SIZE = 50;
-
-  const loadOlderMessages = useCallback(() => {
-    const store = useCurrentChatMessagesStore.getState();
-    const messagesLength = store.messages.length;
-    const gate = {
-      isLoadingMore: store.isLoadingMore,
-      hasBoundaryMessages: store.hasOlderMessages,
-      messagesLength,
-    };
-    if (!shouldLoadBoundaryPage(gate)) {
-      logMessageFlow("ui:loadOlder skipped", {
-        ...gate,
-        context: summarizeChatContextForLog(store.context),
-      });
-      return;
-    }
-    logMessageFlow("ui:loadOlder invoke", {
-      pageSize: PAGE_SIZE,
-      messagesLength,
-      context: summarizeChatContextForLog(store.context),
-      storeHasOlderMessages: store.hasOlderMessages,
-      storeMessageCount: store.messages.length,
-      storeFirstId: store.messages[0]?.id,
-      storeLastId: store.messages[store.messages.length - 1]?.id,
-    });
-    void loadOlderBoundaryPage({ pageSize: PAGE_SIZE, currentUserId });
-  }, [PAGE_SIZE, currentUserId, loadOlderBoundaryPage]);
-
-  const loadNewerMessages = useCallback(() => {
-    const store = useCurrentChatMessagesStore.getState();
-    const messagesLength = store.messages.length;
-    const gate = {
-      isLoadingMore: store.isLoadingMore,
-      hasBoundaryMessages: store.hasNewerMessages,
-      messagesLength,
-    };
-    if (!shouldLoadBoundaryPage(gate)) {
-      logMessageFlow("ui:loadNewer skipped", {
-        ...gate,
-        context: summarizeChatContextForLog(store.context),
-      });
-      return;
-    }
-    logMessageFlow("ui:loadNewer invoke", {
-      pageSize: PAGE_SIZE,
-      messagesLength,
-      context: summarizeChatContextForLog(store.context),
-      storeFirstId: store.messages[0]?.id,
-      storeLastId: store.messages[store.messages.length - 1]?.id,
-    });
-    void loadNewerBoundaryPage({ pageSize: PAGE_SIZE, currentUserId });
-  }, [PAGE_SIZE, currentUserId, loadNewerBoundaryPage]);
-
-  const handleRetryMessagesLoad = useCallback(() => {
-    setMessagesReloadNonce((n) => n + 1);
-  }, []);
+  });
 
   const handleDismissBoundaryLoadFailed = useCallback(() => {
     clearBoundaryLoadFailed();
   }, [clearBoundaryLoadFailed]);
 
-  const callTarget = useMemo(
-    () =>
-      resolveCallMessageTargetParams({
-        isDmView,
-        activeDmUserIds,
-        activeStream: activeStream ?? null,
-        activeStreamId,
-        activeTopic: activeTopic ?? null,
-      }),
-    [isDmView, activeDmUserIds, activeStream, activeStreamId, activeTopic],
-  );
-
-  const canStartCall = useMemo(
-    () =>
-      canStartCallFromHeader({
-        target: callTarget,
-        currentUserId,
-      }) && !(isOneToOneDm && partnerDeactivated),
-    [callTarget, currentUserId, isOneToOneDm, partnerDeactivated],
-  );
-
-  const callRoomChatLabel = useMemo(() => {
-    if (callTarget?.mode !== "dm") {
-      return null;
-    }
-
-    if (isGroupDmView) {
-      const trimmedGroupName = dmChat?.name?.trim();
-      return trimmedGroupName != null && trimmedGroupName.length > 0
-        ? trimmedGroupName
-        : t("dm.groupChat");
-    }
-
-    const trimmedPartnerName = partnerUser?.full_name?.trim();
-    return trimmedPartnerName != null && trimmedPartnerName.length > 0
-      ? trimmedPartnerName
-      : t("dm.partner");
-  }, [callTarget, isGroupDmView, dmChat, partnerUser, t]);
-
-  const jitsiMeetBaseUrl = useInstancesStore((s) => s.jitsiMeetBaseUrl);
-  const jitsiLinkOptions = useMemo<JitsiLinkOptions>(
-    () => ({ serverBaseUrl: jitsiMeetBaseUrl }),
-    [jitsiMeetBaseUrl],
-  );
-
-  const buildCurrentCallLink = useCallback(() => {
-    if (isOneToOneDm && partnerDeactivated) return null;
-    if (!canStartCallFromHeader({ target: callTarget, currentUserId }) || callTarget == null) {
-      return null;
-    }
-    const roomName = buildCallRoomName({
-      target: callTarget,
-      currentUserId,
-      chatLabel: callRoomChatLabel,
-    });
-    return buildJitsiMeetingUrl(roomName, jitsiLinkOptions);
-  }, [
-    callTarget,
-    currentUserId,
-    callRoomChatLabel,
-    jitsiLinkOptions,
-    isOneToOneDm,
-    partnerDeactivated,
-  ]);
-
-  const appendMessageIfContextMatches = useCallback(
-    (msg: MockMessage) => {
-      const state = useCurrentChatMessagesStore.getState();
-      if (isMessageForContext(msg, state.context, currentUserId)) {
-        state.appendMessage(msg);
-      }
-    },
-    [currentUserId],
-  );
-
-  const performStartCallFromHeader = useCallback(async () => {
-    if (isOneToOneDm && partnerDeactivated) return;
-    if (!canStartCallFromHeader({ target: callTarget, currentUserId }) || callTarget == null)
-      return;
-    if (jitsiHeaderCallInFlightRef.current) {
-      return;
-    }
-    jitsiHeaderCallInFlightRef.current = true;
-    setSendError(null);
-    try {
-      const result = await startCallFromHeader({
-        target: callTarget,
-        currentUserId,
-        buildCurrentCallLink,
-        isOneToOneDm,
-        callRoomChatLabel,
-        fallbackDmPartnerLabel: t("dm.partner"),
-        currentUserLabel: t("common.you"),
-        sendMessage,
-        appendMessageToStore: appendMessageIfContextMatches,
-        openModal: (url, locationName) => {
-          openJitsiCall({ meetingUrl: url, locationName });
-        },
-        resolveErrorMessage: (error) =>
-          error instanceof Error ? error.message : t("call.createFailed"),
-      });
-      if (!result.ok && result.error != null) {
-        setSendError(result.error);
-      }
-    } finally {
-      jitsiHeaderCallInFlightRef.current = false;
-    }
-  }, [
-    callTarget,
-    currentUserId,
-    buildCurrentCallLink,
-    t,
-    sendMessage,
-    appendMessageIfContextMatches,
-    openJitsiCall,
-    isOneToOneDm,
-    callRoomChatLabel,
-    partnerDeactivated,
-  ]);
-
-  const handleCallClick = performStartCallFromHeader;
-
-  const invokeDmCallFromProfileHandler = useCallback(
-    (targetUserId: number) => {
-      if (currentUserId == null || targetUserId === currentUserId) return;
-      const inOneToOneWithPartner =
-        isDmView && !isGroupDmView && partnerUserId != null && partnerUserId === targetUserId;
-      if (inOneToOneWithPartner) {
-        void performStartCallFromHeader();
-        return;
-      }
-      useChatDmCallBridgeStore.getState().setPendingDmCallPartnerUserId(targetUserId);
-      void navigate(withCurrentOrgRoute(`/dm/${targetUserId}`));
-    },
-    [currentUserId, isDmView, isGroupDmView, partnerUserId, navigate, performStartCallFromHeader],
-  );
-
-  useEffect(() => {
-    useChatDmCallBridgeStore
-      .getState()
-      .setInvokeDmCallFromProfileHandler(invokeDmCallFromProfileHandler);
-    return () => {
-      useChatDmCallBridgeStore.getState().setInvokeDmCallFromProfileHandler(null);
-    };
-  }, [invokeDmCallFromProfileHandler]);
-
-  useEffect(() => {
-    return () => {
-      useChatDmCallBridgeStore.getState().clearPendingDmCallPartner();
-    };
-  }, []);
-
-  const pendingDmCallPartnerUserId = useChatDmCallBridgeStore((s) => s.pendingDmCallPartnerUserId);
-
-  useEffect(() => {
-    if (pendingDmCallPartnerUserId == null) return;
-    if (!isDmView || isGroupDmView) return;
-    if (partnerUserId !== pendingDmCallPartnerUserId) return;
-    useChatDmCallBridgeStore.getState().clearPendingDmCallPartner();
-    void performStartCallFromHeader();
-  }, [
-    pendingDmCallPartnerUserId,
+  const { canStartCall, buildCurrentCallLink, handleCallClick } = useChatPageCall({
     isDmView,
     isGroupDmView,
+    isOneToOneDm,
+    partnerDeactivated,
     partnerUserId,
-    performStartCallFromHeader,
-  ]);
+    partnerUserFullName: partnerUser?.full_name,
+    activeDmUserIds,
+    activeStream: activeStream ?? null,
+    activeStreamId,
+    activeTopic: activeTopic ?? null,
+    dmChatName: dmChat?.name,
+    currentUserId,
+    setSendError,
+    navigateToDm,
+  });
 
-  const handleSend = async (content: string, subjectOverride?: string, files?: File[]) => {
-    await executeChatPageSend(
-      {
-        currentUserId,
-        isDmView,
-        activeDmUserIds,
-        activeStream: activeStream ?? null,
-        activeStreamCanonicalName: activeStreamCanonicalName ?? null,
-        activeStreamId,
-        activeTopic,
-        allocateOptimisticMessageId: () => {
-          const id = optimisticMessageIdRef.current;
-          optimisticMessageIdRef.current -= 1;
-          return id;
-        },
-        appendMessage: appendMessageToStore,
-        commitOutgoingMessage: commitOutgoingMessageToStore,
-        requestScrollToBottom: requestScrollToBottomAfterSend,
-        clearReplyQuote: () => {
-          setReplyQuote(null);
-        },
-        stopTyping: stopTypingNow,
-        setSendError,
-        setUploadProgress,
-        setUploadAbortController: (controller) => {
-          uploadAbortControllerRef.current = controller;
-        },
-        releaseUploadAbortController: (controller) => {
-          if (uploadAbortControllerRef.current === controller) {
-            uploadAbortControllerRef.current = null;
-          }
-        },
-      },
-      content,
-      subjectOverride,
-      files,
-    );
-  };
-
-  const handleRemoveFailedOutgoing = useCallback(
-    (msg: MockMessage) => {
-      if (msg.delivery_status !== "failed" || msg.id >= 0) return;
-      removeMessageFromStore(msg.id);
-      setSendError(null);
-    },
-    [removeMessageFromStore],
-  );
-
-  const handleRetryFailedOutgoing = useCallback(
-    async (msg: MockMessage) => {
-      if (msg.delivery_status !== "failed" || msg.id >= 0) return;
-      setSendError(null);
-      const body = msg.content;
-      removeMessageFromStore(msg.id);
-
-      const stopTypingAfterSend = () => {
-        stopTypingNow();
-      };
-
-      if (isDmView && activeDmUserIds?.length) {
-        const optimisticMessageId = optimisticMessageIdRef.current;
-        optimisticMessageIdRef.current -= 1;
-        const optimisticMessage = buildOptimisticOutgoingMessage({
-          id: optimisticMessageId,
-          senderId: currentUserId ?? 0,
-          senderFullName: t("common.you"),
-          content: body,
-          target: { mode: "dm", recipientIds: activeDmUserIds },
-        });
-        appendMessageToStore(optimisticMessage);
-        requestScrollToBottomAfterSend();
-        try {
-          const newMsg = await sendMessage({
-            to: activeDmUserIds,
-            content: body,
-            sender_id: currentUserId ?? 0,
-            sender_full_name: t("common.you"),
-            local_id: String(optimisticMessageId),
-          });
-          commitOutgoingMessageToStore(optimisticMessageId, newMsg);
-          setReplyQuote(null);
-          stopTypingAfterSend();
-        } catch (err) {
-          appendMessageToStore(markOutgoingMessageFailed(optimisticMessage));
-          setSendError(err instanceof Error ? err.message : t("message.sendFailed"));
-        } finally {
-          setUploadProgress(null);
-        }
-        return;
-      }
-      if (activeStream) {
-        if (!activeStreamCanonicalName) {
-          log.warn("Blocked retry for failed stream message without canonical stream name", {
-            streamId: activeStreamId ?? undefined,
-            displayName: activeStream,
-            failedMessageId: msg.id,
-          });
-          setSendError(t("message.sendFailed"));
-          return;
-        }
-        const subject = normalizeTopicForIdentity(msg.subject ?? activeTopic ?? "");
-        const optimisticMessageId = optimisticMessageIdRef.current;
-        optimisticMessageIdRef.current -= 1;
-        const optimisticMessage = buildOptimisticOutgoingMessage({
-          id: optimisticMessageId,
-          senderId: currentUserId ?? 0,
-          senderFullName: t("common.you"),
-          content: body,
-          target: {
-            mode: "stream",
-            stream: activeStreamCanonicalName,
-            streamId: activeStreamId ?? undefined,
-            subject,
-          },
-        });
-        appendMessageToStore(optimisticMessage);
-        requestScrollToBottomAfterSend();
-        try {
-          const newMsg = await sendMessage({
-            stream: activeStreamCanonicalName,
-            streamId: activeStreamId ?? undefined,
-            subject,
-            content: body,
-            sender_id: currentUserId ?? 0,
-            sender_full_name: t("common.you"),
-            local_id: String(optimisticMessageId),
-          });
-          commitOutgoingMessageToStore(optimisticMessageId, newMsg);
-          setReplyQuote(null);
-          stopTypingAfterSend();
-        } catch (err) {
-          appendMessageToStore(markOutgoingMessageFailed(optimisticMessage));
-          setSendError(err instanceof Error ? err.message : t("message.sendFailed"));
-        } finally {
-          setUploadProgress(null);
-        }
-      }
-    },
-    [
-      activeDmUserIds,
-      activeStream,
-      activeStreamCanonicalName,
-      activeStreamId,
-      activeTopic,
-      appendMessageToStore,
-      commitOutgoingMessageToStore,
+  const { handleSend, handleRetryFailedOutgoing, handleRemoveFailedOutgoing, handleCancelUpload } =
+    useChatPageSendMessage({
       currentUserId,
       isDmView,
-      removeMessageFromStore,
-      requestScrollToBottomAfterSend,
-      stopTypingNow,
-      t,
-    ],
-  );
+      activeDmUserIds,
+      activeStream: activeStream ?? null,
+      activeStreamCanonicalName: activeStreamCanonicalName ?? null,
+      activeStreamId,
+      activeTopic,
+      appendMessage: appendMessageToStore,
+      commitOutgoingMessage: commitOutgoingMessageToStore,
+      removeMessage: removeMessageFromStore,
+      requestScrollToBottom: requestScrollToBottomAfterSend,
+      clearReplyQuote: () => setReplyQuote(null),
+      stopTyping: stopTypingNow,
+      setSendError,
+      setUploadProgress,
+    });
 
-  const handleCancelUpload = useCallback(() => {
-    const controller = uploadAbortControllerRef.current;
-    if (controller == null || controller.signal.aborted) return;
-    controller.abort();
-  }, []);
+  const { onMessageAddReaction, onMessageRemoveReaction } = useChatPageReaction({
+    currentUserId,
+    setActionError,
+    updateMessageReactionInStore,
+  });
 
   const resolveEditableMessageMarkdown = useCallback(
     async (message: MockMessage): Promise<string> => {
-      // 1) Берём markdown из уже загруженного сообщения.
+      // Prefer markdown from the already-loaded message.
       const fromSource = message.markdown_source?.trim();
       if (fromSource != null && fromSource.length > 0) {
         return fromSource;
       }
 
-      // 2) Если контент выглядит как markdown, используем его без дополнительного запроса.
+      // If content looks like markdown, use it without an extra fetch.
       const body = message.content.trim();
       if (body.length > 0 && !isLikelyRenderedMessageHtml(body)) {
         return body;
       }
 
-      // 3) Fallback: догружаем сообщение с сервера, чтобы получить raw markdown.
+      // Fallback: fetch message from server for raw markdown.
       const fresh = await fetchMessageById(message.id);
       const freshSource = fresh?.markdown_source?.trim();
       if (freshSource != null && freshSource.length > 0) {
@@ -1439,7 +647,7 @@ export const ChatPage: React.FC = () => {
   const requestMessageEdit = useCallback(
     (message: MockMessage) => {
       if (message.id <= 0) return;
-      // Токен защищает от race: применяем результат только последнего запроса на редактирование.
+      // Token prevents edit race — apply only the latest request result.
       const requestToken = editRequestTokenRef.current + 1;
       editRequestTokenRef.current = requestToken;
       setActionError(null);
@@ -1469,7 +677,8 @@ export const ChatPage: React.FC = () => {
     setSelectedMessageIds,
     setSelectionMode,
     updateMessageFlagsInStore,
-    updateMessageReactionInStore,
+    onMessageAddReaction,
+    onMessageRemoveReaction,
     openJitsiCall: (url, locationName) => openJitsiCall({ meetingUrl: url, locationName }),
     setReadReceiptsOpen,
     onRetryFailedOutgoing: handleRetryFailedOutgoing,
@@ -1480,7 +689,7 @@ export const ChatPage: React.FC = () => {
     async (messageId: number, markdown: string) => {
       setActionError(null);
       try {
-        // Сохраняем изменения на сервере и сразу синхронизируем локальный store.
+        // Persist to server and sync local store immediately.
         await updateMessage(messageId, { content: markdown });
         const fresh = await fetchMessageById(messageId);
         if (fresh) {
@@ -1566,8 +775,7 @@ export const ChatPage: React.FC = () => {
   }, [rightDrawer]);
 
   const handleOpenRightPanel = useCallback(() => {
-    // Клик по шапке должен возвращать к инфо текущего чата и сбрасывать
-    // вложенный профиль пользователя, если он был открыт поверх.
+    // Header click returns to current chat info and clears nested user profile overlay.
     rightDrawer?.openInfo?.();
     if (rightDrawer?.openInfo == null) {
       rightDrawer?.setOpen(true);

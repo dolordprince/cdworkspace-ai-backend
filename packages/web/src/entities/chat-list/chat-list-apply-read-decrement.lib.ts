@@ -20,6 +20,7 @@ export interface ChatListUnreadDecrementActions {
   decrementUnreadForMessages: (messageIds: number[]) => void;
   decrementUnreadForTopic: (streamId: number, topic: string, count: number) => void;
   decrementUnreadForDmKey: (dmKey: string, count: number) => void;
+  decrementMentionsForReadMessages: (messageIds: readonly number[]) => void;
 }
 
 export interface ChatListUnreadDecrementState {
@@ -63,6 +64,109 @@ export function readFallbackContextFromCurrentChat(
   return undefined;
 }
 
+function fallbackContextFromMessageLocation(
+  location: MessageLocation,
+): ChatListReadFallbackContext {
+  if (location.type === "stream") {
+    return {
+      type: "stream",
+      streamId: location.stream_id,
+      topic: location.topic,
+    };
+  }
+  return { type: "dm", dmKey: location.dmKey };
+}
+
+function readLocationGroupKey(location: MessageLocation): string {
+  if (location.type === "stream") {
+    return `stream:${location.stream_id}\t${normalizeTopicForIdentity(location.topic)}`;
+  }
+  return `dm:${location.dmKey.trim()}`;
+}
+
+/** Partitions read message ids by sidebar location for per-context fallback decrement. */
+export function groupMessageIdsByReadLocation(
+  state: ChatListUnreadDecrementState,
+  messageIds: readonly number[],
+): {
+  groups: { fallbackContext: ChatListReadFallbackContext; messageIds: number[] }[];
+  unindexedIds: number[];
+} {
+  const byKey = new Map<
+    string,
+    { fallbackContext: ChatListReadFallbackContext; messageIds: number[] }
+  >();
+  const unindexedIds: number[] = [];
+
+  for (const messageId of messageIds) {
+    const location = state.messageIdToLocation.get(messageId);
+    if (location == null) {
+      unindexedIds.push(messageId);
+      continue;
+    }
+    const key = readLocationGroupKey(location);
+    const fallbackContext = fallbackContextFromMessageLocation(location);
+    const existing = byKey.get(key);
+    if (existing != null) {
+      existing.messageIds.push(messageId);
+    } else {
+      byKey.set(key, { fallbackContext, messageIds: [messageId] });
+    }
+  }
+
+  return { groups: [...byKey.values()], unindexedIds };
+}
+
+/**
+ * Applies read decrement per location group so fallback never targets the wrong open chat.
+ */
+export function applyChatListReadDecrementGrouped(
+  getState: () => ChatListUnreadDecrementState,
+  actions: ChatListUnreadDecrementActions,
+  options: {
+    messageIds: readonly number[];
+    clampWhenAlreadyRead?: boolean;
+    source?: string;
+  },
+): void {
+  const {
+    messageIds,
+    clampWhenAlreadyRead = false,
+    source = "apply:readDecrementGrouped",
+  } = options;
+  if (messageIds.length === 0) {
+    return;
+  }
+
+  const stateBefore = getState();
+  const { groups, unindexedIds } = groupMessageIdsByReadLocation(stateBefore, messageIds);
+
+  logSidebarUnreadFlow(`${source}:start`, {
+    ...summarizeMessageIdsForFlowDebug(messageIds),
+    groupCount: groups.length,
+    unindexedCount: unindexedIds.length,
+    totalsBefore: summarizeSidebarUnreadTotals(stateBefore),
+  });
+
+  for (const group of groups) {
+    applyChatListReadDecrement(getState, actions, {
+      messageIds: group.messageIds,
+      fallbackContext: group.fallbackContext,
+      clampWhenAlreadyRead,
+      source: `${source}:loc`,
+    });
+  }
+
+  if (unindexedIds.length > 0) {
+    const soleGroupFallback = groups.length === 1 ? groups[0]!.fallbackContext : undefined;
+    applyChatListReadDecrement(getState, actions, {
+      messageIds: unindexedIds,
+      fallbackContext: soleGroupFallback,
+      source: `${source}:unindexed`,
+    });
+  }
+}
+
 export function getContextUnreadCount(
   state: ChatListUnreadDecrementState,
   context: ChatListReadFallbackContext,
@@ -76,6 +180,83 @@ export function getContextUnreadCount(
     return 0;
   }
   return state.dmsMap.get(dmKey)?.unreadCount ?? 0;
+}
+
+function applyReadDecrementFallback(
+  getState: () => ChatListUnreadDecrementState,
+  actions: ChatListUnreadDecrementActions,
+  options: {
+    fallbackContext: ChatListReadFallbackContext;
+    neverIndexedCount: number;
+    source: string;
+  },
+): void {
+  const { fallbackContext, neverIndexedCount, source } = options;
+  const contextUnreadAfterPerMessage = getContextUnreadCount(getState(), fallbackContext);
+  const fallbackCount =
+    neverIndexedCount > 0 ? Math.min(neverIndexedCount, contextUnreadAfterPerMessage) : 0;
+
+  if (fallbackCount > 0) {
+    if (fallbackContext.type === "stream") {
+      actions.decrementUnreadForTopic(
+        fallbackContext.streamId,
+        fallbackContext.topic,
+        fallbackCount,
+      );
+      logSidebarUnreadFlow(`${source}:fallbackTopic`, {
+        streamId: fallbackContext.streamId,
+        topic: fallbackContext.topic,
+        count: fallbackCount,
+        contextUnreadAfterPerMessage,
+      });
+    } else {
+      actions.decrementUnreadForDmKey(fallbackContext.dmKey, fallbackCount);
+      logSidebarUnreadFlow(`${source}:fallbackDm`, {
+        dmKey: fallbackContext.dmKey,
+        count: fallbackCount,
+        contextUnreadAfterPerMessage,
+      });
+    }
+    return;
+  }
+
+  if (neverIndexedCount > 0) {
+    logSidebarUnreadFlow(`${source}:fallbackSkipped`, {
+      neverIndexedCount,
+      contextUnreadAfterPerMessage,
+      reason: "context_already_zero",
+    });
+  }
+}
+
+function applyReadDecrementStaleClamp(
+  getState: () => ChatListUnreadDecrementState,
+  actions: ChatListUnreadDecrementActions,
+  options: {
+    fallbackContext: ChatListReadFallbackContext;
+    messageIds: readonly number[];
+    source: string;
+  },
+): void {
+  const { fallbackContext, messageIds, source } = options;
+  const remaining = getContextUnreadCount(getState(), fallbackContext);
+  if (remaining <= 0) {
+    return;
+  }
+  const extraDecrement = Math.min(remaining, messageIds.length);
+  if (fallbackContext.type === "stream") {
+    actions.decrementUnreadForTopic(
+      fallbackContext.streamId,
+      fallbackContext.topic,
+      extraDecrement,
+    );
+  } else {
+    actions.decrementUnreadForDmKey(fallbackContext.dmKey, extraDecrement);
+  }
+  logSidebarUnreadFlow(`${source}:clampStale`, {
+    remainingBeforeClamp: remaining,
+    extraDecrement,
+  });
 }
 
 /**
@@ -120,61 +301,23 @@ export function applyChatListReadDecrement(
 
   actions.decrementUnreadForMessages([...messageIds]);
 
-  const contextUnreadAfterPerMessage =
-    fallbackContext != null ? getContextUnreadCount(getState(), fallbackContext) : 0;
-  const fallbackCount =
-    neverIndexedCount > 0 && fallbackContext != null
-      ? Math.min(neverIndexedCount, contextUnreadAfterPerMessage)
-      : 0;
-
-  if (fallbackCount > 0 && fallbackContext != null) {
-    if (fallbackContext.type === "stream") {
-      actions.decrementUnreadForTopic(
-        fallbackContext.streamId,
-        fallbackContext.topic,
-        fallbackCount,
-      );
-      logSidebarUnreadFlow(`${source}:fallbackTopic`, {
-        streamId: fallbackContext.streamId,
-        topic: fallbackContext.topic,
-        count: fallbackCount,
-        contextUnreadAfterPerMessage,
-      });
-    } else {
-      actions.decrementUnreadForDmKey(fallbackContext.dmKey, fallbackCount);
-      logSidebarUnreadFlow(`${source}:fallbackDm`, {
-        dmKey: fallbackContext.dmKey,
-        count: fallbackCount,
-        contextUnreadAfterPerMessage,
-      });
-    }
-  } else if (neverIndexedCount > 0 && fallbackContext != null) {
-    logSidebarUnreadFlow(`${source}:fallbackSkipped`, {
+  if (fallbackContext != null) {
+    applyReadDecrementFallback(getState, actions, {
+      fallbackContext,
       neverIndexedCount,
-      contextUnreadAfterPerMessage,
-      reason: "context_already_zero",
+      source,
     });
   }
 
   if (clampWhenAlreadyRead && fallbackContext != null) {
-    const remaining = getContextUnreadCount(getState(), fallbackContext);
-    if (remaining > 0) {
-      const extraDecrement = Math.min(remaining, messageIds.length);
-      if (fallbackContext.type === "stream") {
-        actions.decrementUnreadForTopic(
-          fallbackContext.streamId,
-          fallbackContext.topic,
-          extraDecrement,
-        );
-      } else {
-        actions.decrementUnreadForDmKey(fallbackContext.dmKey, extraDecrement);
-      }
-      logSidebarUnreadFlow(`${source}:clampStale`, {
-        remainingBeforeClamp: remaining,
-        extraDecrement,
-      });
-    }
+    applyReadDecrementStaleClamp(getState, actions, {
+      fallbackContext,
+      messageIds,
+      source,
+    });
   }
+
+  actions.decrementMentionsForReadMessages(messageIds);
 
   const stateAfter = getState();
   logSidebarUnreadFlow(`${source}:done`, {

@@ -1,6 +1,7 @@
-// Корневой layout приложения: собирает shell, стор-оркестрацию и фоновые синки для активного инстанса.
+// Root app layout: shell, store orchestration, background syncs for the active instance.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { enrichSidebarChatsWithMentionFlags } from "~/entities/chat-list/chat-list-sidebar-mention-enrich.lib";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { useHydrateDrafts } from "~/entities/draft/draft-hydration";
 import { useInstancesStore } from "~/entities/instance/instance.model";
@@ -17,6 +18,7 @@ import { useLayoutAppIconBadge } from "./layout-app-icon-badge.hook";
 import { LayoutAppShell } from "./layout-app-shell.ui";
 import { useLayoutAuthErrorHandler } from "./layout-auth-error-handler.hook";
 import { useLayoutAuthGuard } from "./layout-auth-guard.hook";
+import { LayoutBootstrapErrorBanner } from "./layout-bootstrap-error-banner.ui";
 import { runChatListBootstrap } from "./layout-chat-list-bootstrap.lib";
 import { useLayoutChatListSnapshotSync } from "./layout-chat-list-snapshot-sync.hook";
 import { parseFocusedMessageIdFromSearch } from "./layout-chat-route.lib";
@@ -27,9 +29,13 @@ import { useLayoutConnectionRecovery } from "./layout-connection-recovery.hook";
 import { useLayoutFolderSyncOrchestration } from "./layout-folder-sync-orchestration.hook";
 import { useInactiveInstancesBackgroundWork } from "./layout-inactive-instances-background-work.hook";
 import { useLayoutInstanceBootstrap } from "./layout-instance-bootstrap.hook";
-import { computeInstanceDmUnreadCount } from "./layout-instance-unread.lib";
+import {
+  computeInstanceDmUnreadCount,
+  hasPersonalUnreadIndicator,
+} from "./layout-instance-unread.lib";
 import { useLayoutLastMessengerRoutePersistence } from "./layout-last-messenger-route.hook";
 import { LayoutLoadingGate } from "./layout-loading-gate.ui";
+import { useLayoutMentionsSyncPolling } from "./layout-mentions-sync-polling.hook";
 import { useLayoutMuteSnapshotSync } from "./layout-mute-snapshot-sync.hook";
 import { LayoutNotificationPermissionBanner } from "./layout-notification-permission-banner.ui";
 import { useLayoutNotificationPermission } from "./layout-notification-permission.hook";
@@ -70,6 +76,8 @@ export const Layout: React.FC = () => {
   const activeTopic = topicName ?? null;
 
   const setFromMessages = useChatListStore((s) => s.setFromMessages);
+  const bootstrapError = useChatListStore((s) => s.bootstrapError);
+  const clearBootstrapError = useChatListStore((s) => s.clearBootstrapError);
   const setCurrentUserId = useChatListStore((s) => s.setCurrentUserId);
   const currentUserId = useChatListStore((s) => s.currentUserId);
   const streamMetadataHydrated = useChatListStore((s) => s.streamMetadataHydrated);
@@ -77,6 +85,8 @@ export const Layout: React.FC = () => {
   const dmsFromStore = useChatListStore((s) => s.dms());
   const streamsMap = useChatListStore((s) => s.streamsMap);
   const dmsMap = useChatListStore((s) => s.dmsMap);
+  const mentionedUnreadMessageIds = useChatListStore((s) => s.mentionedUnreadMessageIds);
+  const messageIdToLocation = useChatListStore((s) => s.messageIdToLocation);
   const chatListHasCachedRows = useMemo(
     () => streamsMap.size > 0 || dmsMap.size > 0,
     [streamsMap, dmsMap],
@@ -96,15 +106,23 @@ export const Layout: React.FC = () => {
   const isEffectivelyMuted = useMuteStore((s) => s.isEffectivelyMuted);
   const chatsSortedByLastMessage = useMemo(
     () =>
-      sortChatsByLastMessage(streamsMap, dmsMap, mutedStreamIds, {
-        prioritizePersonalUnread,
-        prioritizeUnmutedUnreadChannels,
-        hideUnknownArchivedStreams: !streamMetadataHydrated,
-        isEffectivelyMuted,
-      }),
+      enrichSidebarChatsWithMentionFlags(
+        sortChatsByLastMessage(streamsMap, dmsMap, mutedStreamIds, {
+          prioritizePersonalUnread,
+          prioritizeUnmutedUnreadChannels,
+          hideUnknownArchivedStreams: !streamMetadataHydrated,
+          isEffectivelyMuted,
+        }),
+        mentionedUnreadMessageIds,
+        messageIdToLocation,
+        currentUserId,
+      ),
     [
       streamsMap,
       dmsMap,
+      mentionedUnreadMessageIds,
+      messageIdToLocation,
+      currentUserId,
       mutedStreamIds,
       mutedTopicKeys,
       unmutedTopicKeys,
@@ -133,6 +151,11 @@ export const Layout: React.FC = () => {
   const dmUnreadCountForCurrentInstance = useMemo(
     () => computeInstanceDmUnreadCount({ dms: dmsFromStore, currentUserId }),
     [dmsFromStore, currentUserId],
+  );
+  const mentionsUnreadCount = useChatListStore((s) => s.mentionsUnreadCount);
+  const personalUnreadIndicatorActive = useMemo(
+    () => hasPersonalUnreadIndicator(dmUnreadCountForCurrentInstance, mentionsUnreadCount),
+    [dmUnreadCountForCurrentInstance, mentionsUnreadCount],
   );
 
   const selectedFolderId = useFolderSyncStore((s) => s.selectedFolderId);
@@ -180,8 +203,8 @@ export const Layout: React.FC = () => {
 
   useEffect(() => {
     if (!currentInstanceId) return;
-    setInstanceDmUnreadCount(currentInstanceId, dmUnreadCountForCurrentInstance);
-  }, [currentInstanceId, dmUnreadCountForCurrentInstance, setInstanceDmUnreadCount]);
+    setInstanceDmUnreadCount(currentInstanceId, personalUnreadIndicatorActive ? 1 : 0);
+  }, [currentInstanceId, personalUnreadIndicatorActive, setInstanceDmUnreadCount]);
 
   useLayoutWindowBranding({
     unreadCount: unreadCountForCurrentInstance,
@@ -189,7 +212,13 @@ export const Layout: React.FC = () => {
   });
 
   useLayoutAppIconBadge({
-    currentInstanceDmUnread: dmUnreadCountForCurrentInstance,
+    personalDmUnread: dmUnreadCountForCurrentInstance,
+    mentionsUnread: mentionsUnreadCount,
+  });
+
+  useLayoutMentionsSyncPolling({
+    enabled: isLayoutUserConnectionReady(currentUserStatus),
+    currentInstanceId,
   });
 
   useInactiveInstancesBackgroundWork({
@@ -252,8 +281,8 @@ export const Layout: React.FC = () => {
     setCurrentUserStatus,
   });
 
-  // После zulip: clear/hydrate для нового instanceId уже отработали — не подписываемся на persist раньше,
-  // иначе в IDB уйдёт пустой снимок под ключ новой организации (см. layout-chat-list-snapshot-sync.lib).
+  // Subscribe to persist only after clear/hydrate for the new instanceId —
+  // otherwise an empty snapshot overwrites the org key in IDB (see layout-chat-list-snapshot-sync.lib).
   useLayoutChatListSnapshotSync(currentInstanceId);
   useLayoutMuteSnapshotSync(currentInstanceId);
   useLayoutResetRightDrawerOnInstanceChange({ currentInstanceId, closeRightDrawer });
@@ -336,6 +365,11 @@ export const Layout: React.FC = () => {
       usersMapForChatInfo,
     });
 
+  const handleRetryBootstrap = useCallback(() => {
+    clearBootstrapError();
+    refreshStaleRef.current?.();
+  }, [clearBootstrapError]);
+
   return (
     <div className="flex h-screen max-h-[100dvh] min-h-app-shell w-full min-w-app-shell-min flex-col overflow-hidden bg-bg text-text-primary">
       <LayoutConnectionBanner
@@ -343,6 +377,7 @@ export const Layout: React.FC = () => {
         health={connectionHealth}
         rateLimitSeconds={rateLimitSeconds}
       />
+      <LayoutBootstrapErrorBanner error={bootstrapError} onRetry={handleRetryBootstrap} />
       {notificationPermission.visible ? (
         <LayoutNotificationPermissionBanner
           enabling={notificationPermission.enabling}

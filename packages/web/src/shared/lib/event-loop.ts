@@ -29,6 +29,7 @@ import {
 import { attachEventLoopLifecycle } from "~/shared/lib/event-loop-lifecycle.lib";
 import { createLogger } from "~/shared/lib/logger";
 import { isOnline, waitForOnline } from "~/shared/lib/network";
+import { reportUnexpectedError } from "~/shared/lib/unexpected-error.lib";
 import {
   clearZulipEventQueueId,
   setZulipEventQueueId,
@@ -46,8 +47,7 @@ const DEFAULT_EVENT_TYPES = [
   "presence",
   "user_status",
   "subscription",
-  // Что делает: подписывает очередь на lifecycle-ивенты каналов (create/update/delete).
-  // Зачем: чтобы rename канала и другие stream-изменения отражались в UI без перезагрузки.
+  /** Stream lifecycle events so renames and deletes update UI without reload. */
   "stream",
   "user_topic",
   "user_settings",
@@ -70,7 +70,6 @@ export interface StartZulipEventLoopOptions {
   instanceId?: string;
   signal?: AbortSignal;
   eventTypes?: string[];
-  // Что делает: передает в register список metadata-блоков, которые нужно получить сразу при старте очереди.
   fetchEventTypes?: string[];
 }
 
@@ -173,7 +172,7 @@ function startZulipEventLoopWithTransport(
       nudgeEventLoopAfterNetworkRestore("reconnect");
     },
     onOnline: () => {
-      nudgeEventLoopAfterNetworkRestore("online");
+      // onReconnect already nudges after offline→online; skip duplicate wake.
     },
     onOffline: () => {
       pauseEventLoopForOffline();
@@ -223,7 +222,7 @@ function startZulipEventLoopWithTransport(
   async function registerEventQueue(): Promise<boolean> {
     try {
       log.info("Registering event queue");
-      // Зачем: вместе с queue_id сразу получаем metadata для быстрого bootstrap sidebar.
+      // Register returns sidebar bootstrap metadata together with queue_id.
       const reg = await transport.registerQueue(eventTypes, fetchEventTypes);
       const nextQueueId = reg.queue_id;
       setQueueId(nextQueueId);
@@ -310,7 +309,9 @@ function startZulipEventLoopWithTransport(
   }
 
   void runLoop()
-    .catch(() => {})
+    .catch((err) => {
+      reportUnexpectedError("realtime", err, { phase: "event-loop-exit" });
+    })
     .finally(() => {
       cleanupLoop();
     });

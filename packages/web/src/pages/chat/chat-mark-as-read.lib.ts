@@ -16,6 +16,8 @@ import { isTabVisible, onVisibilityChange } from "~/shared/lib/visibility";
 export interface MarkAsReadBatcherOptions {
   markAsRead: (messageIds: number[]) => Promise<unknown>;
   onMarked?: (messageIds: number[]) => void;
+  /** Optimistic read applied when ids enter the queue (before API flush). */
+  onSchedule?: (messageIds: number[]) => void;
   onError?: (error: unknown, messageIds: number[]) => void;
   debounceMs?: number;
   /**
@@ -41,6 +43,7 @@ export function createMarkAsReadBatcher(options: MarkAsReadBatcherOptions): Mark
   const {
     markAsRead,
     onMarked,
+    onSchedule,
     onError,
     debounceMs = DEFAULT_DEBOUNCE_MS,
     respectTabVisibility = true,
@@ -74,6 +77,8 @@ export function createMarkAsReadBatcher(options: MarkAsReadBatcherOptions): Mark
     }, debounceMs);
   };
 
+  let activeFlushId = 0;
+
   const flushInternal = async () => {
     if (inFlight || queued.size === 0) return;
     if (respectTabVisibility && !isTabVisible()) {
@@ -82,6 +87,7 @@ export function createMarkAsReadBatcher(options: MarkAsReadBatcherOptions): Mark
     }
     const batch = Array.from(queued);
     queued.clear();
+    const flushId = ++activeFlushId;
     inFlight = true;
     logScrollReadFlow("read:batcherFlush", summarizeMessageIdsForFlowDebug(batch));
     logSidebarUnreadFlow("chat:markAsReadBatcher:flush", summarizeMessageIdsForFlowDebug(batch));
@@ -93,7 +99,9 @@ export function createMarkAsReadBatcher(options: MarkAsReadBatcherOptions): Mark
     } catch (error) {
       onError?.(error, batch);
     } finally {
-      inFlight = false;
+      if (flushId === activeFlushId) {
+        inFlight = false;
+      }
       if (queued.size === 0) {
         clearVisibilityWait();
       }
@@ -107,8 +115,12 @@ export function createMarkAsReadBatcher(options: MarkAsReadBatcherOptions): Mark
     schedule(messageIds) {
       const normalized = normalizeMessageIds(messageIds);
       if (normalized.length === 0) return;
+      const newlyQueued = normalized.filter((id) => !queued.has(id));
       for (const id of normalized) {
         queued.add(id);
+      }
+      if (newlyQueued.length > 0) {
+        onSchedule?.(newlyQueued);
       }
       logScrollReadFlow("read:batcherSchedule", {
         added: normalized.length,

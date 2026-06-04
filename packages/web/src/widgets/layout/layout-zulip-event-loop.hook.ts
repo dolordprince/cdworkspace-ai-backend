@@ -1,4 +1,4 @@
-// Оркестрация bootstrap + long-poll event loop для активного инстанса.
+// Bootstrap + long-poll event loop orchestration for the active instance.
 import { useEffect, useRef } from "react";
 import { useActivityStore } from "~/entities/activity/activity.model";
 import {
@@ -19,6 +19,7 @@ import { useUsersStore } from "~/entities/user/user.model";
 import { useUserGroupsStore } from "~/entities/user-group/user-group.model";
 import { useJitsiCallStore } from "~/features/jitsi-call/jitsi-call.model";
 import { useMuteStore } from "~/features/mute-chat/mute-chat.model";
+import { t } from "~/i18n/i18n";
 import { deleteQueue, DEFAULT_REGISTER_FETCH_EVENT_TYPES } from "~/shared/api/zulip-queue";
 import { fetchSubscriptions } from "~/shared/api/zulip-streams";
 import type { ZulipUnreadMessagesSnapshot } from "~/shared/api/zulip-unread.lib";
@@ -43,6 +44,7 @@ import { startZulipEventLoop } from "~/shared/lib/event-loop";
 import { createLogger } from "~/shared/lib/logger";
 import { logChatListFlow, logMessageFlow } from "~/shared/lib/message-flow-debug.lib";
 import { loadMuteSnapshotRow } from "~/shared/lib/mute-snapshot-db";
+import { reportUnexpectedError } from "~/shared/lib/unexpected-error.lib";
 import { loadUsersDirectoryRow } from "~/shared/lib/users-directory-snapshot-db";
 import { getNewestMessageId } from "./layout-chat-history-sync.lib";
 import {
@@ -79,11 +81,10 @@ import type { LayoutUserConnectionStatus } from "./layout-user-connection-status
 // Increments on effect cleanup so superseded `runChatListBootstrap` runs skip hydrate/API (React Strict Mode).
 let chatListBootstrapEffectEpoch = 0;
 
-// Что делает: размер одной фоновой страницы DM-backfill.
+// DM backfill page size — caps background batch count to avoid network overload.
 const METADATA_DM_BACKFILL_PAGE_SIZE = 5000;
-// Зачем: ограничение числа фоновых батчей, чтобы не перегружать сеть.
 const METADATA_DM_BACKFILL_MAX_BATCHES = 3;
-// Что делает: останавливает backfill, если несколько батчей подряд не добавляют новые DM.
+// Stop backfill when consecutive batches add no new DMs.
 const METADATA_DM_BACKFILL_STAGNATION_LIMIT = 2;
 const log = createLogger("layout-zulip-event-loop");
 
@@ -121,7 +122,7 @@ function clearRefreshStaleCallback(ref: RefreshStaleCallbackRef | undefined): vo
   }
 }
 
-// Зачем: после merge metadata сохраняем итоговый DM-слепок, чтобы следующий старт был полнее.
+// Persist merged DM index so the next cold start has a fuller sidebar snapshot.
 function persistDmIndexFromStore(instanceId: string): void {
   const rows: DmIndexEntry[] = [];
   for (const [dmKey, entry] of useChatListStore.getState().dmsMap.entries()) {
@@ -170,8 +171,7 @@ function reconcileSidebarUnreadFromRegister(
   void hydrateStreamSidebarPreviewsFromUnreadSnapshot(registration?.unread_snapshot, () => false);
 }
 
-// Нормализует формат строки IDB к контракту, который ожидает mute-store.
-// Зачем: отделить структуру хранения от структуры применения в store.
+// Normalize IDB row shape to the mute-store contract (storage vs application layer).
 function toLayoutMuteSnapshotFromRow(row: {
   mutedStreamIds: number[];
   mutedTopics: { streamId: number; topic: string }[];
@@ -306,9 +306,9 @@ export function useLayoutZulipEventLoop(options: {
     const prevInstanceId = prevInstanceForBootstrapRef.current;
     const instanceSwitched = prevInstanceId != null && prevInstanceId !== currentInstanceId;
     prevInstanceForBootstrapRef.current = currentInstanceId;
-    // Флаг authoritative-применения из register; после него кэш больше не должен "переехать" состояние.
+    // Register response is authoritative; cache must not overwrite state after it applies.
     const registerMuteSnapshotAppliedRef = { registerMuteSnapshotApplied: false };
-    // Поднимаем кэш mute на cold start и при switch, чтобы unread/title могли сразу учитывать mutes.
+    // Hydrate mute cache on cold start / instance switch so unread titles respect mutes immediately.
     const shouldHydrateMuteFromCache = prevInstanceId == null || instanceSwitched;
     const cachedMuteSnapshotPromise = shouldHydrateMuteFromCache
       ? loadMuteSnapshotRow(currentInstanceId)
@@ -523,6 +523,7 @@ export function useLayoutZulipEventLoop(options: {
         }
 
         if (uid != null) {
+          useChatListStore.getState().clearBootstrapError();
           setBootstrapStatus("ready");
           reportSuccess();
           startEventLoopFn?.();
@@ -530,6 +531,7 @@ export function useLayoutZulipEventLoop(options: {
         }
 
         const hasCache = chatListHasCachedRowsInStore();
+        useChatListStore.getState().setBootstrapError(t("app.networkError"));
         setBootstrapStatus(hasCache ? "degraded" : "blocked");
         reportFailure({ reason: "server", phase: hasCache ? "degraded" : "blocked" });
         scheduleCurrentUserRetry();
@@ -645,7 +647,11 @@ export function useLayoutZulipEventLoop(options: {
             pageSize: METADATA_DM_BACKFILL_PAGE_SIZE,
             stagnationLimit: METADATA_DM_BACKFILL_STAGNATION_LIMIT,
             isCancelled: () => cancelled,
-          }).catch(() => {});
+          }).catch((err) =>
+            reportUnexpectedError("layout:metadataDmBackfill", err, {
+              instanceId: currentInstanceId,
+            }),
+          );
         }
 
         const instanceIdPersist = useInstancesStore.getState().currentInstanceId;
@@ -735,6 +741,9 @@ export function useLayoutZulipEventLoop(options: {
     })().catch((error) => {
       if (cancelled || isBootstrapStale()) return;
       const hasCache = chatListHasCachedRowsInStore();
+      useChatListStore
+        .getState()
+        .setBootstrapError(error instanceof Error ? error.message : String(error));
       setBootstrapStatus(hasCache ? "degraded" : "blocked");
       reportFailure({ reason: "unknown", phase: hasCache ? "degraded" : "blocked" });
       log.error("Unhandled bootstrap orchestration failure", {
@@ -755,7 +764,12 @@ export function useLayoutZulipEventLoop(options: {
       const qid = queueIdRef.current;
       const creds = instanceAtLoopStartRef.current;
       if (qid && creds) {
-        deleteQueue(qid, creds).catch(() => {});
+        deleteQueue(qid, creds).catch((err) =>
+          reportUnexpectedError("layout:eventLoop", err, {
+            phase: "deleteQueueOnCleanup",
+            queueId: qid,
+          }),
+        );
       }
       eventLoopAbortRef.current?.abort();
       eventLoopAbortRef.current = null;

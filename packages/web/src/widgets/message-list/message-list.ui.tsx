@@ -41,6 +41,7 @@ import { logSidebarUnreadFlow } from "~/shared/lib/sidebar-unread-debug.lib";
 import { isTabVisible, onVisibilityChange } from "~/shared/lib/visibility";
 import { FloatingLoadingOverlay } from "~/shared/ui/floating-loading-overlay";
 import { FloatingScrollToBottomButton } from "~/shared/ui/floating-scroll-to-bottom-button";
+import { WidgetErrorBoundary } from "~/shared/ui/widget-error-boundary.ui";
 import { MessageBubble, type MessageBubbleCallbacks } from "./message-bubble.ui";
 import { getSenderGroups } from "./message-list-grouping.lib";
 import { buildMessageMediaGallery } from "./message-list-media.lib";
@@ -85,7 +86,7 @@ const INITIAL_READ_SUPPRESS_MS = 400;
 
 const messageListLog = createLogger("ui:message-list");
 
-export const MessageList: React.FC<MessageListProps> = ({
+export const MessageListInner: React.FC<MessageListProps> = ({
   messages,
   currentUserId,
   scrollToBottomKey,
@@ -543,6 +544,8 @@ export const MessageList: React.FC<MessageListProps> = ({
     if (scrollToBottomAfterSendNonce === 0) return;
     const el = scrollRef.current;
     if (!el) return;
+    userScrollSeenRef.current = true;
+    bottomReadDispatchKeyRef.current = null;
     logScrollMetrics("scroll:toBottom", { reason: "afterSend" });
     runProgrammaticScroll(() => {
       scrollToBottom(el);
@@ -551,6 +554,7 @@ export const MessageList: React.FC<MessageListProps> = ({
     const rafId = requestAnimationFrame(() => {
       scrollToBottom(el);
       syncWasAtBottomFromElement(el);
+      dispatchUnreadAtBottom();
     });
     return () => cancelAnimationFrame(rafId);
   }, [
@@ -558,6 +562,7 @@ export const MessageList: React.FC<MessageListProps> = ({
     runProgrammaticScroll,
     logScrollMetrics,
     syncWasAtBottomFromElement,
+    dispatchUnreadAtBottom,
   ]);
 
   // Scroll down: after messages load on chat switch, or if user was already at the bottom (own message)
@@ -1098,12 +1103,25 @@ export const MessageList: React.FC<MessageListProps> = ({
     scheduleFlushSingleAnchorUnreadIfVisible,
   ]);
 
-  // По клику пользователя используем плавную прокрутку.
-  // Это единственный сценарий в message-list, где анимация нужна намеренно.
+  // User-initiated scroll-to-bottom uses smooth animation — the only intentional animation here.
   const handleScrollToBottomClick = useCallback(() => {
     userScrollSeenRef.current = true;
-    scrollToBottom(scrollRef.current, "smooth");
-  }, []);
+    bottomReadDispatchKeyRef.current = null;
+    const el = scrollRef.current;
+    if (!el) return;
+    scrollToBottom(el, "smooth");
+    const dispatchAfterScroll = (): void => {
+      syncWasAtBottomFromElement(el);
+      dispatchUnreadAtBottom();
+    };
+    if ("onscrollend" in el) {
+      el.addEventListener("scrollend", dispatchAfterScroll, { once: true });
+      return;
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(dispatchAfterScroll);
+    });
+  }, [dispatchUnreadAtBottom, syncWasAtBottomFromElement]);
 
   const groups = useMemo(() => {
     const result: { dateKey: string; senderGroups: MockMessage[][] }[] = [];
@@ -1260,3 +1278,9 @@ export const MessageList: React.FC<MessageListProps> = ({
     </div>
   );
 };
+
+export const MessageList: React.FC<MessageListProps> = (props) => (
+  <WidgetErrorBoundary sectionLabel={t("nav.messenger")}>
+    <MessageListInner {...props} />
+  </WidgetErrorBoundary>
+);
