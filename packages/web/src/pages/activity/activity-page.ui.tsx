@@ -5,6 +5,7 @@ import {
   hydrateActivityMessagesFromCache,
   isActivityMessagesSnapshotFresher,
 } from "~/entities/activity/activity-cache.lib";
+import { ensureReactionsLoaded } from "~/entities/activity/activity-reactions-loader.lib";
 import {
   ensureStarredLoaded,
   STARRED_SUMMARY_PAGE_SIZE,
@@ -34,6 +35,7 @@ import { FloatingLoadingOverlay } from "~/shared/ui/floating-loading-overlay";
 import { Icon } from "~/shared/ui/icon";
 import { ChatHeader } from "~/widgets/chat-view/chat-header.ui";
 import { MY_ACTIVITY, messageToDmEntry, slugForStream } from "~/widgets/sidebar/sidebar.lib";
+import { ActivityPeerReactionsRow } from "./activity-page-peer-reactions.ui";
 import {
   buildMessageNavigateRoute,
   formatActivityMessageContext,
@@ -151,6 +153,16 @@ export const ActivityPage: React.FC = () => {
         currentInstanceId,
         currentUserId,
         forceRefresh: false,
+        pageSize: ACTIVITY_PAGE_SIZE,
+      });
+      return;
+    }
+
+    if (validFilter === "reactions") {
+      void ensureReactionsLoaded({
+        currentInstanceId,
+        currentUserId,
+        forceRefresh: activityRefreshVersion > 0,
         pageSize: ACTIVITY_PAGE_SIZE,
       });
       return;
@@ -469,6 +481,14 @@ export const ActivityPage: React.FC = () => {
       );
     }
     if (messages.length === 0) {
+      if (validFilter === "reactions") {
+        return (
+          <div className="space-y-1 p-4 text-sm text-text-muted">
+            <p>{t("activity.reactionsEmpty")}</p>
+            <p className="text-xs">{t("activity.reactionsEmptyHint")}</p>
+          </div>
+        );
+      }
       return <div className="p-4 text-sm text-text-muted">{t("chat.noMessages")}</div>;
     }
     return (
@@ -520,6 +540,9 @@ export const ActivityPage: React.FC = () => {
                     <p className="mt-1 line-clamp-2 text-sm text-text-primary">
                       {truncateText(plainTextPreviewFromMessageBody(m.content))}
                     </p>
+                    {validFilter === "reactions" && (
+                      <ActivityPeerReactionsRow message={m} currentUserId={currentUserId} />
+                    )}
                   </button>
                   <div className="mt-0.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                     {validFilter === "starred" && (

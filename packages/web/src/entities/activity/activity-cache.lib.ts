@@ -46,7 +46,8 @@ export function isActivityMessagesSnapshotFresher(
   return candidateMaxMessageId > currentMaxMessageId;
 }
 
-function matchesActivityFilter(
+/** Whether a cached message belongs in an activity filter (exported for tests). */
+export function matchesActivityFilter(
   message: MockMessage,
   filter: ActivityFilter,
   currentUserId: number | null,
@@ -62,10 +63,10 @@ function matchesActivityFilter(
     return false;
   }
   if (currentUserId == null) {
-    return true;
+    return false;
   }
-  // Match activity page: reactions filter shows messages authored by the current user.
-  return message.sender_id === currentUserId;
+  // Zulip reactions view: own messages that have at least one emoji reaction.
+  return message.sender_id === currentUserId && (message.reactions?.length ?? 0) > 0;
 }
 
 /** Oldest→newest slice aligned with server pagination shape to avoid UI jumps after hydrate. */
