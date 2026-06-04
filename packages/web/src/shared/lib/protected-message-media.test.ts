@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as apiClient from "~/shared/api/client";
+import { MESSAGE_MEDIA_PREVIEW_CLASS_NAME } from "~/shared/lib/message-body-rich-text-classes";
 import {
   AUTH_IMAGE_PLACEHOLDER_SRC,
   AUTH_MEDIA_BACKGROUND_IMAGE_DATA_ATTR,
@@ -60,19 +62,21 @@ describe("prepareProtectedMessageHtml", () => {
     const out = prepareProtectedMessageHtml(html);
     expect(out).toContain('width="240"');
     expect(out).toContain('height="160"');
+    expect(out).toContain(MESSAGE_MEDIA_PREVIEW_CLASS_NAME);
     expect(out).toContain("data-auth-src=");
     expect(out).toContain("/user_uploads/thumbnail/");
     expect(out).toContain("840x560.webp");
     expectNoLiveProtectedAttrs(out);
   });
 
-  it("protects external_content preview images without forcing thumbnail dimensions", () => {
+  it("marks external_content preview images with fixed preview box attrs and class", () => {
     const html = '<p><img src="/external_content/preview.png?url=1" alt="preview" /></p>';
     const out = prepareProtectedMessageHtml(html);
     expect(out).toContain("data-auth-src=");
     expect(out).toContain("/external_content/preview.png?url=1");
-    expect(out).not.toContain('width="240"');
-    expect(out).not.toContain('height="160"');
+    expect(out).toContain('width="240"');
+    expect(out).toContain('height="160"');
+    expect(out).toContain(MESSAGE_MEDIA_PREVIEW_CLASS_NAME);
     expectNoLiveProtectedAttrs(out);
   });
 
@@ -210,9 +214,17 @@ describe("createDisplayableBlobUrl", () => {
 describe("resolveProtectedUploadFetchOptions", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("sends Authorization on cross-origin candidate (credentials omit, headers kept)", () => {
+    vi.spyOn(apiClient, "getCurrentInstance").mockReturnValue({
+      id: "api-key",
+      realm: "https://zulip.example.com",
+      email: "user@example.com",
+      apiKey: "key",
+      authType: "api_key",
+    });
     vi.stubGlobal("window", {
       location: { origin: "https://app.example.com" },
     });
@@ -225,7 +237,44 @@ describe("resolveProtectedUploadFetchOptions", () => {
     expect(init.headers).toEqual(headers);
   });
 
+  it("uses include credentials for cross-origin session auth without Basic header", () => {
+    vi.spyOn(apiClient, "getCurrentInstance").mockReturnValue({
+      id: "session",
+      realm: "https://zulip.example.com",
+      email: "user@example.com",
+      apiKey: "",
+      authType: "session",
+    });
+    vi.stubGlobal("window", {
+      location: { origin: "file://" },
+    });
+    const init = resolveProtectedUploadFetchOptions(
+      "https://zulip.example.com/user_uploads/thumbnail/1/a.png/840x560.webp",
+      {},
+    );
+    expect(init.credentials).toBe("include");
+    expect(init.headers).toEqual({});
+  });
+
+  it("uses include credentials for cross-origin when Authorization header is empty", () => {
+    vi.spyOn(apiClient, "getCurrentInstance").mockReturnValue(null);
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.example.com" },
+    });
+    const init = resolveProtectedUploadFetchOptions(
+      "https://zulip.example.com/user_uploads/1/a.png",
+      {},
+    );
+    expect(init.credentials).toBe("include");
+  });
+
   it("uses include credentials for same-origin candidate", () => {
+    vi.spyOn(apiClient, "getCurrentInstance").mockReturnValue({
+      id: "api-key",
+      realm: "https://zulip.example.com",
+      email: "user@example.com",
+      apiKey: "key",
+    });
     vi.stubGlobal("window", {
       location: { origin: "https://zulip.example.com" },
     });
@@ -233,5 +282,20 @@ describe("resolveProtectedUploadFetchOptions", () => {
     const init = resolveProtectedUploadFetchOptions("/user_uploads/1/a.png", headers);
     expect(init.credentials).toBe("include");
     expect(init.headers).toEqual(headers);
+  });
+
+  it("uses include credentials for same-origin session auth", () => {
+    vi.spyOn(apiClient, "getCurrentInstance").mockReturnValue({
+      id: "session",
+      realm: "https://zulip.example.com",
+      email: "user@example.com",
+      apiKey: "",
+      authType: "session",
+    });
+    vi.stubGlobal("window", {
+      location: { origin: "https://zulip.example.com" },
+    });
+    const init = resolveProtectedUploadFetchOptions("/user_uploads/1/a.png", {});
+    expect(init.credentials).toBe("include");
   });
 });
