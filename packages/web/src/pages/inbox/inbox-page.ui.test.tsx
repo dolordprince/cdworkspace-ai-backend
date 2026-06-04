@@ -1,8 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useInboxStore } from "~/entities/inbox/inbox.model";
+import type { InboxEntry } from "~/entities/inbox/inbox.types";
 import { useInstancesStore } from "~/entities/instance/instance.model";
+import { useMuteStore } from "~/features/mute-chat/mute-chat.model";
 import { InboxPage } from "./inbox-page.ui";
 import type * as ReactRouterDom from "react-router-dom";
 
@@ -54,6 +56,7 @@ describe("InboxPage styling contract", () => {
     fetchInboxEntries.mockResolvedValue([]);
     hydrateInboxEntriesFromCache.mockResolvedValue([]);
     useInboxStore.getState().clear();
+    useMuteStore.getState().clear();
     useInstancesStore.setState({
       instances: [],
       currentInstanceId: null,
@@ -152,6 +155,97 @@ describe("InboxPage styling contract", () => {
     );
 
     expect(screen.getByText("Cached Alice")).toBeInTheDocument();
+  });
+
+  it("hides cached muted stream entries even when the topic is explicitly unmuted", () => {
+    useInboxStore.setState({
+      entries: [
+        {
+          key: "stream:10:release",
+          streamId: 10,
+          streamName: "engineering",
+          topic: "release",
+          senderId: null,
+          senderName: null,
+          dmSlug: null,
+          unreadCount: 1,
+          lastMessageTimestamp: 100,
+          messageIds: [10],
+        },
+      ],
+      loading: false,
+      isInitialLoading: false,
+      isRefreshing: false,
+      requestVersion: 0,
+      lastLoadedAt: Date.now(),
+      error: null,
+      stale: false,
+    });
+    useMuteStore.getState().muteStream(10);
+    useMuteStore.getState().unmuteTopic(10, "release");
+    fetchInboxEntries.mockResolvedValue([]);
+
+    render(
+      <MemoryRouter initialEntries={["/inbox"]}>
+        <Routes>
+          <Route path="/inbox" element={<InboxPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("#engineering · release")).not.toBeInTheDocument();
+    expect(screen.getByText("No unread messages")).toBeInTheDocument();
+  });
+
+  it("keeps stale refresh soft when cached entries are hidden by mute filters", async () => {
+    let resolveFetch: (entries: InboxEntry[]) => void = () => {};
+    const fetchPromise = new Promise<InboxEntry[]>((resolve) => {
+      resolveFetch = resolve;
+    });
+
+    useInboxStore.setState({
+      entries: [
+        {
+          key: "stream:10:release",
+          streamId: 10,
+          streamName: "engineering",
+          topic: "release",
+          senderId: null,
+          senderName: null,
+          dmSlug: null,
+          unreadCount: 1,
+          lastMessageTimestamp: 100,
+          messageIds: [10],
+        },
+      ],
+      loading: false,
+      isInitialLoading: false,
+      isRefreshing: false,
+      requestVersion: 0,
+      lastLoadedAt: Date.now(),
+      error: null,
+      stale: true,
+    });
+    useMuteStore.getState().muteStream(10);
+    fetchInboxEntries.mockReturnValue(fetchPromise);
+    hydrateInboxEntriesFromCache.mockReturnValue(new Promise(() => {}));
+
+    render(
+      <MemoryRouter initialEntries={["/inbox"]}>
+        <Routes>
+          <Route path="/inbox" element={<InboxPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("#engineering · release")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(screen.getByText("No unread messages")).toBeInTheDocument();
+
+    await act(async () => {
+      resolveFetch([]);
+      await fetchPromise;
+    });
   });
 
   it("keeps current in-memory entries when cache snapshot is older", async () => {
