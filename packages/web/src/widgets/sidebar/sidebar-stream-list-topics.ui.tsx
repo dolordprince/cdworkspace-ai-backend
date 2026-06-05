@@ -2,9 +2,9 @@ import React, { type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { t } from "~/i18n/i18n";
 import { sidebarRowClass } from "~/shared/lib/format";
-import { encodeTopicForRoute } from "~/shared/lib/topic-identity.lib";
 import { Icon } from "~/shared/ui/icon";
 import { SidebarChatBadges } from "./sidebar-chat-badges.ui";
+import { sidebarStreamTopicRoute } from "./sidebar-chat-routes.lib";
 import { TopicMuteButton } from "./sidebar-folder-topic-buttons.ui";
 import { useSidebarTopicCollapse } from "./sidebar-topic-collapse.hook";
 import { SidebarTopicShowMoreButton } from "./sidebar-topic-show-more.ui";
@@ -117,9 +117,7 @@ export const SidebarStreamListTopics = React.memo<SidebarStreamListTopicsProps>(
                   style={{ borderLeftColor: topicColor }}
                 >
                   <Link
-                    to={`/stream/${streamSlug}/topic/${encodeURIComponent(
-                      encodeTopicForRoute(topic.subject),
-                    )}`}
+                    to={sidebarStreamTopicRoute(streamSlug, topic.subject)}
                     className="flex min-w-0 flex-1 items-start gap-3 py-2 pl-3 pr-2"
                   >
                     <div className="min-w-0 flex-1">
