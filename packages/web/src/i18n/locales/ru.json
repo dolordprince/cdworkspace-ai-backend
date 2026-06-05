@@ -35,6 +35,7 @@
     "logout": "Выйти",
     "fillAllFields": "Заполните все поля",
     "loginError": "Ошибка входа",
+    "duplicateAccount": "Этот аккаунт уже добавлен",
     "showPassword": "Показать пароль",
     "hidePassword": "Скрыть пароль",
     "invalidServerUrl": "Адрес сервера должен быть валидным HTTPS URL",
@@ -68,7 +69,13 @@
     "pasteTokenPaste": "Вставить из буфера",
     "pasteTokenMissingFlow": "Сессия входа истекла. Запустите вход через провайдера заново.",
     "pasteTokenInvalid": "Неверный или просроченный код",
-    "pasteTokenUnsupported": "Неподдерживаемый формат кода аутентификации."
+    "pasteTokenUnsupported": "Неподдерживаемый формат кода аутентификации.",
+    "organizationStepHint": "Сначала укажите адрес вашей организации.",
+    "organizationStepLoading": "Загружаем настройки организации…",
+    "authStepHint": "Выберите способ входа или введите email и пароль.",
+    "organizationSettingsLoadError": "Не удалось загрузить настройки организации. Проверьте адрес сервера и попробуйте ещё раз.",
+    "defaultOrganizationHint": "Или можете подключиться к нашему публичному сервису.",
+    "defaultOrganizationName": "Genesis Core Public"
   },
   "nav": {
     "messenger": "Мессенджер",

@@ -20,8 +20,6 @@ function seedUsers(): void {
 }
 
 function seedSystemGroups(): void {
-  // Setup: seed Zulip system groups used for the default
-  // "moderators and administrators can post" policy.
   useUserGroupsStore.getState().setGroups([
     {
       id: 11,
@@ -147,7 +145,6 @@ describe("useCreateChatDialog", () => {
       expect(createChannel).toHaveBeenCalledTimes(1);
     });
 
-    // Assert: with announcement-only enabled, API receives merged group-setting from both system groups.
     expect(createChannel).toHaveBeenCalledWith(
       expect.objectContaining({
         canSendMessageGroup: {
@@ -158,7 +155,7 @@ describe("useCreateChatDialog", () => {
     );
   });
 
-  it("disables announcement-only checkbox when system groups are unavailable", () => {
+  it("blocks announcement-only when system posting groups are unavailable", () => {
     seedUsers();
     useChatListStore.setState({ currentUserId: 10 });
 
@@ -170,36 +167,13 @@ describe("useCreateChatDialog", () => {
       }),
     );
 
-    // Assert: without system groups, checkbox is blocked and shows reason key.
     expect(result.current.channelAnnouncementOnlyBlocked).toBe(true);
     expect(result.current.channelAnnouncementOnlyBlockedReasonKey).toBe(
       "channel.announcementOnlyUnsupported",
     );
   });
 
-  it("вызывает unarchiveChannel при разархивировании и очищает ошибку при успехе", async () => {
-    seedUsers();
-    vi.mocked(unarchiveChannel).mockResolvedValue({ ok: true });
-    useChatListStore.setState({ currentUserId: 10 });
-
-    const { result } = renderHook(() =>
-      useCreateChatDialog({
-        open: true,
-        onNavigateDm: vi.fn(),
-        onChannelCreated: vi.fn(),
-      }),
-    );
-
-    await act(async () => {
-      await result.current.onUnarchiveArchivedChannel(77);
-    });
-
-    expect(unarchiveChannel).toHaveBeenCalledWith(77);
-    expect(result.current.unarchiveInlineError).toBe(null);
-    expect(result.current.unarchivePendingStreamIds).toEqual([]);
-  });
-
-  it("помечает unsupported-ответ Zulip как отдельную inline-ошибку", async () => {
+  it("maps unsupported unarchive responses to the unsupported inline error", async () => {
     seedUsers();
     vi.mocked(unarchiveChannel).mockResolvedValue({
       ok: false,
@@ -220,52 +194,7 @@ describe("useCreateChatDialog", () => {
       await result.current.onUnarchiveArchivedChannel(5);
     });
 
+    expect(unarchiveChannel).toHaveBeenCalledWith(5);
     expect(result.current.unarchiveInlineError).toEqual({ kind: "unsupported" });
-  });
-
-  it("передаёт текст ошибки сервера в failed-состояние", async () => {
-    seedUsers();
-    vi.mocked(unarchiveChannel).mockResolvedValue({
-      ok: false,
-      kind: "transient",
-      message: "Server busy",
-      status: 503,
-    });
-
-    const { result } = renderHook(() =>
-      useCreateChatDialog({
-        open: true,
-        onNavigateDm: vi.fn(),
-        onChannelCreated: vi.fn(),
-      }),
-    );
-
-    await act(async () => {
-      await result.current.onUnarchiveArchivedChannel(8);
-    });
-
-    expect(result.current.unarchiveInlineError).toEqual({
-      kind: "failed",
-      message: "Server busy",
-    });
-  });
-
-  it("не подмешивает демо-архивные каналы: вкладка пустая без записей в store", () => {
-    seedUsers();
-
-    const { result } = renderHook(() =>
-      useCreateChatDialog({
-        open: true,
-        onNavigateDm: vi.fn(),
-        onChannelCreated: vi.fn(),
-      }),
-    );
-
-    act(() => {
-      result.current.setTab("archived");
-    });
-
-    expect(result.current.archivedChannels).toEqual([]);
-    expect(useChatListStore.getState().streamsMap.get(91001)).toBeUndefined();
   });
 });

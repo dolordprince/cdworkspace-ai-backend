@@ -38,6 +38,10 @@ interface ImportMetaEnv {
   readonly VITE_CALENDAR_EMBED_URL?: string;
   /** Mail page embed URL override. Optional. */
   readonly VITE_MAIL_EMBED_URL?: string;
+  /** Default organization URL for the login page quick-fill button. Optional. */
+  readonly VITE_DEFAULT_LOGIN_ORGANIZATION_URL?: string;
+  /** Default organization display name for the login page quick-fill button. Optional. */
+  readonly VITE_DEFAULT_LOGIN_ORGANIZATION_NAME?: string;
   /** Persist chat messages to IndexedDB (write-through). Optional; legacy VITE_CHAT_MESSAGES_SOURCE_INDEXEDDB. */
   readonly VITE_CHAT_MESSAGES_PERSIST_INDEXEDDB?: string;
   /** @deprecated Prefer VITE_CHAT_MESSAGES_PERSIST_INDEXEDDB. */
