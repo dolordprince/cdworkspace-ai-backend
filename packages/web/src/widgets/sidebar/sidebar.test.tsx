@@ -1471,6 +1471,45 @@ describe("Sidebar", () => {
     expect(screen.getByText("incident")).toBeInTheDocument();
   });
 
+  it("shows only three topics and expands the rest via show-more button", () => {
+    const streamWithManyTopics: Extract<SidebarChat, { type: "stream" }> = {
+      ...STREAM_CHAT,
+      topics: [
+        { subject: "topic-a", badge: 0, lastMessage: "A" },
+        { subject: "topic-b", badge: 0, lastMessage: "B" },
+        { subject: "topic-c", badge: 0, lastMessage: "C" },
+        { subject: "topic-d", badge: 0, lastMessage: "D" },
+        { subject: "topic-e", badge: 0, lastMessage: "E" },
+      ],
+    };
+    useSidebarConfigStore.getState().setConfig({ expandedStreamSlugs: ["11-engineering"] });
+
+    renderWithProviders(
+      <Sidebar
+        streams={[]}
+        selectedFolderId={SYSTEM_ALL_FOLDER_ID}
+        activeStreamSlug="11-engineering"
+        sidebarChats={[streamWithManyTopics]}
+        sidebarDms={[]}
+      />,
+    );
+
+    expect(screen.getByText("topic-a")).toBeInTheDocument();
+    expect(screen.getByText("topic-b")).toBeInTheDocument();
+    expect(screen.getByText("topic-c")).toBeInTheDocument();
+    expect(screen.queryByText("topic-d")).not.toBeInTheDocument();
+    expect(screen.queryByText("topic-e")).not.toBeInTheDocument();
+
+    const showMoreButton = screen.getByRole("button", {
+      name: t("channel.showMoreTopicsWithCount", { count: 2 }),
+    });
+    fireEvent.click(showMoreButton);
+
+    expect(screen.getByText("topic-d")).toBeInTheDocument();
+    expect(screen.getByText("topic-e")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: t("channel.hideExtraTopics") })).toBeInTheDocument();
+  });
+
   it("shows topic last message sender name in folder stream list", async () => {
     const streamWithTopics: Extract<SidebarChat, { type: "stream" }> = {
       ...STREAM_CHAT,
