@@ -95,15 +95,24 @@ export const MessageBubble: React.FC<MessageBubbleProps> = React.memo(
     );
     const imagesBase = getMessageImagesBaseUrl();
     const { safeMessageHtml, displayHtmlForJitsi } = useMemo(() => {
-      const rawHtml = messageBodyToUnsanitizedDisplayHtml(message.content, {
+      const displaySourceBody = message.markdown_source ?? message.content;
+      const rawHtml = messageBodyToUnsanitizedDisplayHtml(displaySourceBody, {
         resolveUserMention,
-        resolveCustomEmojiShortcodeImageUrl,
+        treatAsMarkdown: message.markdown_source != null,
       });
       return {
-        safeMessageHtml: prepareProtectedMessageHtml(rawHtml, imagesBase),
+        safeMessageHtml: prepareProtectedMessageHtml(rawHtml, imagesBase, {
+          resolveCustomEmojiShortcodeImageUrl,
+        }),
         displayHtmlForJitsi: rawHtml,
       };
-    }, [message.content, imagesBase, resolveUserMention, resolveCustomEmojiShortcodeImageUrl]);
+    }, [
+      message.content,
+      message.markdown_source,
+      imagesBase,
+      resolveUserMention,
+      resolveCustomEmojiShortcodeImageUrl,
+    ]);
 
     const jitsiUrl =
       getJitsiMeetingUrl(message.content, jitsiLinkOptions) ??

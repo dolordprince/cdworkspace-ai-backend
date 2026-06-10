@@ -13,48 +13,13 @@
  *     plainTextPreviewFromMessageBody,
  *   } from "~/shared/lib/message-markdown-display.lib";
  */
-import hljs from "highlight.js/lib/common";
 import { Marked, type Token, type TokenizerAndRendererExtension, type Tokens } from "marked";
 import { stripHtml } from "~/shared/lib/html";
-import { renderEmojiShortcodesInHtml } from "~/shared/lib/message-emoji-shortcodes.lib";
-import {
-  collectMessageInlineImageIdentities,
-  normalizeUserUploadImageIdentity,
-  shouldSkipInliningUserUploadImageLink,
-} from "~/shared/lib/message-inline-user-upload-image.lib";
-import { createInlineUserUploadVideoElement } from "~/shared/lib/message-inline-user-upload-video.lib";
 import {
   injectZulipMentionPlaceholders,
   restoreZulipMentionPlaceholders,
 } from "~/shared/lib/message-zulip-mentions.lib";
 import { renderZulipQuoteBlocksInMarkdown } from "~/shared/lib/message-zulip-quote.lib";
-import { prepareProtectedUserUploadImageElement } from "~/shared/lib/protected-message-media";
-import { isUserUploadImagePath } from "~/shared/lib/protected-message-media-thumbnail";
-import { isUserUploadVideoPath } from "~/shared/lib/user-upload-media-path.lib";
-
-const LANGUAGE_CLASS_PATTERN = /\b(?:language|lang)-([a-z0-9#+-]+)\b/i;
-
-const LANGUAGE_ALIASES: Record<string, string> = {
-  cjs: "javascript",
-  jsx: "javascript",
-  py: "python",
-  sh: "bash",
-  ts: "typescript",
-  tsx: "typescript",
-};
-
-function resolveLanguageFromClassName(className: string): string | null {
-  const match = LANGUAGE_CLASS_PATTERN.exec(className);
-  if (match == null) {
-    return null;
-  }
-  const rawLanguage = match[1]?.toLowerCase();
-  if (rawLanguage == null || rawLanguage.length === 0) {
-    return null;
-  }
-  const normalizedLanguage = LANGUAGE_ALIASES[rawLanguage] ?? rawLanguage;
-  return hljs.getLanguage(normalizedLanguage) ? normalizedLanguage : null;
-}
 
 interface InlineSpoilerToken extends Tokens.Generic {
   type: "inline_spoiler";
@@ -73,6 +38,12 @@ interface ZulipBlockSpoilerToken extends Tokens.Generic {
 const INLINE_SPOILER_TOKEN_TYPE = "inline_spoiler";
 const ZULIP_BLOCK_SPOILER_TOKEN_TYPE = "zulip_block_spoiler";
 const DEFAULT_ZULIP_SPOILER_HEADER = "Spoiler";
+const QUOTE_PLACEHOLDER_START = "\uE100";
+const QUOTE_PLACEHOLDER_END = "\uE101";
+
+function escapeInlineHtmlText(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
 interface MarkedSpoilerRendererContext {
   parser: {
@@ -149,6 +120,11 @@ const ZULIP_BLOCK_SPOILER_EXTENSION: TokenizerAndRendererExtension = {
 
 const markdownRenderer = new Marked({
   extensions: [ZULIP_BLOCK_SPOILER_EXTENSION, INLINE_SPOILER_EXTENSION],
+  renderer: {
+    html({ text }) {
+      return escapeInlineHtmlText(text);
+    },
+  },
 });
 
 /** True when the string looks like HTML from Zulip, not raw `<https://…>` autolink markdown. */
@@ -169,244 +145,31 @@ export function renderMarkdownFallbackHtml(markdown: string): string {
   return typeof rendered === "string" ? rendered : "";
 }
 
-export function applySyntaxHighlighting(html: string): string {
-  if (typeof document === "undefined" || html.trim().length === 0) {
-    return html;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = html;
-
-  const codeBlocks = wrapper.querySelectorAll("pre code");
-  for (const codeBlock of codeBlocks) {
-    const sourceCode = codeBlock.textContent ?? "";
-    if (sourceCode.trim().length === 0) {
-      continue;
-    }
-
-    try {
-      const language = resolveLanguageFromClassName(codeBlock.className);
-      const highlighted = language
-        ? hljs.highlight(sourceCode, { ignoreIllegals: true, language }).value
-        : hljs.highlightAuto(sourceCode).value;
-
-      codeBlock.innerHTML = highlighted;
-      codeBlock.classList.add("hljs");
-      if (language != null) {
-        codeBlock.classList.add(`language-${language}`);
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return wrapper.innerHTML;
-}
-
-function inlineUserUploadImageLinks(html: string): string {
-  // Show inline images for `/user_uploads/` image links while keeping markdown as source of truth.
-  if (typeof document === "undefined" || !html.includes("/user_uploads/")) {
-    return html;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = html;
-  const inlineIdentities = collectMessageInlineImageIdentities(html);
-
-  const links = wrapper.querySelectorAll<HTMLAnchorElement>("a[href]");
-  for (const link of links) {
-    const href = link.getAttribute("href")?.trim();
-    if (href == null || href.length === 0) continue;
-    if (!isUserUploadImagePath(href)) continue;
-    if (link.querySelector("img") != null) continue;
-    const inQuoteBody = link.closest(".zulip-quote-body") != null;
-    if (!inQuoteBody && shouldSkipInliningUserUploadImageLink(href, inlineIdentities)) continue;
-
-    const title = (link.textContent ?? "").trim();
-    const fallbackLabel = title.length > 0 ? title : "image";
-    const image = document.createElement("img");
-    // Set data-auth-src immediately so the browser does not fetch `/user_uploads/...` before auth-loader.
-    prepareProtectedUserUploadImageElement(image, href);
-
-    image.setAttribute("alt", fallbackLabel);
-    image.setAttribute("title", fallbackLabel);
-    link.replaceChildren(image);
-  }
-
-  removeDuplicateQuoteBlockInlineImages(wrapper);
-
-  return wrapper.innerHTML;
-}
-
-function collectInlineImageIdentityFromElement(element: Element): string | null {
-  if (element instanceof HTMLAnchorElement) {
-    return normalizeUserUploadImageIdentity(element.getAttribute("href") ?? "");
-  }
-  if (element instanceof HTMLImageElement) {
-    const authSrc = element.getAttribute("data-auth-src");
-    if (authSrc != null && authSrc.length > 0) {
-      return normalizeUserUploadImageIdentity(authSrc);
-    }
-    return normalizeUserUploadImageIdentity(element.getAttribute("src") ?? "");
-  }
-  return null;
-}
-
-function resolveMessageInlineImageBlockIdentity(block: Element): string | null {
-  for (const anchor of block.querySelectorAll<HTMLAnchorElement>("a[href]")) {
-    const identity = collectInlineImageIdentityFromElement(anchor);
-    if (identity != null) {
-      return identity;
-    }
-  }
-  for (const image of block.querySelectorAll<HTMLImageElement>("img[src], img[data-auth-src]")) {
-    const identity = collectInlineImageIdentityFromElement(image);
-    if (identity != null) {
-      return identity;
-    }
-  }
-  return null;
-}
-
-/** Removes Zulip `.message_inline_image` duplicates after the same file was inlined in `.zulip-quote-body`. */
-function removeDuplicateQuoteBlockInlineImages(wrapper: ParentNode): void {
-  for (const quoteBlock of wrapper.querySelectorAll<HTMLElement>(".zulip-quote-block")) {
-    const quoteBody = quoteBlock.querySelector(".zulip-quote-body");
-    if (quoteBody == null) continue;
-
-    const inlinedIdentities = new Set<string>();
-    for (const image of quoteBody.querySelectorAll<HTMLImageElement>(
-      "img[data-auth-src], img.message-media-preview",
-    )) {
-      const identity = collectInlineImageIdentityFromElement(image);
-      if (identity != null) {
-        inlinedIdentities.add(identity);
-      }
-    }
-    if (inlinedIdentities.size === 0) continue;
-
-    for (const inlineBlock of quoteBlock.querySelectorAll(".message_inline_image")) {
-      const blockIdentity = resolveMessageInlineImageBlockIdentity(inlineBlock);
-      if (blockIdentity != null && inlinedIdentities.has(blockIdentity)) {
-        inlineBlock.remove();
-      }
-    }
-  }
-}
-
-function inlineUserUploadVideoLinks(html: string): string {
-  if (typeof document === "undefined" || !html.includes("/user_uploads/")) {
-    return html;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = html;
-
-  const links = wrapper.querySelectorAll<HTMLAnchorElement>("a[href]");
-  for (const link of links) {
-    const href = link.getAttribute("href")?.trim();
-    if (href == null || href.length === 0) continue;
-    if (!isUserUploadVideoPath(href)) continue;
-    if (link.querySelector("video") != null) continue;
-
-    link.replaceWith(createInlineUserUploadVideoElement(href));
-  }
-
-  return wrapper.innerHTML;
-}
-
-function inlineUserUploadMediaLinks(html: string): string {
-  return inlineUserUploadVideoLinks(inlineUserUploadImageLinks(html));
-}
-
-function normalizeZulipSpoilerBlocks(html: string): string {
-  if (typeof document === "undefined" || !html.includes("spoiler-block")) {
-    return html;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = html;
-
-  const spoilerBlocks = wrapper.querySelectorAll<HTMLElement>(".spoiler-block");
-  for (const block of spoilerBlocks) {
-    const header = block.querySelector<HTMLElement>(".spoiler-header");
-    const content = block.querySelector<HTMLElement>(".spoiler-content");
-    if (content == null) continue;
-
-    if (header == null) {
-      const fallbackHeader = document.createElement("div");
-      fallbackHeader.classList.add("spoiler-header");
-      fallbackHeader.textContent = DEFAULT_ZULIP_SPOILER_HEADER;
-      block.insertBefore(fallbackHeader, content);
-      continue;
-    }
-
-    if ((header.textContent ?? "").trim().length === 0) {
-      header.textContent = DEFAULT_ZULIP_SPOILER_HEADER;
-    }
-  }
-
-  return wrapper.innerHTML;
-}
-
 function unwrapSingleParagraph(html: string): string {
   const match = /^<p>([\s\S]*)<\/p>\s*$/i.exec(html.trim());
   return match?.[1] ?? html;
 }
 
-/** Wraps server-rendered blockquotes that follow a Zulip reply header in `.zulip-quote-block`. */
-function normalizeZulipQuoteBlocksInHtml(html: string): string {
-  if (typeof document === "undefined" || !html.includes("blockquote")) {
-    return html;
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.innerHTML = html;
-
-  const blockquotes = wrapper.querySelectorAll<HTMLElement>("blockquote");
-  for (const blockquote of blockquotes) {
-    if (blockquote.classList.contains("zulip-quote-body")) continue;
-    if (blockquote.closest(".zulip-quote-block") != null) continue;
-
-    const previous = blockquote.previousElementSibling;
-    if (previous == null) continue;
-
-    const hasMention = previous.querySelector(".user-mention") != null;
-    const wroteLink = previous.querySelector("a[href]");
-    if (!hasMention && wroteLink == null) continue;
-
-    const quoteBlock = document.createElement("div");
-    quoteBlock.className = "zulip-quote-block";
-
-    const header = document.createElement("div");
-    header.className = "zulip-quote-header";
-    header.innerHTML = previous.innerHTML;
-
-    blockquote.classList.add("zulip-quote-body");
-    previous.replaceWith(quoteBlock);
-    quoteBlock.appendChild(header);
-    quoteBlock.appendChild(blockquote);
-
-    let next = quoteBlock.nextElementSibling;
-    while (next instanceof HTMLElement && next.classList.contains("message_inline_image")) {
-      const toMove = next;
-      next = next.nextElementSibling;
-      quoteBlock.appendChild(toMove);
-    }
-  }
-
-  return wrapper.innerHTML;
+function buildQuotePlaceholder(index: number): string {
+  return `${QUOTE_PLACEHOLDER_START}${index}${QUOTE_PLACEHOLDER_END}`;
 }
 
-function normalizeRenderedMessageHtml(html: string): string {
-  return normalizeZulipQuoteBlocksInHtml(normalizeZulipSpoilerBlocks(html));
+function restoreQuotePlaceholders(html: string, renderedQuotes: readonly string[]): string {
+  let result = html;
+  renderedQuotes.forEach((quoteHtml, index) => {
+    const placeholder = buildQuotePlaceholder(index);
+    result = result
+      .replace(new RegExp(`<p>${placeholder}</p>`, "g"), () => quoteHtml)
+      .replace(new RegExp(placeholder, "g"), () => quoteHtml);
+  });
+  return result;
 }
 
 export interface MessageBodyDisplayOptions {
   /** Resolves `@**DisplayName**` to a user id for client-side mention spans. Wildcards (`@**all**`, …) do not use this. */
   resolveUserMention?: (displayName: string) => number | null;
-  /** Resolves custom realm emoji shortcode (`:name:`) to image URL. */
-  resolveCustomEmojiShortcodeImageUrl?: (shortcode: string) => string | undefined;
+  /** True when the body definitely came from Zulip markdown mode (`apply_markdown=false`). */
+  treatAsMarkdown?: boolean;
 }
 
 /** Markdown → HTML (marked + GFM + highlight). Caller must `sanitizeHtml` before DOM insertion. */
@@ -416,11 +179,12 @@ export function messageBodyToUnsanitizedDisplayHtml(
 ): string {
   const t = body.trim();
   if (t.length === 0) return "";
-  if (isLikelyRenderedMessageHtml(t)) {
-    return inlineUserUploadMediaLinks(normalizeRenderedMessageHtml(t));
+  if (!options?.treatAsMarkdown && isLikelyRenderedMessageHtml(t)) {
+    return t;
   }
   let mdInput = t;
   let mentionTokens: ReturnType<typeof injectZulipMentionPlaceholders>["tokens"] | undefined;
+  const renderedQuotes: string[] = [];
   if (options?.resolveUserMention != null) {
     const prepared = injectZulipMentionPlaceholders(t, options.resolveUserMention);
     if (prepared.tokens.length > 0) {
@@ -442,19 +206,40 @@ export function messageBodyToUnsanitizedDisplayHtml(
       inner,
       renderQuoteInner,
       renderQuoteHeader,
+      ({ headerLine, bodyHtml }) => {
+        const quoteHtml = `<div class="zulip-quote-block">${
+          headerLine != null && headerLine.length > 0
+            ? `<div class="zulip-quote-header">${renderQuoteHeader(headerLine)}</div>`
+            : ""
+        }<blockquote class="zulip-quote-body">${bodyHtml}</blockquote></div>`;
+        const placeholder = buildQuotePlaceholder(renderedQuotes.length);
+        renderedQuotes.push(quoteHtml);
+        return placeholder;
+      },
     );
-    return restoreMentions(renderMarkdownFallbackHtml(withNestedQuotes));
+    return restoreQuotePlaceholders(
+      restoreMentions(renderMarkdownFallbackHtml(withNestedQuotes)),
+      renderedQuotes,
+    );
   };
 
-  const withQuotes = renderZulipQuoteBlocksInMarkdown(mdInput, renderQuoteInner, renderQuoteHeader);
+  const withQuotes = renderZulipQuoteBlocksInMarkdown(
+    mdInput,
+    renderQuoteInner,
+    renderQuoteHeader,
+    ({ headerLine, bodyHtml }) => {
+      const quoteHtml = `<div class="zulip-quote-block">${
+        headerLine != null && headerLine.length > 0
+          ? `<div class="zulip-quote-header">${renderQuoteHeader(headerLine)}</div>`
+          : ""
+      }<blockquote class="zulip-quote-body">${bodyHtml}</blockquote></div>`;
+      const placeholder = buildQuotePlaceholder(renderedQuotes.length);
+      renderedQuotes.push(quoteHtml);
+      return placeholder;
+    },
+  );
   const mdHtml = renderMarkdownFallbackHtml(withQuotes);
-  let html = applySyntaxHighlighting(mdHtml);
-  html = restoreMentions(html);
-  html = renderEmojiShortcodesInHtml(html, {
-    resolveCustomEmojiShortcodeImageUrl: options?.resolveCustomEmojiShortcodeImageUrl,
-  });
-  const withInlineUploads = inlineUserUploadMediaLinks(html);
-  return normalizeRenderedMessageHtml(withInlineUploads);
+  return restoreQuotePlaceholders(restoreMentions(mdHtml), renderedQuotes);
 }
 
 /** One-line / list previews: strip tags; Markdown is converted via marked first. */
