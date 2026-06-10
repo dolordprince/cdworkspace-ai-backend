@@ -84,6 +84,7 @@ export interface LayoutTypingActions {
 }
 
 export interface LayoutMuteActions {
+  isStreamMuted: (streamId: number) => boolean;
   isEffectivelyMuted: (streamId: number, topic: string) => boolean;
   isTopicFollowed: (streamId: number, topic: string) => boolean;
   getStreamDesktopNotificationsOverride: (streamId: number) => boolean | null;
@@ -110,7 +111,13 @@ export interface LayoutInboxActions {
 }
 
 export interface LayoutNotificationsActions {
-  show: (options: { title: string; body: string; tag: string; silent?: boolean }) => Promise<void>;
+  show: (options: {
+    title: string;
+    body: string;
+    tag: string;
+    silent?: boolean;
+    clickRoute?: string;
+  }) => Promise<void>;
   closeByTag: (tag: string) => void;
   playSound: (preset?: string) => void;
   getSoundPreset: () => string;
@@ -122,6 +129,7 @@ export interface LayoutJitsiCallActions {
 }
 
 export interface LayoutZulipEventDispatchContext {
+  currentInstanceId: string | null;
   chatList: LayoutChatListActions;
   currentChat: LayoutCurrentChatActions;
   users: LayoutUsersActions;
