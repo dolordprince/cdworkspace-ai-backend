@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { useInstancesStore } from "~/entities/instance/instance.model";
 import { useThemeStore } from "~/entities/theme/theme.model";
+import { applyUserStatusSnapshot } from "~/entities/user/api/user-status-write.lib";
 import { updateOwnStatus } from "~/entities/user/api/user.api";
 import { useUserStatus } from "~/entities/user/user-status.hooks";
 import {
@@ -198,24 +199,22 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
     }
     setStatusSubmitting(true);
     try {
-      const nextStatus = await updateOwnStatus({
+      const result = await updateOwnStatus({
         text: statusTextDraft,
         emojiName: statusEmojiNameDraft || undefined,
         away: statusAwayDraft,
       });
-      const isClearRequest =
-        statusTextDraft.trim().length === 0 &&
-        statusEmojiNameDraft.trim().length === 0 &&
-        statusAwayDraft === false;
-      if (nextStatus == null && !isClearRequest) {
-        log.warn("Status update returned empty payload for non-empty draft", {
+      if (!result.ok) {
+        log.warn("Status update failed", {
+          kind: result.kind,
+          status: result.status,
           hasText: statusTextDraft.trim().length > 0,
           hasEmoji: statusEmojiNameDraft.trim().length > 0,
           away: statusAwayDraft,
         });
         return;
       }
-      useUsersStore.getState().setStatus(currentUserId, nextStatus, Date.now());
+      applyUserStatusSnapshot(currentUserId, result.status, Date.now());
       setStatusDialogOpen(false);
     } finally {
       setStatusSubmitting(false);

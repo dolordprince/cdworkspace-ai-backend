@@ -189,7 +189,7 @@ describe("MessageBubble markdown body", () => {
     expect(emojiImage).toHaveAttribute("title", ":party_parrot:");
   });
 
-  it("opens media viewer when clicking inline video", () => {
+  it("does not open media viewer on a regular inline video click", () => {
     useUsersStore.getState().mergeUser(createUser({ user_id: 77, full_name: "Alice" }));
     const mediaViewerOpenSpy = vi.spyOn(useMediaViewerStore.getState(), "open");
     const content =
@@ -202,10 +202,96 @@ describe("MessageBubble markdown body", () => {
 
     const video = container.querySelector("video");
     expect(video).toBeTruthy();
-    fireEvent.click(video as HTMLVideoElement);
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true });
+    (video as HTMLVideoElement).dispatchEvent(clickEvent);
+
+    expect(clickEvent.defaultPrevented).toBe(false);
+    expect(mediaViewerOpenSpy).not.toHaveBeenCalled();
+    mediaViewerOpenSpy.mockRestore();
+  });
+
+  it("opens media viewer on inline video double click", () => {
+    useUsersStore.getState().mergeUser(createUser({ user_id: 77, full_name: "Alice" }));
+    const mediaViewerOpenSpy = vi.spyOn(useMediaViewerStore.getState(), "open");
+    const content =
+      '<video controls><source src="/user_uploads/1/private.mp4" type="video/mp4" /></video>';
+    const gallery = buildMessageMediaGallery([createMessage({ content })]);
+
+    const { container } = render(
+      <MessageBubble message={createMessage({ content })} isOwn={false} mediaGallery={gallery} />,
+    );
+
+    const video = container.querySelector("video");
+    expect(video).toBeTruthy();
+    fireEvent.doubleClick(video as HTMLVideoElement);
 
     expect(mediaViewerOpenSpy).toHaveBeenCalledWith(
       expect.arrayContaining([expect.objectContaining({ type: "video" })]),
+      0,
+    );
+    mediaViewerOpenSpy.mockRestore();
+  });
+
+  it("opens full user_upload image URL when clicking thumbnail-based Zulip HTML image", () => {
+    useUsersStore.getState().mergeUser(createUser({ user_id: 77, full_name: "Alice" }));
+    const mediaViewerOpenSpy = vi.spyOn(useMediaViewerStore.getState(), "open");
+    const content = [
+      '<p><a href="/user_uploads/2/ff/aP3oHiNs40xdmpUNVol7Z5ga/image.png">image.png</a></p>',
+      '<div class="message_inline_image">',
+      '<a href="/user_uploads/2/ff/aP3oHiNs40xdmpUNVol7Z5ga/image.png">',
+      '<img src="/user_uploads/thumbnail/2/ff/aP3oHiNs40xdmpUNVol7Z5ga/image.png/840x560.webp" alt="image.png">',
+      "</a></div>",
+    ].join("");
+    const gallery = buildMessageMediaGallery([createMessage({ content })]);
+
+    const { container } = render(
+      <MessageBubble message={createMessage({ content })} isOwn={false} mediaGallery={gallery} />,
+    );
+
+    const image = container.querySelector(".message-body img");
+    expect(image).toBeTruthy();
+    fireEvent.click(image as HTMLImageElement);
+
+    expect(mediaViewerOpenSpy).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          type: "image",
+          url: expect.stringMatching(
+            /\/user_uploads\/2\/ff\/aP3oHiNs40xdmpUNVol7Z5ga\/image\.png$/,
+          ),
+        }),
+      ],
+      0,
+    );
+    mediaViewerOpenSpy.mockRestore();
+  });
+
+  it("keeps the current blob preview for viewer while loading full user_upload image", () => {
+    useUsersStore.getState().mergeUser(createUser({ user_id: 77, full_name: "Alice" }));
+    const mediaViewerOpenSpy = vi.spyOn(useMediaViewerStore.getState(), "open");
+    const content =
+      '<p><img src="/user_uploads/thumbnail/2/ff/aP3oHiNs40xdmpUNVol7Z5ga/image.png/840x560.webp" alt="image.png"></p>';
+
+    const { container } = render(
+      <MessageBubble message={createMessage({ content })} isOwn={false} />,
+    );
+
+    const image = container.querySelector(".message-body img");
+    expect(image).toBeTruthy();
+    (image as HTMLImageElement).src = "blob:message-preview";
+
+    fireEvent.click(image as HTMLImageElement);
+
+    expect(mediaViewerOpenSpy).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({
+          type: "image",
+          url: expect.stringMatching(
+            /\/user_uploads\/2\/ff\/aP3oHiNs40xdmpUNVol7Z5ga\/image\.png$/,
+          ),
+          previewUrl: "blob:message-preview",
+        }),
+      ],
       0,
     );
     mediaViewerOpenSpy.mockRestore();

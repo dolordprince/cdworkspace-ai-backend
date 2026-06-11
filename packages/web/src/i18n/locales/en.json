@@ -116,7 +116,7 @@
     "messagesRefreshError": "Could not refresh messages. You may be seeing cached content.",
     "retryLoadMessages": "Retry",
     "boundaryPaginationError": "Could not load more messages",
-    "generalChat": "General chat",
+    "generalChat": "General Chat",
     "noMessages": "No messages here yet...",
     "selectTopic": "Select a topic to send messages to the channel",
     "typing": "Typing",

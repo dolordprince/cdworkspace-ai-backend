@@ -18,6 +18,18 @@ const fetchDirectMessagesPageMock = vi.hoisted(() =>
   vi.fn(() => Promise.resolve({ messages: [], foundOldest: true })),
 );
 const hydrateDmSidebarPreviewsMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const requestUserStatusMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const loadDmIndexEntriesMock = vi.hoisted(() =>
+  vi.fn<
+    () => {
+      dmKey: string;
+      userIds: number[];
+      lastActivityTs: number;
+      lastMessageId: number;
+      unreadCount: number;
+    }[]
+  >(() => []),
+);
 
 vi.mock("~/shared/lib/event-loop", () => ({
   startZulipEventLoop: startZulipEventLoopMock,
@@ -53,6 +65,10 @@ vi.mock("~/shared/api/zulip-users", () => ({
   getCurrentUser: getCurrentUserMock,
 }));
 
+vi.mock("~/entities/user/api/user.api", () => ({
+  requestUserStatus: requestUserStatusMock,
+}));
+
 vi.mock("~/entities/chat-list/chat-list-dm-preview-hydrate.lib", () => ({
   hydrateDmSidebarPreviewsFromRecentConversations: hydrateDmSidebarPreviewsMock,
 }));
@@ -71,7 +87,7 @@ vi.mock("~/entities/user/user-directory-snapshot-persist.lib", () => ({
 }));
 
 vi.mock("~/shared/lib/dm-index", () => ({
-  loadDmIndexEntries: vi.fn(() => []),
+  loadDmIndexEntries: loadDmIndexEntriesMock,
   upsertDmIndexEntries: vi.fn(),
   upsertDmIndexFromMessages: vi.fn(),
 }));
@@ -128,6 +144,9 @@ function Harness({
 describe("useLayoutZulipEventLoop", () => {
   beforeEach(() => {
     hydrateDmSidebarPreviewsMock.mockClear();
+    requestUserStatusMock.mockClear();
+    loadDmIndexEntriesMock.mockReset();
+    loadDmIndexEntriesMock.mockReturnValue([]);
     useChatListStore.getState().clear();
     useUsersStore.getState().clear();
     useUserGroupsStore.getState().clear();
@@ -321,6 +340,7 @@ describe("useLayoutZulipEventLoop", () => {
       | { fetchEventTypes?: string[] }
       | undefined;
     expect(firstCallArg?.fetchEventTypes).toEqual([...DEFAULT_REGISTER_FETCH_EVENT_TYPES]);
+    expect(firstCallArg?.fetchEventTypes).toContain("user_status");
   });
 
   it("marks stream metadata as hydrated after bootstrap subscriptions success, even if empty", async () => {
@@ -402,6 +422,160 @@ describe("useLayoutZulipEventLoop", () => {
     expect(props.setCurrentUserId).toHaveBeenCalledWith(7);
     await waitFor(() => {
       expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not preload bootstrap statuses for users directory members", async () => {
+    fetchUsersMock.mockResolvedValueOnce([
+      { user_id: 7, full_name: "Current User", email: "test@example.com" },
+      { user_id: 20, full_name: "Partner", email: "partner@example.com" },
+      { user_id: 30, full_name: "Teammate", email: "teammate@example.com" },
+    ] as never);
+    loadDmIndexEntriesMock.mockReturnValueOnce([
+      {
+        dmKey: "7,20",
+        userIds: [7, 20],
+        lastActivityTs: 100,
+        lastMessageId: 55,
+        unreadCount: 0,
+      },
+    ]);
+
+    render(<Harness currentInstanceId="inst-1" />);
+
+    await waitFor(() => {
+      expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
+    });
+    expect(requestUserStatusMock).not.toHaveBeenCalled();
+  });
+
+  it("hydrates known user statuses from register snapshot without fallback requests", async () => {
+    fetchUsersMock.mockResolvedValueOnce([
+      { user_id: 7, full_name: "Current User", email: "test@example.com" },
+      { user_id: 20, full_name: "Partner", email: "partner@example.com" },
+    ] as never);
+
+    render(<Harness currentInstanceId="inst-1" />);
+
+    await waitFor(() => {
+      expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
+    });
+
+    const firstCallArg = startZulipEventLoopMock.mock.calls[0]?.[0] as
+      | {
+          onQueueRegistered?: (
+            id: string,
+            registration?: {
+              userStatusSnapshot?: {
+                userId: number;
+                status: {
+                  text: string;
+                  emojiName?: string;
+                  emojiCode?: string;
+                  reactionType?: "unicode_emoji";
+                  away: boolean;
+                };
+              }[];
+            },
+          ) => void;
+        }
+      | undefined;
+
+    act(() => {
+      firstCallArg?.onQueueRegistered?.("q-status", {
+        userStatusSnapshot: [
+          {
+            userId: 20,
+            status: {
+              text: "Heads down",
+              emojiName: "speech_balloon",
+              emojiCode: "1f4ac",
+              reactionType: "unicode_emoji",
+              away: true,
+            },
+          },
+        ],
+      });
+    });
+
+    const partner = useUsersStore.getState().getUser(20);
+    expect(partner?.status).toEqual({
+      text: "Heads down",
+      emojiName: "speech_balloon",
+      emojiCode: "1f4ac",
+      reactionType: "unicode_emoji",
+      away: true,
+    });
+    expect(partner?.statusFetchedAt).toEqual(expect.any(Number));
+    expect(requestUserStatusMock).not.toHaveBeenCalled();
+  });
+
+  it("clears stale user statuses when register snapshot is present but empty", async () => {
+    fetchUsersMock.mockResolvedValueOnce([
+      { user_id: 7, full_name: "Current User", email: "test@example.com" },
+      { user_id: 20, full_name: "Partner", email: "partner@example.com" },
+    ] as never);
+
+    render(<Harness currentInstanceId="inst-1" />);
+
+    await waitFor(() => {
+      expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
+    });
+
+    useUsersStore.getState().setStatus(20, { text: "Old status", away: false }, 123);
+
+    const firstCallArg = startZulipEventLoopMock.mock.calls[0]?.[0] as
+      | {
+          onQueueRegistered?: (
+            id: string,
+            registration?: {
+              userStatusSnapshot?: {
+                userId: number;
+                status: { text: string; away: boolean };
+              }[];
+            },
+          ) => void;
+        }
+      | undefined;
+
+    act(() => {
+      firstCallArg?.onQueueRegistered?.("q-empty-status", {
+        userStatusSnapshot: [],
+      });
+    });
+
+    const partner = useUsersStore.getState().getUser(20);
+    expect(partner?.status).toBeUndefined();
+    expect(partner?.statusFetchedAt).toEqual(expect.any(Number));
+  });
+
+  it("does not clear statuses when register snapshot field is absent", async () => {
+    fetchUsersMock.mockResolvedValueOnce([
+      { user_id: 7, full_name: "Current User", email: "test@example.com" },
+      { user_id: 20, full_name: "Partner", email: "partner@example.com" },
+    ] as never);
+
+    render(<Harness currentInstanceId="inst-1" />);
+
+    await waitFor(() => {
+      expect(startZulipEventLoopMock).toHaveBeenCalledTimes(1);
+    });
+
+    useUsersStore.getState().setStatus(20, { text: "Keep me", away: false }, 123);
+
+    const firstCallArg = startZulipEventLoopMock.mock.calls[0]?.[0] as
+      | {
+          onQueueRegistered?: (id: string, registration?: Record<string, unknown>) => void;
+        }
+      | undefined;
+
+    act(() => {
+      firstCallArg?.onQueueRegistered?.("q-no-status", {});
+    });
+
+    expect(useUsersStore.getState().getUser(20)?.status).toEqual({
+      text: "Keep me",
+      away: false,
     });
   });
 
