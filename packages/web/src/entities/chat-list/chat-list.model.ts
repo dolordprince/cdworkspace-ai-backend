@@ -43,6 +43,8 @@ import {
   buildUnreadLocationMap,
   clearBootstrapErrorPatch,
   type ChatListDmBootstrapDisplayContext,
+  type ChatListHydrateFromSnapshotState,
+  type SetFromMessagesBootstrapState,
 } from "./chat-list-bootstrap.lib";
 import {
   applyHandleDeleteMessagesStatePatch,
@@ -104,6 +106,16 @@ import type { ChatListState, MessageLocation } from "./chat-list.model.types";
 
 type StreamTopicEntryInternal =
   StreamEntryInternal["topics"] extends Map<string, infer TopicEntry> ? TopicEntry : never;
+
+/** Writable store fields accepted by patchSet (Zustand v5 setState is stricter than v4). */
+type ChatListStateDataPatch =
+  | Partial<ChatListState>
+  | SetFromMessagesBootstrapState
+  | ChatListHydrateFromSnapshotState;
+
+type ChatListStateUpdater = (state: ChatListState) => ChatListState | ChatListStateDataPatch;
+
+type ChatListPatchInput = ChatListStateDataPatch | ChatListStateUpdater;
 
 function finalizeChatListPatch(
   state: ChatListState,
@@ -341,6 +353,14 @@ function hasStreamMetadataAccessChanged(
   ) {
     return true;
   }
+  if (
+    !areGroupSettingValuesEqual(
+      existing.canMoveMessagesOutOfChannelGroup,
+      nextEntry.canMoveMessagesOutOfChannelGroup,
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -355,16 +375,22 @@ export const useChatListStore = create<ChatListState>((set, get) => {
     previewResolveAbortControllers.clear();
   };
 
-  const patchSet = (update: Parameters<typeof set>[0], meta: ChatListPatchMeta = {}) => {
+  const patchSet = (update: ChatListPatchInput, meta: ChatListPatchMeta = {}) => {
     if (typeof update === "function") {
       set((state) => {
         const patch = update(state);
         if (patch === state) return state;
-        return { ...state, ...finalizeChatListPatch(state, patch, meta) };
+        return {
+          ...state,
+          ...finalizeChatListPatch(state, patch, meta),
+        };
       });
       return;
     }
-    set({ ...get(), ...finalizeChatListPatch(get(), update, meta) });
+    set((state) => ({
+      ...state,
+      ...finalizeChatListPatch(state, update, meta),
+    }));
   };
 
   const reconcileUnreadMaps = (
@@ -890,10 +916,9 @@ export const useChatListStore = create<ChatListState>((set, get) => {
 
     upsertStreamTopicShells(streamId, topics) {
       if (!Number.isInteger(streamId) || streamId <= 0) return;
-      const normalizedTopics = topics
-        .map((t) => normalizeTopicForIdentity(t))
-        .map((t) => t.trim())
-        .filter((t) => t.length > 0);
+      const normalizedTopics = [
+        ...new Set(topics.map((topicName) => normalizeTopicForIdentity(topicName))),
+      ];
       if (normalizedTopics.length === 0) return;
 
       patchSet(
@@ -1107,6 +1132,130 @@ export const useChatListStore = create<ChatListState>((set, get) => {
                       lastMessageSenderName: newestTopic.lastMessageSenderName,
                       time: newestTopic.time,
                       ts: newestTopic.ts,
+                    }
+                  : {}),
+              });
+              streamsChanged = true;
+            }
+          }
+
+          if (!locationsChanged && !streamsChanged) return state;
+
+          let streamTopicMessageIds = state.streamTopicMessageIds;
+          if (locationsChanged) {
+            streamTopicMessageIds = patchStreamTopicMessageIndex(
+              state.streamTopicMessageIds,
+              state.messageIdToLocation,
+              nextLocations,
+            );
+          }
+
+          return {
+            ...(streamsChanged ? { streamsMap: nextStreams } : {}),
+            ...(locationsChanged ? { messageIdToLocation: nextLocations } : {}),
+            ...(locationsChanged || streamsChanged ? { streamTopicMessageIds } : {}),
+          };
+        },
+        { preserveSidebarTotals: true },
+      );
+    },
+
+    moveTopicToStream({
+      sourceStreamId,
+      targetStreamId,
+      oldTopic,
+      newTopic,
+      messageIds,
+      anchorMessageId,
+    }) {
+      if (!Number.isInteger(sourceStreamId) || sourceStreamId <= 0) return;
+      if (!Number.isInteger(targetStreamId) || targetStreamId <= 0) return;
+      if (sourceStreamId === targetStreamId) return;
+      const oldTopicKey = normalizeTopicForIdentity(oldTopic);
+      const nextTopicKey = normalizeTopicForIdentity(newTopic);
+      const targetMessageIds = resolveTopicMoveTargetMessageIds({ messageIds, anchorMessageId });
+      if (targetMessageIds.length === 0) return;
+      const affectedMessageIds = new Set(targetMessageIds);
+
+      patchSet(
+        (state) => {
+          const sourceStream = state.streamsMap.get(sourceStreamId);
+          const targetStream = state.streamsMap.get(targetStreamId);
+          if (!sourceStream || !targetStream) return state;
+
+          let nextLocations = state.messageIdToLocation;
+          let locationsChanged = false;
+          const ensureMutableLocations = () => {
+            if (!locationsChanged) {
+              nextLocations = new Map(nextLocations);
+              locationsChanged = true;
+            }
+          };
+          const assignStreamTopicForLocation = (messageId: number) => {
+            const location = nextLocations.get(messageId);
+            if (location?.type !== "stream" || location.stream_id !== sourceStreamId) return;
+            if (location.stream_id === targetStreamId && location.topic === nextTopicKey) return;
+            ensureMutableLocations();
+            nextLocations.set(messageId, {
+              type: "stream",
+              stream_id: targetStreamId,
+              topic: nextTopicKey,
+            });
+          };
+
+          for (const messageId of affectedMessageIds) {
+            assignStreamTopicForLocation(messageId);
+          }
+
+          const knownOldTopicMessageIds = [
+            ...getStreamTopicMessageIds(state.streamTopicMessageIds, sourceStreamId, oldTopicKey),
+          ];
+          const canMoveTopicEntry =
+            knownOldTopicMessageIds.length > 0 &&
+            knownOldTopicMessageIds.every((messageId) => affectedMessageIds.has(messageId));
+
+          let streamsChanged = false;
+          let nextStreams = state.streamsMap;
+          if (canMoveTopicEntry) {
+            const oldTopicEntry = sourceStream.topics.get(oldTopicKey);
+            if (oldTopicEntry) {
+              const sourceTopics = new Map(sourceStream.topics);
+              sourceTopics.delete(oldTopicKey);
+              const sourceNewestTopic = getNewestTopicEntry(sourceTopics);
+
+              const targetTopics = new Map(targetStream.topics);
+              const targetTopicEntry = targetTopics.get(nextTopicKey);
+              const mergedTopic = mergeTopicsForMove(oldTopicEntry, nextTopicKey, targetTopicEntry);
+              targetTopics.set(nextTopicKey, mergedTopic);
+              const targetNewestTopic = getNewestTopicEntry(targetTopics);
+
+              nextStreams = new Map(state.streamsMap);
+              nextStreams.set(sourceStreamId, {
+                ...sourceStream,
+                topics: sourceTopics,
+                ...(sourceNewestTopic != null
+                  ? {
+                      lastMessage: sourceNewestTopic.lastMessage,
+                      lastMessageSenderName: sourceNewestTopic.lastMessageSenderName,
+                      time: sourceNewestTopic.time,
+                      ts: sourceNewestTopic.ts,
+                    }
+                  : {
+                      lastMessage: "",
+                      lastMessageSenderName: undefined,
+                      time: "",
+                      ts: 0,
+                    }),
+              });
+              nextStreams.set(targetStreamId, {
+                ...targetStream,
+                topics: targetTopics,
+                ...(targetNewestTopic != null
+                  ? {
+                      lastMessage: targetNewestTopic.lastMessage,
+                      lastMessageSenderName: targetNewestTopic.lastMessageSenderName,
+                      time: targetNewestTopic.time,
+                      ts: targetNewestTopic.ts,
                     }
                   : {}),
               });

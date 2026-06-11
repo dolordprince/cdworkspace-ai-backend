@@ -1,7 +1,7 @@
 {
   "name": "workspace",
   "private": true,
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Exordos Workspace - smart corporate messenger built with React/Electron",
   "workspaces": [
     ".",
@@ -14,7 +14,6 @@
     "bootstrap": "lerna bootstrap",
     "dev": "lerna run dev --parallel --ignore workspace",
     "dev:web": "lerna run dev --scope web --stream",
-    "dev:mock": "lerna run dev --scope mock-server --stream",
     "lint": "npm run lint --workspace=web",
     "lint:cc": "node scripts/count-cognitive-complexity.mjs",
     "lint:smells": "node scripts/lint-code-smells-report.mjs",
@@ -62,13 +61,13 @@
     "ip-address": "10.1.1"
   },
   "devDependencies": {
-    "@commitlint/cli": "21.0.1",
-    "@commitlint/config-conventional": "20.4.4",
+    "@commitlint/cli": "21.0.2",
+    "@commitlint/config-conventional": "21.0.2",
     "@playwright/test": "1.60.0",
     "lerna": "9.0.7",
-    "lint-staged": "17.0.5",
+    "lint-staged": "17.0.7",
     "simple-git-hooks": "2.13.1",
-    "tinyexec": "1.0.2"
+    "tinyexec": "1.2.4"
   },
   "license": "Apache-2.0"
 }

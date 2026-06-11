@@ -3,8 +3,10 @@ import { Link } from "react-router-dom";
 import { t } from "~/i18n/i18n";
 import { sidebarRowClass } from "~/shared/lib/format";
 import { resolveTopicDisplayInfo } from "~/shared/lib/topic-display.lib";
+import { encodeTopicForRoute } from "~/shared/lib/topic-identity.lib";
 import { Icon } from "~/shared/ui/icon";
 import { SidebarChatBadges } from "./sidebar-chat-badges.ui";
+import { TopicContextMenu } from "./sidebar-chat-context-menu.ui";
 import { sidebarStreamTopicRoute } from "./sidebar-chat-routes.lib";
 import { TopicMuteButton } from "./sidebar-folder-topic-buttons.ui";
 import { SidebarMessagePreview } from "./sidebar-message-preview.ui";
@@ -114,14 +116,24 @@ export const SidebarStreamListTopics = React.memo<SidebarStreamListTopicsProps>(
                 streamSlug === activeStreamSlug && activeTopic === topic.subject;
               const topicDisplay = resolveTopicDisplayInfo(topic.subject);
               return (
-                <div
-                  key={topic.subject}
-                  className={`group/topic relative rounded-r-lg border-l-4 transition-colors ${sidebarRowClass(isTopicActive)}`}
-                  style={{ borderLeftColor: topicColor }}
+                <TopicContextMenu
+                  key={encodeTopicForRoute(topic.subject)}
+                  streamId={stream.stream_id}
+                  streamName={stream.name}
+                  topic={topic.subject}
+                  rowClassName={`group/topic relative w-full rounded-r-lg border-l-4 transition-colors ${sidebarRowClass(isTopicActive)}`}
+                  rowStyle={{ borderLeftColor: topicColor }}
+                  sideActions={
+                    <TopicMuteButton
+                      streamId={stream.stream_id}
+                      topic={topic.subject}
+                      onMuteError={onMuteError}
+                    />
+                  }
                 >
                   <Link
                     to={sidebarStreamTopicRoute(streamSlug, topic.subject)}
-                    className="flex w-full min-w-0 items-start gap-3 py-2 pl-3 pr-8"
+                    className="flex w-full min-w-0 items-start gap-3 py-2 pl-3 pr-12"
                   >
                     <div className="min-w-0 flex-1">
                       <div
@@ -140,14 +152,7 @@ export const SidebarStreamListTopics = React.memo<SidebarStreamListTopicsProps>(
                     </div>
                     <SidebarChatBadges unreadCount={topic.badge} hasMention={topic.hasMention} />
                   </Link>
-                  <div className="absolute inset-y-1 right-1 flex items-center">
-                    <TopicMuteButton
-                      streamId={stream.stream_id}
-                      topic={topic.subject}
-                      onMuteError={onMuteError}
-                    />
-                  </div>
-                </div>
+                </TopicContextMenu>
               );
             })
           )}

@@ -36,6 +36,7 @@ export function parseSubscriptionRows(value: unknown): {
     canRemoveSubscribersGroup?: ZulipGroupSettingValue;
     canAdministerChannelGroup?: ZulipGroupSettingValue;
     canResolveTopicsGroup?: ZulipGroupSettingValue;
+    canMoveMessagesOutOfChannelGroup?: ZulipGroupSettingValue;
   }[] = [];
   for (const row of value) {
     if (row == null || typeof row !== "object" || Array.isArray(row)) continue;
@@ -55,6 +56,7 @@ export function parseOneSubscriptionRow(record: Record<string, unknown>): {
   canRemoveSubscribersGroup?: ZulipGroupSettingValue;
   canAdministerChannelGroup?: ZulipGroupSettingValue;
   canResolveTopicsGroup?: ZulipGroupSettingValue;
+  canMoveMessagesOutOfChannelGroup?: ZulipGroupSettingValue;
 } | null {
   const streamIdRaw = record.stream_id;
   const name = record.name;
@@ -64,6 +66,9 @@ export function parseOneSubscriptionRow(record: Record<string, unknown>): {
   const canRemoveSubscribersGroup = normalizeGroupSettingValue(record.can_remove_subscribers_group);
   const canAdministerChannelGroup = normalizeGroupSettingValue(record.can_administer_channel_group);
   const canResolveTopicsGroup = normalizeGroupSettingValue(record.can_resolve_topics_group);
+  const canMoveMessagesOutOfChannelGroup = normalizeGroupSettingValue(
+    record.can_move_messages_out_of_channel_group,
+  );
   return {
     streamId: streamIdRaw,
     name: name.trim(),
@@ -74,6 +79,7 @@ export function parseOneSubscriptionRow(record: Record<string, unknown>): {
     ...(canRemoveSubscribersGroup != null ? { canRemoveSubscribersGroup } : {}),
     ...(canAdministerChannelGroup != null ? { canAdministerChannelGroup } : {}),
     ...(canResolveTopicsGroup != null ? { canResolveTopicsGroup } : {}),
+    ...(canMoveMessagesOutOfChannelGroup != null ? { canMoveMessagesOutOfChannelGroup } : {}),
   };
 }
 
@@ -152,62 +158,74 @@ export function buildStreamMetadataRowFromExisting(
     ...(existing?.canResolveTopicsGroup != null
       ? { canResolveTopicsGroup: existing.canResolveTopicsGroup }
       : {}),
+    ...(existing?.canMoveMessagesOutOfChannelGroup != null
+      ? { canMoveMessagesOutOfChannelGroup: existing.canMoveMessagesOutOfChannelGroup }
+      : {}),
   };
 }
 
+interface SubscriptionMetadataRow {
+  streamId: number;
+  name: string;
+  isArchived?: boolean;
+  inviteOnly?: boolean;
+  canAddSubscribersGroup?: ZulipGroupSettingValue;
+  canRemoveSubscribersGroup?: ZulipGroupSettingValue;
+  canAdministerChannelGroup?: ZulipGroupSettingValue;
+  canResolveTopicsGroup?: ZulipGroupSettingValue;
+  canMoveMessagesOutOfChannelGroup?: ZulipGroupSettingValue;
+}
+
+function applyBooleanSubscriptionMetadataField(
+  row: SubscriptionMetadataRow,
+  event: ZulipEvent,
+  field: "isArchived" | "inviteOnly",
+): void {
+  if (typeof event.value === "boolean") {
+    row[field] = event.value;
+  }
+}
+
+function applyGroupSubscriptionMetadataField(
+  row: SubscriptionMetadataRow,
+  event: ZulipEvent,
+  field:
+    | "canAddSubscribersGroup"
+    | "canRemoveSubscribersGroup"
+    | "canAdministerChannelGroup"
+    | "canResolveTopicsGroup"
+    | "canMoveMessagesOutOfChannelGroup",
+): void {
+  const parsed = normalizeGroupSettingValue(event.value);
+  if (parsed != null) {
+    row[field] = parsed;
+  }
+}
+
+const SUBSCRIPTION_METADATA_FIELD_HANDLERS: Record<
+  string,
+  (row: SubscriptionMetadataRow, event: ZulipEvent) => void
+> = {
+  is_archived: (row, event) => applyBooleanSubscriptionMetadataField(row, event, "isArchived"),
+  invite_only: (row, event) => applyBooleanSubscriptionMetadataField(row, event, "inviteOnly"),
+  can_add_subscribers_group: (row, event) =>
+    applyGroupSubscriptionMetadataField(row, event, "canAddSubscribersGroup"),
+  can_remove_subscribers_group: (row, event) =>
+    applyGroupSubscriptionMetadataField(row, event, "canRemoveSubscribersGroup"),
+  can_administer_channel_group: (row, event) =>
+    applyGroupSubscriptionMetadataField(row, event, "canAdministerChannelGroup"),
+  can_resolve_topics_group: (row, event) =>
+    applyGroupSubscriptionMetadataField(row, event, "canResolveTopicsGroup"),
+  can_move_messages_out_of_channel_group: (row, event) =>
+    applyGroupSubscriptionMetadataField(row, event, "canMoveMessagesOutOfChannelGroup"),
+};
+
 export function applySubscriptionMetadataField(
-  row: {
-    streamId: number;
-    name: string;
-    isArchived?: boolean;
-    inviteOnly?: boolean;
-    canAddSubscribersGroup?: ZulipGroupSettingValue;
-    canRemoveSubscribersGroup?: ZulipGroupSettingValue;
-    canAdministerChannelGroup?: ZulipGroupSettingValue;
-    canResolveTopicsGroup?: ZulipGroupSettingValue;
-  },
+  row: SubscriptionMetadataRow,
   property: string,
   event: ZulipEvent,
 ): void {
-  if (property === "is_archived") {
-    if (typeof event.value === "boolean") {
-      row.isArchived = event.value;
-    }
-    return;
-  }
-  if (property === "invite_only") {
-    if (typeof event.value === "boolean") {
-      row.inviteOnly = event.value;
-    }
-    return;
-  }
-  if (property === "can_add_subscribers_group") {
-    const parsed = normalizeGroupSettingValue(event.value);
-    if (parsed != null) {
-      row.canAddSubscribersGroup = parsed;
-    }
-    return;
-  }
-  if (property === "can_remove_subscribers_group") {
-    const parsed = normalizeGroupSettingValue(event.value);
-    if (parsed != null) {
-      row.canRemoveSubscribersGroup = parsed;
-    }
-    return;
-  }
-  if (property === "can_administer_channel_group") {
-    const parsed = normalizeGroupSettingValue(event.value);
-    if (parsed != null) {
-      row.canAdministerChannelGroup = parsed;
-    }
-    return;
-  }
-  if (property === "can_resolve_topics_group") {
-    const parsed = normalizeGroupSettingValue(event.value);
-    if (parsed != null) {
-      row.canResolveTopicsGroup = parsed;
-    }
-  }
+  SUBSCRIPTION_METADATA_FIELD_HANDLERS[property]?.(row, event);
 }
 
 export function handleSubscriptionPropertyUpdate(
@@ -252,6 +270,7 @@ export function handleSubscriptionPropertyUpdate(
     property !== "can_remove_subscribers_group" &&
     property !== "can_administer_channel_group" &&
     property !== "can_resolve_topics_group" &&
+    property !== "can_move_messages_out_of_channel_group" &&
     property !== "invite_only"
   ) {
     return;
@@ -313,6 +332,7 @@ export function handleStreamPropertyUpdate(
     property !== "can_remove_subscribers_group" &&
     property !== "can_administer_channel_group" &&
     property !== "can_resolve_topics_group" &&
+    property !== "can_move_messages_out_of_channel_group" &&
     property !== "invite_only"
   ) {
     return;

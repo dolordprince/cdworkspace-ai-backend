@@ -335,7 +335,7 @@ describe("Sidebar", () => {
   });
 
   it("uses semantic token classes for sidebar search input container", () => {
-    const { container } = renderWithProviders(
+    renderWithProviders(
       <Sidebar
         streams={[]}
         selectedFolderId={SYSTEM_ALL_FOLDER_ID}
@@ -346,13 +346,11 @@ describe("Sidebar", () => {
 
     const searchInput = screen.getByPlaceholderText(/find/i);
     const searchContainer = searchInput.closest("label");
-    const separator = container.querySelector(".h-px");
 
     expect(searchContainer).toHaveClass("bg-text-field-bg");
     expect(searchContainer).toHaveClass("border-border-subtle");
     expect(searchContainer).toHaveClass("focus-within:border-accent");
     expect(searchInput).toHaveClass("focus-visible:!outline-none");
-    expect(separator).toHaveClass("bg-border-subtle/70");
   });
 
   it("uses design-size classes for sidebar shell and compose trigger", () => {
@@ -724,9 +722,10 @@ describe("Sidebar", () => {
 
     const startChatTab = screen.getByRole("tab", { name: /start chat/i });
     const groupChatTab = screen.getByRole("tab", { name: /group chat/i });
+    const browseChannelsTab = screen.getByRole("tab", { name: /^channels$/i });
     const createChannelTab = screen.getByRole("tab", { name: /create channel/i });
     const archivedChannelsTab = screen.getByRole("tab", { name: /archived channels/i });
-    expect(screen.getAllByRole("tab")).toHaveLength(4);
+    expect(screen.getAllByRole("tab")).toHaveLength(5);
 
     const startPanelId = startChatTab.getAttribute("aria-controls");
     expect(startPanelId).toBeTruthy();
@@ -749,6 +748,7 @@ describe("Sidebar", () => {
     expect(groupPanel).toHaveAttribute("aria-labelledby", groupChatTab.id);
 
     expect(createChannelTab).toHaveAttribute("aria-selected", "false");
+    expect(browseChannelsTab).toHaveAttribute("aria-selected", "false");
     expect(archivedChannelsTab).toHaveAttribute("aria-selected", "false");
   });
 

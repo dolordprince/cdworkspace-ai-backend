@@ -12,12 +12,13 @@ export function isEmptyTopicName(topic: string): boolean {
 }
 
 export function resolveTopicDisplayInfo(topic: string): TopicDisplayInfo {
+  const trimmed = topic.trim();
   const normalized = normalizeTopicForIdentity(topic);
   if (normalized.length === 0) {
     return {
       label: t("chat.generalChat"),
       normalized,
-      isSystem: true,
+      isSystem: trimmed.length === 0,
     };
   }
   return {
@@ -36,4 +37,12 @@ export function topicMatchesDisplayQuery(topic: string, normalizedQuery: string)
     display.normalized.toLowerCase().includes(normalizedQuery) ||
     display.label.toLowerCase().includes(normalizedQuery)
   );
+}
+
+/** Nullable topic variant for activity/inbox-style formatters. */
+export function formatStreamTopicLabel(topic: string | null, generalChatLabel: string): string {
+  if ((topic?.length ?? 0) > 0) {
+    return topic!;
+  }
+  return generalChatLabel;
 }
