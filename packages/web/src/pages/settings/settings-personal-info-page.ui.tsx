@@ -365,6 +365,8 @@ export const SettingsPersonalInfoPage: React.FC = () => {
         updateOwnStatus({
           text: trimmedStatusText,
           emojiName: ownStatus?.emojiName,
+          emojiCode: ownStatus?.emojiCode,
+          reactionType: ownStatus?.reactionType,
           away: editableStatusAway,
         }),
       ]);
@@ -419,7 +421,9 @@ export const SettingsPersonalInfoPage: React.FC = () => {
     isSavingProfile,
     mapAvatarErrorMessage,
     mergeUser,
+    ownStatus?.emojiCode,
     ownStatus?.emojiName,
+    ownStatus?.reactionType,
     pendingAvatarAction,
     profile?.timezone,
     supportedTimezoneSet,

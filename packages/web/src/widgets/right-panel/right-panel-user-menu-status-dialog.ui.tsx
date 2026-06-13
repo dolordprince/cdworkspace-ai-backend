@@ -1,6 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import EmojiPicker, { EmojiStyle, type EmojiClickData } from "emoji-picker-react";
 import React from "react";
+import type { UserStatusReactionType } from "~/entities/user/user.model";
 import type { RealmEmoji } from "~/shared/api/zulip.types";
 import {
   AppDialogShell,
@@ -24,6 +25,7 @@ export interface RightPanelUserMenuStatusDialogProps {
   setStatusEmojiNameDraft: (value: string) => void;
   statusEmojiCodeDraft: string;
   setStatusEmojiCodeDraft: (value: string) => void;
+  setStatusEmojiReactionTypeDraft: (value: UserStatusReactionType | undefined) => void;
   statusTextDraft: string;
   setStatusTextDraft: (value: string) => void;
   statusAwayDraft: boolean;
@@ -49,6 +51,7 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
   setStatusEmojiNameDraft,
   statusEmojiCodeDraft: _statusEmojiCodeDraft,
   setStatusEmojiCodeDraft,
+  setStatusEmojiReactionTypeDraft,
   statusTextDraft,
   setStatusTextDraft,
   statusAwayDraft,
@@ -82,6 +85,7 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
               onClick={() => {
                 setStatusEmojiNameDraft(preset.name);
                 setStatusEmojiCodeDraft(preset.code);
+                setStatusEmojiReactionTypeDraft("unicode_emoji");
                 setStatusEmojiPickerOpen(false);
               }}
               className={`inline-flex h-9 w-9 items-center justify-center rounded-md border text-base transition-colors ${

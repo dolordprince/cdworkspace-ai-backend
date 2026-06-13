@@ -50,7 +50,10 @@ export function getUserStatusEmoji(status: UserStatus | null | undefined): strin
   if (!status) {
     return null;
   }
-  if (status.emojiCode) {
+  if (
+    status.emojiCode &&
+    (status.reactionType == null || status.reactionType === "unicode_emoji")
+  ) {
     return decodeUnicodeEmojiCode(status.emojiCode);
   }
   if (status.emojiName) {

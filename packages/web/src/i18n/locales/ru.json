@@ -478,6 +478,7 @@
     "statusChooseEmoji": "Выбрать эмодзи",
     "statusAwayToggle": "Отметить меня как отсутствующего",
     "statusClear": "Очистить статус",
+    "statusUpdateError": "Не удалось обновить статус",
     "editProfile": "Редактировать профиль",
     "fullNameRequired": "Поле имени обязательно",
     "timezoneRequired": "Поле часового пояса обязательно",

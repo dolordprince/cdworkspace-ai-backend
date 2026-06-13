@@ -27,6 +27,18 @@ describe("user-status.lib", () => {
     expect(emoji).toBe("🇺🇦");
   });
 
+  it("does not decode realm emoji ids as unicode codepoints", () => {
+    const emoji = getUserStatusEmoji({
+      text: "",
+      emojiName: "party_parrot",
+      emojiCode: "42",
+      reactionType: "realm_emoji",
+      away: false,
+    });
+
+    expect(emoji).toBeNull();
+  });
+
   it("uses emoji-name fallback when emoji code is absent", () => {
     const label = formatUserStatusLabel({
       text: "Lunch",

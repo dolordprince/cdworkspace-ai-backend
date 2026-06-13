@@ -15,7 +15,7 @@ import {
   normalizeGetUserStatusPayload,
   normalizeOwnStatusResponse,
 } from "./user.api.parsers";
-import type { UserStatus } from "../user.model";
+import type { UserStatus, UserStatusReactionType } from "../user.model";
 import type {
   OwnStatusMutationErrorKind,
   OwnStatusMutationResult,
@@ -35,10 +35,22 @@ export type {
 export interface UpdateOwnStatusParams {
   text: string;
   emojiName?: string;
+  emojiCode?: string;
+  reactionType?: UserStatusReactionType;
   away?: boolean;
 }
 
 const log = createLogger("user:api");
+
+function hasUsableZulipAuth(instance: ReturnType<typeof getCurrentInstance>): boolean {
+  if (!instance?.realm) {
+    return false;
+  }
+  if (instance.authType === "session") {
+    return true;
+  }
+  return Boolean(instance.email && instance.apiKey);
+}
 
 function mapStatusMutationError(status: number): OwnStatusMutationErrorKind {
   if (status === 403) return "forbidden";
@@ -67,7 +79,7 @@ function readStatusMutationErrorMessage(
 /** pingOnly=true sends keep-alive without changing the reported activity status. */
 export async function reportPresence(status: "active" | "idle", pingOnly = false): Promise<void> {
   const instance = getCurrentInstance();
-  if (!instance?.realm || !instance.email || !instance.apiKey) {
+  if (!hasUsableZulipAuth(instance)) {
     return;
   }
 
@@ -86,7 +98,7 @@ export async function reportPresence(status: "active" | "idle", pingOnly = false
 
 async function fetchUserStatusDetailed(userId: number): Promise<StatusFetchOutcome> {
   const instance = getCurrentInstance();
-  if (!instance?.realm || !instance.email || !instance.apiKey) {
+  if (!hasUsableZulipAuth(instance)) {
     return { kind: "transient_error", status: null };
   }
 
@@ -138,7 +150,7 @@ export async function fetchUserStatus(userId: number): Promise<UserStatus | null
 /** Reads the authenticated user's status using the full custom-status model. */
 export async function fetchOwnStatus(): Promise<UserStatus | null> {
   const instance = getCurrentInstance();
-  if (!instance?.realm || !instance.email || !instance.apiKey) {
+  if (!hasUsableZulipAuth(instance)) {
     return null;
   }
 
@@ -162,7 +174,7 @@ export async function updateOwnStatus(
   params: UpdateOwnStatusParams,
 ): Promise<OwnStatusMutationResult> {
   const instance = getCurrentInstance();
-  if (!instance?.realm || !instance.email || !instance.apiKey) {
+  if (!hasUsableZulipAuth(instance)) {
     return {
       ok: false,
       status: 0,
@@ -173,6 +185,8 @@ export async function updateOwnStatus(
 
   const text = params.text.trim();
   const emojiName = params.emojiName?.trim() ?? "";
+  const emojiCode = params.emojiCode?.trim() ?? "";
+  const reactionType = params.reactionType;
   const away = params.away === true;
 
   try {
@@ -180,10 +194,15 @@ export async function updateOwnStatus(
     refreshWorkspaceApiBase();
     const payload: Record<string, string> = {
       status_text: text,
-      status_emoji: emojiName,
       emoji_name: emojiName,
       away: String(away),
     };
+    if (emojiName && emojiCode) {
+      payload.emoji_code = emojiCode;
+    }
+    if (emojiName && reactionType != null) {
+      payload.reaction_type = reactionType;
+    }
     const response = await zulipApi.post("/users/me/status", payload);
     const data = (response.data ?? {}) as ZulipUpdateOwnStatusResponse;
 
@@ -212,6 +231,8 @@ export async function updateOwnStatus(
       status: {
         text,
         emojiName: emojiName || undefined,
+        emojiCode: emojiCode || undefined,
+        reactionType,
         away,
       },
     };
