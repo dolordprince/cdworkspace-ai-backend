@@ -3,7 +3,7 @@
  * Does not render status text — only the emoji picture/character from Zulip payload.
  */
 import React from "react";
-import { getUserStatusEmoji } from "~/entities/user/user-status.lib";
+import { useUserStatusEmojiDisplay } from "~/entities/user/user-status.hooks";
 import type { UserStatus } from "~/entities/user/user.model";
 
 export interface SidebarUserStatusEmojiProps {
@@ -12,9 +12,20 @@ export interface SidebarUserStatusEmojiProps {
 
 export const SidebarUserStatusEmoji = React.memo<SidebarUserStatusEmojiProps>(
   function SidebarUserStatusEmoji({ status }) {
-    const emoji = getUserStatusEmoji(status);
-    if (emoji == null || emoji.length === 0) {
+    const emojiDisplay = useUserStatusEmojiDisplay(status);
+    if (emojiDisplay == null) {
       return null;
+    }
+    if (emojiDisplay.kind === "image") {
+      return (
+        <img
+          src={emojiDisplay.src}
+          alt={emojiDisplay.alt}
+          title={emojiDisplay.alt}
+          className="h-4 w-4 shrink-0 rounded-sm object-contain"
+          data-testid="sidebar-user-status-emoji"
+        />
+      );
     }
     return (
       <span
@@ -22,7 +33,7 @@ export const SidebarUserStatusEmoji = React.memo<SidebarUserStatusEmojiProps>(
         aria-hidden
         data-testid="sidebar-user-status-emoji"
       >
-        {emoji}
+        {emojiDisplay.text}
       </span>
     );
   },

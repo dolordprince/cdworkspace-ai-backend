@@ -1,3 +1,5 @@
+import type { UserStatus } from "~/entities/user/user.model";
+
 /** DM partner data for the chat header: avatar, name, online status */
 export interface ChatHeaderDmPartner {
   avatarUrl?: string | null;
@@ -8,6 +10,8 @@ export interface ChatHeaderDmPartner {
   lastSeen?: string;
   /** Custom Zulip status (emoji + text). */
   customStatus?: string;
+  /** Raw custom Zulip status for rich custom emoji rendering. */
+  status?: UserStatus | null;
   /** When true, Zulip directory reports the partner account as deactivated (`is_active === false`). */
   isAccountDeactivated?: boolean;
   /** Shows transient typing status in DM header when true. */

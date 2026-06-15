@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { ensureUserStatusLoaded } from "~/entities/user/api/user.api";
 import { ProfileCustomFieldsBlock } from "~/entities/user/profile-custom-fields-block.ui";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
 import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
 import { useUsersStore } from "~/entities/user/user.model";
 import { useChatDmCallBridgeStore } from "~/features/chat-dm-call-bridge/chat-dm-call-bridge.model";
@@ -118,6 +119,7 @@ export const MessageMentionPopover = React.memo(function MessageMentionPopover({
 
   const presenceText = resolveMentionPresenceText({ presenceState, lastSeen });
   const statusLine = customStatus ?? presenceText;
+  const shouldRenderRichStatus = user?.status?.reactionType === "realm_emoji";
 
   const avatarSrc = resolveAvatarSrc(user?.avatar_url ?? undefined);
 
@@ -150,6 +152,7 @@ export const MessageMentionPopover = React.memo(function MessageMentionPopover({
   }, [
     displayName,
     statusLine,
+    user?.status,
     user?.avatar_url,
     user?.profile_data,
     emailTrimmed,
@@ -239,7 +242,14 @@ export const MessageMentionPopover = React.memo(function MessageMentionPopover({
             <Copyable value={displayName} className="w-full">
               <p className="truncate text-sm font-semibold text-text-primary">{displayName}</p>
             </Copyable>
-            <p className="truncate text-xs text-text-muted">{statusLine}</p>
+            {shouldRenderRichStatus ? (
+              <UserStatusLabel
+                status={user?.status}
+                className="max-w-full text-xs text-text-muted"
+              />
+            ) : (
+              <p className="truncate text-xs text-text-muted">{statusLine}</p>
+            )}
           </div>
         </div>
         <div className="mt-3 max-h-[calc(100dvh-12rem)] min-h-0 overflow-y-auto overscroll-contain border-t border-border-subtle pt-3">

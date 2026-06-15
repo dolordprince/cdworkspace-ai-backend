@@ -6,11 +6,12 @@ import { useInstancesStore } from "~/entities/instance/instance.model";
 import { useThemeStore } from "~/entities/theme/theme.model";
 import { applyUserStatusSnapshot } from "~/entities/user/api/user-status-write.lib";
 import { updateOwnStatus } from "~/entities/user/api/user.api";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
 import { useUserStatus } from "~/entities/user/user-status.hooks";
 import {
   encodeEmojiToCode,
   formatUserStatusLabel,
-  getUserStatusEmoji,
+  getUserStatusEmojiDisplay,
   normalizeStatusEmojiName,
 } from "~/entities/user/user-status.lib";
 import { useUsersStore, type UserStatusReactionType } from "~/entities/user/user.model";
@@ -132,16 +133,25 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
     () => currentStatus.statusLabel ?? formatUserStatusLabel(currentUser?.status),
     [currentStatus.statusLabel, currentUser?.status],
   );
-  const selectedStatusEmoji = useMemo(
+  const shouldRenderRichCurrentStatus = currentUser?.status?.reactionType === "realm_emoji";
+  const currentStatusSubtitle = shouldRenderRichCurrentStatus ? (
+    <UserStatusLabel status={currentUser?.status} />
+  ) : (
+    (currentStatusLabel ?? t("settings.statusPlaceholder"))
+  );
+  const selectedStatusEmojiDisplay = useMemo(
     () =>
-      getUserStatusEmoji({
-        text: "",
-        emojiName: statusEmojiNameDraft || undefined,
-        emojiCode: statusEmojiCodeDraft || undefined,
-        reactionType: statusEmojiReactionTypeDraft,
-        away: false,
-      }),
-    [statusEmojiCodeDraft, statusEmojiNameDraft, statusEmojiReactionTypeDraft],
+      getUserStatusEmojiDisplay(
+        {
+          text: "",
+          emojiName: statusEmojiNameDraft || undefined,
+          emojiCode: statusEmojiCodeDraft || undefined,
+          reactionType: statusEmojiReactionTypeDraft,
+          away: false,
+        },
+        customEmojis,
+      ),
+    [customEmojis, statusEmojiCodeDraft, statusEmojiNameDraft, statusEmojiReactionTypeDraft],
   );
   const statusEmojiPickerTheme = useMemo(
     () => (currentThemeMode === "light" ? Theme.LIGHT : Theme.DARK),
@@ -463,7 +473,7 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
               <RightPanelUserMenuMenuButton
                 label={t("settings.status")}
                 icon="mood"
-                subtitle={currentStatusLabel ?? t("settings.statusPlaceholder")}
+                subtitle={currentStatusSubtitle}
                 onClick={openStatusDialog}
                 right={<Icon name="chevron-right" size={16} className="text-text-muted" />}
               />
@@ -758,7 +768,7 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
         statusAwayDraft={statusAwayDraft}
         setStatusAwayDraft={setStatusAwayDraft}
         statusSubmitting={statusSubmitting}
-        selectedStatusEmoji={selectedStatusEmoji}
+        selectedStatusEmojiDisplay={selectedStatusEmojiDisplay}
         statusEmojiPickerTheme={statusEmojiPickerTheme}
         customEmojis={customEmojis}
         t={t}

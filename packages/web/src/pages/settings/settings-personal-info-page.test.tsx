@@ -352,6 +352,8 @@ describe("SettingsPersonalInfoPage", () => {
       expect(updateOwnStatusMock).toHaveBeenCalledWith({
         text: "Reviewing PRs",
         emojiName: "speech_balloon",
+        emojiCode: "1f4ac",
+        reactionType: "unicode_emoji",
         away: true,
       });
     });

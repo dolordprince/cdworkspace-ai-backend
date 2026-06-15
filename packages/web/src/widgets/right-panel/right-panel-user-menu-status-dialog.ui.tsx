@@ -1,6 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import EmojiPicker, { EmojiStyle, type EmojiClickData } from "emoji-picker-react";
 import React from "react";
+import type { UserStatusEmojiDisplay } from "~/entities/user/user-status.lib";
 import type { UserStatusReactionType } from "~/entities/user/user.model";
 import type { RealmEmoji } from "~/shared/api/zulip.types";
 import {
@@ -31,7 +32,7 @@ export interface RightPanelUserMenuStatusDialogProps {
   statusAwayDraft: boolean;
   setStatusAwayDraft: (value: boolean) => void;
   statusSubmitting: boolean;
-  selectedStatusEmoji: string | null;
+  selectedStatusEmojiDisplay: UserStatusEmojiDisplay | null;
   statusEmojiPickerTheme: NonNullable<ComponentProps<typeof EmojiPicker>["theme"]>;
   customEmojis?: RealmEmoji[];
   t: (key: string, options?: Record<string, string | number>) => string;
@@ -57,7 +58,7 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
   statusAwayDraft,
   setStatusAwayDraft,
   statusSubmitting,
-  selectedStatusEmoji,
+  selectedStatusEmojiDisplay,
   statusEmojiPickerTheme,
   customEmojis,
   t,
@@ -131,7 +132,17 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
         <label className="block text-sm">
           <span className="mb-1.5 block text-text-muted">{t("settings.status")}</span>
           <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-bg px-3 py-2">
-            <span className="text-base">{selectedStatusEmoji ?? "🙂"}</span>
+            <span className="inline-flex min-w-5 items-center justify-center text-base">
+              {selectedStatusEmojiDisplay?.kind === "image" ? (
+                <img
+                  src={selectedStatusEmojiDisplay.src}
+                  alt={selectedStatusEmojiDisplay.alt}
+                  className="h-5 w-5 rounded-sm object-contain"
+                />
+              ) : (
+                (selectedStatusEmojiDisplay?.text ?? "🙂")
+              )}
+            </span>
             <input
               type="text"
               value={statusTextDraft}

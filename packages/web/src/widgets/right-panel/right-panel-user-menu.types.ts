@@ -10,7 +10,7 @@ export interface RightPanelUserMenuProps {
 export interface MenuButtonProps {
   label: string;
   icon: IconName;
-  subtitle?: string;
+  subtitle?: ReactNode;
   right?: ReactNode;
   onClick: () => void;
 }

@@ -1,4 +1,6 @@
+import type { RealmEmoji } from "~/shared/api/zulip.types";
 import { normalizeEmojiShortcodeName } from "~/shared/lib/emoji-shortcodes.lib";
+import { getCachedRealmEmojis } from "~/shared/lib/realm-emojis-cache";
 import type { UserStatus } from "./user.model";
 
 const EMOJI_NAME_FALLBACKS: Record<string, string> = {
@@ -46,27 +48,84 @@ export function normalizeStatusEmojiName(name: string): string {
   return normalizeEmojiShortcodeName(name);
 }
 
-export function getUserStatusEmoji(status: UserStatus | null | undefined): string | null {
+export type UserStatusEmojiDisplay =
+  | { kind: "image"; src: string; alt: string }
+  | { kind: "text"; text: string };
+
+function getRealmEmojiFallbackLabel(status: UserStatus): string | null {
+  const emojiName = normalizeStatusEmojiName(status.emojiName ?? "");
+  return emojiName.length > 0 ? `:${emojiName}:` : null;
+}
+
+function resolveRealmEmojiImageUrl(
+  status: UserStatus,
+  realmEmojis: readonly RealmEmoji[],
+): string | null {
+  const emojiCode = status.emojiCode?.trim() ?? "";
+  const emojiName = normalizeStatusEmojiName(status.emojiName ?? "");
+  if (emojiCode.length > 0) {
+    const byCode = realmEmojis.find((emoji) => emoji.id.trim() === emojiCode);
+    if (byCode?.imgUrl) {
+      return byCode.imgUrl;
+    }
+  }
+  if (emojiName.length > 0) {
+    const byName = realmEmojis.find((emoji) =>
+      emoji.names.some((name) => normalizeStatusEmojiName(name) === emojiName),
+    );
+    if (byName?.imgUrl) {
+      return byName.imgUrl;
+    }
+  }
+  return null;
+}
+
+export function getUserStatusEmojiDisplay(
+  status: UserStatus | null | undefined,
+  realmEmojis: readonly RealmEmoji[] = getCachedRealmEmojis(),
+): UserStatusEmojiDisplay | null {
   if (!status) {
+    return null;
+  }
+  if (status.reactionType === "realm_emoji") {
+    const fallbackLabel = getRealmEmojiFallbackLabel(status);
+    if (fallbackLabel == null) {
+      return null;
+    }
+    const imageUrl = resolveRealmEmojiImageUrl(status, realmEmojis);
+    if (imageUrl != null) {
+      return { kind: "image", src: imageUrl, alt: fallbackLabel };
+    }
     return null;
   }
   if (
     status.emojiCode &&
     (status.reactionType == null || status.reactionType === "unicode_emoji")
   ) {
-    return decodeUnicodeEmojiCode(status.emojiCode);
+    const decoded = decodeUnicodeEmojiCode(status.emojiCode);
+    return decoded != null ? { kind: "text", text: decoded } : null;
   }
   if (status.emojiName) {
-    return EMOJI_NAME_FALLBACKS[status.emojiName] ?? null;
+    const fallback = EMOJI_NAME_FALLBACKS[status.emojiName] ?? null;
+    return fallback != null ? { kind: "text", text: fallback } : null;
   }
   return null;
+}
+
+export function getUserStatusEmoji(status: UserStatus | null | undefined): string | null {
+  const display = getUserStatusEmojiDisplay(status);
+  return display?.kind === "text" ? display.text : null;
 }
 
 export function formatUserStatusLabel(status: UserStatus | null | undefined): string | null {
   if (!status) {
     return null;
   }
-  const emoji = getUserStatusEmoji(status);
+  const display = getUserStatusEmojiDisplay(status, []);
+  let emoji: string | null = null;
+  if (display?.kind === "text") {
+    emoji = display.text;
+  }
   const text = status.text.trim();
   if (emoji && text) {
     return `${emoji} ${text}`;

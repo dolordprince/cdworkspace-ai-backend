@@ -355,6 +355,10 @@ describe("RightPanel truthfulness", () => {
     );
 
     expect(within(statusDialog).queryByText("B")).not.toBeInTheDocument();
+    expect(within(statusDialog).getByRole("img", { name: ":party_parrot:" })).toHaveAttribute(
+      "src",
+      realmEmoji.imgUrl,
+    );
 
     fireEvent.change(within(statusDialog).getByRole("textbox", { name: /^status$/i }), {
       target: { value: "Party" },

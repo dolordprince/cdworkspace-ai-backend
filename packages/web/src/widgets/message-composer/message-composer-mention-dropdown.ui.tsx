@@ -1,4 +1,5 @@
 import React from "react";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
 import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
 import { useUsersStore } from "~/entities/user/user.model";
 import { t } from "~/i18n/i18n";
@@ -40,6 +41,7 @@ export const ComposerMentionDropdown = React.memo(function ComposerMentionDropdo
           const presenceState =
             u?.presence != null ? getPresenceState(u.presence.timestamp, u.presence.status) : null;
           const statusLabel = formatUserStatusLabel(u?.status);
+          const shouldRenderRichStatus = u?.status?.reactionType === "realm_emoji";
           const avatarSrc = resolveAvatarUrl(user.avatarUrl, realmBaseUrl);
           return (
             <button
@@ -71,11 +73,16 @@ export const ComposerMentionDropdown = React.memo(function ComposerMentionDropdo
                     withBorder={false}
                   />
                 </span>
-                {(statusLabel ?? user.email) && (
+                {shouldRenderRichStatus ? (
+                  <UserStatusLabel
+                    status={u?.status}
+                    className="max-w-full text-[11px] text-text-secondary"
+                  />
+                ) : (statusLabel ?? user.email) ? (
                   <span className="block truncate text-[11px] text-text-secondary">
                     {statusLabel ?? user.email}
                   </span>
-                )}
+                ) : null}
               </span>
             </button>
           );

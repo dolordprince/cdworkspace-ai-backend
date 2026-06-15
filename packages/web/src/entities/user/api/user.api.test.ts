@@ -292,6 +292,36 @@ describe("user presence api", () => {
     });
   });
 
+  it("normalizes stale emoji metadata away when submitted emoji name is empty", async () => {
+    const { updateOwnStatus } = await import("./user.api");
+    mockPost.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success", msg: "" },
+    });
+
+    const result = await updateOwnStatus({
+      text: "Text only",
+      emojiName: "",
+      emojiCode: "1f9ea",
+      reactionType: "unicode_emoji",
+      away: false,
+    });
+
+    expect(mockPost).toHaveBeenCalledWith("/users/me/status", {
+      status_text: "Text only",
+      emoji_name: "",
+      away: "false",
+    });
+    expect(result).toEqual({
+      ok: true,
+      status: {
+        text: "Text only",
+        away: false,
+      },
+    });
+  });
+
   it("fetches own status with emoji and away flag", async () => {
     const { fetchOwnStatus } = await import("./user.api");
     mockGet.mockResolvedValue({

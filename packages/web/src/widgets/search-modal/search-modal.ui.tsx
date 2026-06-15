@@ -73,6 +73,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
         userId: user.user_id,
         fullName: user.full_name,
         email: user.email,
+        status: user.status,
         statusLabel: formatUserStatusLabel(user.status) ?? undefined,
         presenceState:
           user.presence != null
@@ -188,6 +189,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                   userId={user.userId}
                   fullName={user.fullName}
                   email={user.email}
+                  status={user.status}
                   statusLabel={user.statusLabel}
                   presenceState={user.presenceState}
                   onSelect={() => handleSelectUser(user.userId)}

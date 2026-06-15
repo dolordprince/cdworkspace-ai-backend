@@ -185,8 +185,8 @@ export async function updateOwnStatus(
 
   const text = params.text.trim();
   const emojiName = params.emojiName?.trim() ?? "";
-  const emojiCode = params.emojiCode?.trim() ?? "";
-  const reactionType = params.reactionType;
+  const emojiCode = emojiName ? (params.emojiCode?.trim() ?? "") : "";
+  const reactionType = emojiName ? params.reactionType : undefined;
   const away = params.away === true;
 
   try {

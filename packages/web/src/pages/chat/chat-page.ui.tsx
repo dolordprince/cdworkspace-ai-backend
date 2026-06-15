@@ -863,6 +863,7 @@ export const ChatPage: React.FC = () => {
           ? formatLastSeen(partnerUser.presence.timestamp, partnerUser.presence.status)
           : undefined,
       customStatus: formatUserStatusLabel(partnerUser?.status) ?? undefined,
+      status: partnerUser?.status,
       isAccountDeactivated: partnerDeactivated,
       isTyping: dmPartnerIsTyping,
     };

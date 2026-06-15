@@ -569,6 +569,37 @@ describe("MessageComposer mention suggestions", () => {
     expect(screen.getByRole("status", { name: /away/i })).toBeInTheDocument();
   });
 
+  it("renders emoji-only realm custom status in mention suggestions without falling back to email", async () => {
+    fetchRealmEmojisMock.mockResolvedValue([
+      {
+        id: "42",
+        names: ["scam"],
+        imgUrl: "https://chat.example.test/user_avatars/realm/42.png",
+      },
+    ]);
+    useUsersStore.getState().mergeUser({
+      ...createUser({ user_id: 5003, full_name: "Scam User", email: "scam@example.com" }),
+      status: {
+        text: "",
+        away: false,
+        emojiName: "scam",
+        emojiCode: "42",
+        reactionType: "realm_emoji",
+      },
+    });
+
+    renderWithProviders(<MessageComposer onSend={vi.fn()} />);
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "@scam", selectionStart: 5 } });
+
+    await screen.findByText("Scam User");
+    const emoji = await screen.findByRole("img", { name: ":scam:" });
+    expect(emoji).toHaveAttribute("src", "https://chat.example.test/user_avatars/realm/42.png");
+    expect(screen.queryByText("scam@example.com")).not.toBeInTheDocument();
+    expect(screen.queryByText(":scam:")).not.toBeInTheDocument();
+  });
+
   it("sends message on Enter when mention popup is open with no suggestions", async () => {
     useUsersStore
       .getState()

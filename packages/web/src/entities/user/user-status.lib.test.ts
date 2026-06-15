@@ -3,6 +3,7 @@ import {
   encodeEmojiToCode,
   formatUserStatusLabel,
   getUserStatusEmoji,
+  getUserStatusEmojiDisplay,
   normalizeStatusEmojiName,
 } from "./user-status.lib";
 
@@ -27,7 +28,7 @@ describe("user-status.lib", () => {
     expect(emoji).toBe("🇺🇦");
   });
 
-  it("does not decode realm emoji ids as unicode codepoints", () => {
+  it("does not expose realm emoji shortcode when image metadata is unavailable", () => {
     const emoji = getUserStatusEmoji({
       text: "",
       emojiName: "party_parrot",
@@ -37,6 +38,55 @@ describe("user-status.lib", () => {
     });
 
     expect(emoji).toBeNull();
+  });
+
+  it("does not expose realm emoji-only status as shortcode text", () => {
+    const label = formatUserStatusLabel({
+      text: "",
+      emojiName: "party_parrot",
+      emojiCode: "42",
+      reactionType: "realm_emoji",
+      away: false,
+    });
+
+    expect(label).toBeNull();
+  });
+
+  it("keeps status text when realm emoji image metadata is unavailable", () => {
+    const label = formatUserStatusLabel({
+      text: "Review",
+      emojiName: "scam",
+      emojiCode: "42",
+      reactionType: "realm_emoji",
+      away: false,
+    });
+
+    expect(label).toBe("Review");
+  });
+
+  it("resolves realm emoji image from cached metadata", () => {
+    const display = getUserStatusEmojiDisplay(
+      {
+        text: "",
+        emojiName: "party_parrot",
+        emojiCode: "42",
+        reactionType: "realm_emoji",
+        away: false,
+      },
+      [
+        {
+          id: "42",
+          names: ["party_parrot"],
+          imgUrl: "https://chat.example.test/user_avatars/realm/42.png",
+        },
+      ],
+    );
+
+    expect(display).toEqual({
+      kind: "image",
+      src: "https://chat.example.test/user_avatars/realm/42.png",
+      alt: ":party_parrot:",
+    });
   });
 
   it("uses emoji-name fallback when emoji code is absent", () => {

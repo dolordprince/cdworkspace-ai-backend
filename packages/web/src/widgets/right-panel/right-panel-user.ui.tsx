@@ -93,6 +93,7 @@ export const RightPanelUser = React.memo(function RightPanelUser({
           onBackFromNestedProfile={handleBackFromNestedProfile}
           avatarSrc={avatarSrc}
           isOwnProfile={isOwnProfile}
+          status={liveStatus}
           statusLabel={statusLabel}
           contactRows={contactRows}
           directMessageUserId={directMessageUserId}
