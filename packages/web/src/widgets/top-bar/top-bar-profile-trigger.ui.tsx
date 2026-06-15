@@ -1,5 +1,6 @@
 import React, { useCallback } from "react";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
 import { useUserStatus } from "~/entities/user/user-status.hooks";
 import { useUsersStore } from "~/entities/user/user.model";
 import { t } from "~/i18n/i18n";
@@ -39,6 +40,7 @@ export const TopBarProfileTrigger = React.memo(function TopBarProfileTrigger() {
       ? getPresenceState(currentUser.presence.timestamp, currentUser.presence.status)
       : null;
   const statusLabel = currentStatus.statusLabel;
+  const shouldRenderRichStatus = currentUser?.status?.reactionType === "realm_emoji";
 
   const handleClick = useCallback(() => {
     if (isUserMenuOpen) {
@@ -72,12 +74,20 @@ export const TopBarProfileTrigger = React.memo(function TopBarProfileTrigger() {
         <span className="whitespace-nowrap text-sm font-medium text-text-primary">
           {displayName}
         </span>
-        {statusLabel && (
+        {(shouldRenderRichStatus || statusLabel) && (
           <span
             className={`block truncate text-[11px] text-text-secondary ${statusMaxWidthClass}`}
-            title={shouldShowTopBarProfileStatusTooltip(statusLabel) ? statusLabel : undefined}
+            title={
+              statusLabel != null && shouldShowTopBarProfileStatusTooltip(statusLabel)
+                ? statusLabel
+                : undefined
+            }
           >
-            {statusLabel}
+            {shouldRenderRichStatus ? (
+              <UserStatusLabel status={currentUser?.status} />
+            ) : (
+              statusLabel
+            )}
           </span>
         )}
         {displayEmail && (

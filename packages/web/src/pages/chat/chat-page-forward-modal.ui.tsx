@@ -1,5 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import React, { useMemo, useState } from "react";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
 import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
 import { useUsersStore } from "~/entities/user/user.model";
 import { t } from "~/i18n/i18n";
@@ -131,6 +132,7 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
                 ) : (
                   userList.map((u) => {
                     const statusLabel = formatUserStatusLabel(u.status);
+                    const shouldRenderRichStatus = u.status?.reactionType === "realm_emoji";
                     return (
                       <button
                         type="button"
@@ -146,7 +148,12 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
                       >
                         <span className="min-w-0 flex-1">
                           <span className="block truncate font-medium">{u.full_name}</span>
-                          {(statusLabel != null && statusLabel.length > 0) || u.email ? (
+                          {shouldRenderRichStatus ? (
+                            <UserStatusLabel
+                              status={u.status}
+                              className="max-w-full text-[11px] text-text-secondary"
+                            />
+                          ) : (statusLabel != null && statusLabel.length > 0) || u.email ? (
                             <span className="block truncate text-[11px] text-text-secondary">
                               {statusLabel ?? u.email ?? ""}
                             </span>

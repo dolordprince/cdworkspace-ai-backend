@@ -176,13 +176,16 @@ describe("user presence api", () => {
     const result = await updateOwnStatus({
       text: " Lunch ",
       emojiName: "plate_with_cutlery",
+      emojiCode: "1f37d-fe0f",
+      reactionType: "unicode_emoji",
       away: false,
     });
 
     expect(mockPost).toHaveBeenCalledWith("/users/me/status", {
       status_text: "Lunch",
-      status_emoji: "plate_with_cutlery",
       emoji_name: "plate_with_cutlery",
+      emoji_code: "1f37d-fe0f",
+      reaction_type: "unicode_emoji",
       away: "false",
     });
     expect(result).toEqual({
@@ -192,6 +195,128 @@ describe("user presence api", () => {
         emojiName: "plate_with_cutlery",
         emojiCode: "1f37d-fe0f",
         reactionType: "unicode_emoji",
+        away: false,
+      },
+    });
+  });
+
+  it("updates own status for session-auth instances without an API key", async () => {
+    const { updateOwnStatus } = await import("./user.api");
+    getCurrentInstance.mockReturnValue({
+      id: "instance-session",
+      realm: "https://zulip.example.com",
+      email: "user@example.com",
+      apiKey: "",
+      authType: "session",
+    });
+    mockPost.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success", msg: "" },
+    });
+
+    const result = await updateOwnStatus({
+      text: "Session status",
+      away: false,
+    });
+
+    expect(mockPost).toHaveBeenCalledWith("/users/me/status", {
+      status_text: "Session status",
+      emoji_name: "",
+      away: "false",
+    });
+    expect(result).toEqual({
+      ok: true,
+      status: {
+        text: "Session status",
+        away: false,
+      },
+    });
+  });
+
+  it("does not update own status when there is no usable auth", async () => {
+    const { updateOwnStatus } = await import("./user.api");
+    getCurrentInstance.mockReturnValue({
+      id: "instance-empty",
+      realm: "https://zulip.example.com",
+      email: "user@example.com",
+      apiKey: "",
+    });
+
+    const result = await updateOwnStatus({
+      text: "No auth",
+      away: false,
+    });
+
+    expect(mockPost).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: false,
+      status: 0,
+      kind: "transient",
+      message: "No active instance",
+    });
+  });
+
+  it("falls back to submitted status metadata when Zulip returns a minimal success body", async () => {
+    const { updateOwnStatus } = await import("./user.api");
+    mockPost.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success", msg: "" },
+    });
+
+    const result = await updateOwnStatus({
+      text: " Focus ",
+      emojiName: "test_tube",
+      emojiCode: "1f9ea",
+      reactionType: "unicode_emoji",
+      away: true,
+    });
+
+    expect(mockPost).toHaveBeenCalledWith("/users/me/status", {
+      status_text: "Focus",
+      emoji_name: "test_tube",
+      emoji_code: "1f9ea",
+      reaction_type: "unicode_emoji",
+      away: "true",
+    });
+    expect(result).toEqual({
+      ok: true,
+      status: {
+        text: "Focus",
+        emojiName: "test_tube",
+        emojiCode: "1f9ea",
+        reactionType: "unicode_emoji",
+        away: true,
+      },
+    });
+  });
+
+  it("normalizes stale emoji metadata away when submitted emoji name is empty", async () => {
+    const { updateOwnStatus } = await import("./user.api");
+    mockPost.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success", msg: "" },
+    });
+
+    const result = await updateOwnStatus({
+      text: "Text only",
+      emojiName: "",
+      emojiCode: "1f9ea",
+      reactionType: "unicode_emoji",
+      away: false,
+    });
+
+    expect(mockPost).toHaveBeenCalledWith("/users/me/status", {
+      status_text: "Text only",
+      emoji_name: "",
+      away: "false",
+    });
+    expect(result).toEqual({
+      ok: true,
+      status: {
+        text: "Text only",
         away: false,
       },
     });

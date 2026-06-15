@@ -1,4 +1,5 @@
 import React, { useCallback } from "react";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
 import { t } from "~/i18n/i18n";
 import { getRealmBaseUrl } from "~/shared/api/zulip-client.internal";
 import { resolveAvatarUrl } from "~/shared/lib/avatar";
@@ -36,6 +37,10 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
   const infoLabel = rightPanelLabel ?? t("info.channelInfo");
   const avatarSrc = dmPartner ? resolveAvatarSrc(dmPartner.avatarUrl) : undefined;
   const statusText = dmPartner ? resolveDmStatusText(dmPartner) : "";
+  const shouldRenderRichDmStatus =
+    dmPartner?.isAccountDeactivated !== true &&
+    dmPartner?.isTyping !== true &&
+    dmPartner?.status?.reactionType === "realm_emoji";
   const canOpenDmPartner = onDmPartnerClick != null;
   const canOpenRightPanelFromHeader = onOpenRightPanel != null || onToggleRightPanel != null;
 
@@ -76,7 +81,14 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
           </span>
           <span className="flex min-w-0 flex-1 flex-col">
             <h1 className="truncate text-sm font-semibold text-text-primary">{dmPartner.name}</h1>
-            <span className="truncate text-xs text-text-muted">{statusText}</span>
+            {shouldRenderRichDmStatus ? (
+              <UserStatusLabel
+                status={dmPartner.status}
+                className="max-w-full text-xs text-text-muted"
+              />
+            ) : (
+              <span className="truncate text-xs text-text-muted">{statusText}</span>
+            )}
           </span>
           {canOpenDmPartner && (
             <button

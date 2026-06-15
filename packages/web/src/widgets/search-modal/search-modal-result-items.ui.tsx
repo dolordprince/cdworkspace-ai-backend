@@ -1,5 +1,6 @@
 import React from "react";
-import { useUsersStore } from "~/entities/user/user.model";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
+import { useUsersStore, type UserStatus } from "~/entities/user/user.model";
 import { t } from "~/i18n/i18n";
 import type { MockMessage } from "~/shared/api/zulip.types";
 import { plainTextPreviewFromMessageBody } from "~/shared/lib/message-markdown-display.lib";
@@ -51,6 +52,7 @@ export const UserResultItem = React.memo(function UserResultItem({
   userId,
   fullName,
   email,
+  status,
   statusLabel,
   presenceState,
   onSelect,
@@ -58,11 +60,13 @@ export const UserResultItem = React.memo(function UserResultItem({
   userId: number;
   fullName: string;
   email?: string;
+  status?: UserStatus;
   statusLabel?: string;
   presenceState: "active" | "idle" | "offline" | null;
   onSelect: () => void;
 }) {
   const secondaryText = statusLabel ?? email ?? "";
+  const shouldRenderRichStatus = status?.reactionType === "realm_emoji";
   return (
     <li>
       <SelectableRow
@@ -74,9 +78,14 @@ export const UserResultItem = React.memo(function UserResultItem({
         <PresenceIndicator status={presenceState} size="sm" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium text-text-primary">{fullName}</span>
-          {secondaryText.length > 0 && (
+          {shouldRenderRichStatus ? (
+            <UserStatusLabel
+              status={status}
+              className="max-w-full text-[11px] text-text-secondary"
+            />
+          ) : secondaryText.length > 0 ? (
             <span className="block truncate text-[11px] text-text-secondary">{secondaryText}</span>
-          )}
+          ) : null}
         </span>
         <span className="ml-2 shrink-0 text-[11px] text-text-muted">#{userId}</span>
       </SelectableRow>

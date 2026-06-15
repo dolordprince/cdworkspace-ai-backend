@@ -16,6 +16,24 @@ vi.mock("~/shared/api/zulip-messages", async () => {
   };
 });
 
+vi.mock("~/shared/lib/realm-emojis-cache", () => ({
+  getCachedRealmEmojis: () => [
+    {
+      id: "42",
+      names: ["scam"],
+      imgUrl: "https://chat.example.test/user_avatars/realm/42.png",
+    },
+  ],
+  ensureRealmEmojisLoaded: () =>
+    Promise.resolve([
+      {
+        id: "42",
+        names: ["scam"],
+        imgUrl: "https://chat.example.test/user_avatars/realm/42.png",
+      },
+    ]),
+}));
+
 describe("SearchModal open-in-chat action", () => {
   afterEach(() => {
     fetchMessages.mockReset();
@@ -95,6 +113,41 @@ describe("SearchModal open-in-chat action", () => {
     expect(onSelectUser).toHaveBeenCalledWith(42);
     expect(onSelectMessage).not.toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("renders emoji-only realm custom status in user results without falling back to email", async () => {
+    fetchMessages.mockResolvedValue([]);
+    useUsersStore.getState().mergeUser({
+      ...createUser({
+        user_id: 43,
+        full_name: "Scam User",
+        email: "scam@example.com",
+      }),
+      status: {
+        text: "",
+        away: false,
+        emojiName: "scam",
+        emojiCode: "42",
+        reactionType: "realm_emoji",
+      },
+    });
+
+    render(<SearchModal open onOpenChange={() => {}} onSelectMessage={() => {}} />);
+
+    fireEvent.change(screen.getByPlaceholderText("Search"), {
+      target: { value: "scam" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /Scam User/i })).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole("img", { name: ":scam:" })).toHaveAttribute(
+      "src",
+      "https://chat.example.test/user_avatars/realm/42.png",
+    );
+    expect(screen.queryByText("scam@example.com")).not.toBeInTheDocument();
+    expect(screen.queryByText(":scam:")).not.toBeInTheDocument();
   });
 
   it("filters message search results by stream sender and date", async () => {

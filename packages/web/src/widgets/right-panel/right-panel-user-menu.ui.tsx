@@ -6,14 +6,15 @@ import { useInstancesStore } from "~/entities/instance/instance.model";
 import { useThemeStore } from "~/entities/theme/theme.model";
 import { applyUserStatusSnapshot } from "~/entities/user/api/user-status-write.lib";
 import { updateOwnStatus } from "~/entities/user/api/user.api";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
 import { useUserStatus } from "~/entities/user/user-status.hooks";
 import {
   encodeEmojiToCode,
   formatUserStatusLabel,
-  getUserStatusEmoji,
+  getUserStatusEmojiDisplay,
   normalizeStatusEmojiName,
 } from "~/entities/user/user-status.lib";
-import { useUsersStore } from "~/entities/user/user.model";
+import { useUsersStore, type UserStatusReactionType } from "~/entities/user/user.model";
 import { AUTH_IDLE_TIMEOUT_PRESETS } from "~/features/settings/auth-idle-timeout.lib";
 import { useSettingsStore } from "~/features/settings/settings.model";
 import type { AuthIdleTimeout, NotificationSound } from "~/features/settings/settings.types";
@@ -32,6 +33,7 @@ import { playNotificationSound } from "~/shared/lib/notification-sound";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
 import { resolveOrganizationLogoUrl } from "~/shared/lib/organization-branding";
 import { ensureRealmEmojisLoaded, getCachedRealmEmojis } from "~/shared/lib/realm-emojis-cache";
+import { toast } from "~/shared/lib/toast/toast";
 import { Icon } from "~/shared/ui/icon";
 import { ScrollArea } from "~/shared/ui/scroll-area";
 import { SectionLabel } from "~/shared/ui/section-label.ui";
@@ -104,6 +106,9 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
   const [statusAwayDraft, setStatusAwayDraft] = useState(false);
   const [statusEmojiNameDraft, setStatusEmojiNameDraft] = useState<string>("");
   const [statusEmojiCodeDraft, setStatusEmojiCodeDraft] = useState<string>("");
+  const [statusEmojiReactionTypeDraft, setStatusEmojiReactionTypeDraft] = useState<
+    UserStatusReactionType | undefined
+  >(undefined);
   const [statusEmojiPickerOpen, setStatusEmojiPickerOpen] = useState(false);
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const [customEmojis, setCustomEmojis] = useState(() => getCachedRealmEmojis());
@@ -128,15 +133,25 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
     () => currentStatus.statusLabel ?? formatUserStatusLabel(currentUser?.status),
     [currentStatus.statusLabel, currentUser?.status],
   );
-  const selectedStatusEmoji = useMemo(
+  const shouldRenderRichCurrentStatus = currentUser?.status?.reactionType === "realm_emoji";
+  const currentStatusSubtitle = shouldRenderRichCurrentStatus ? (
+    <UserStatusLabel status={currentUser?.status} />
+  ) : (
+    (currentStatusLabel ?? t("settings.statusPlaceholder"))
+  );
+  const selectedStatusEmojiDisplay = useMemo(
     () =>
-      getUserStatusEmoji({
-        text: "",
-        emojiName: statusEmojiNameDraft || undefined,
-        emojiCode: statusEmojiCodeDraft || undefined,
-        away: false,
-      }),
-    [statusEmojiCodeDraft, statusEmojiNameDraft],
+      getUserStatusEmojiDisplay(
+        {
+          text: "",
+          emojiName: statusEmojiNameDraft || undefined,
+          emojiCode: statusEmojiCodeDraft || undefined,
+          reactionType: statusEmojiReactionTypeDraft,
+          away: false,
+        },
+        customEmojis,
+      ),
+    [customEmojis, statusEmojiCodeDraft, statusEmojiNameDraft, statusEmojiReactionTypeDraft],
   );
   const statusEmojiPickerTheme = useMemo(
     () => (currentThemeMode === "light" ? Theme.LIGHT : Theme.DARK),
@@ -163,6 +178,9 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
     setStatusAwayDraft(status?.away ?? false);
     setStatusEmojiNameDraft(status?.emojiName ?? "");
     setStatusEmojiCodeDraft(status?.emojiCode ?? "");
+    setStatusEmojiReactionTypeDraft(
+      status?.reactionType ?? (status?.emojiCode ? "unicode_emoji" : undefined),
+    );
     setStatusEmojiPickerOpen(false);
     setStatusDialogOpen(true);
   }, [currentUser?.status]);
@@ -180,6 +198,7 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
     setStatusAwayDraft(false);
     setStatusEmojiNameDraft("");
     setStatusEmojiCodeDraft("");
+    setStatusEmojiReactionTypeDraft(undefined);
     setStatusEmojiPickerOpen(false);
   }, []);
 
@@ -194,32 +213,54 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
   }, [ensureCustomEmojisLoaded]);
 
   const handleSaveStatus = useCallback(async () => {
-    if (currentUserId == null) {
-      return;
-    }
+    const trimmedEmojiName = statusEmojiNameDraft.trim();
+    const trimmedEmojiCode = statusEmojiCodeDraft.trim();
+    const emojiMetadata =
+      trimmedEmojiName.length > 0
+        ? {
+            emojiName: trimmedEmojiName,
+            ...(trimmedEmojiCode.length > 0
+              ? {
+                  emojiCode: trimmedEmojiCode,
+                  reactionType: statusEmojiReactionTypeDraft ?? "unicode_emoji",
+                }
+              : {}),
+          }
+        : {};
     setStatusSubmitting(true);
     try {
       const result = await updateOwnStatus({
         text: statusTextDraft,
-        emojiName: statusEmojiNameDraft || undefined,
         away: statusAwayDraft,
+        ...emojiMetadata,
       });
       if (!result.ok) {
         log.warn("Status update failed", {
           kind: result.kind,
           status: result.status,
           hasText: statusTextDraft.trim().length > 0,
-          hasEmoji: statusEmojiNameDraft.trim().length > 0,
+          hasEmoji: trimmedEmojiName.length > 0,
           away: statusAwayDraft,
         });
+        toast.error(result.kind === "invalid" ? result.message : t("settings.statusUpdateError"));
         return;
       }
-      applyUserStatusSnapshot(currentUserId, result.status, Date.now());
+      if (currentUserId != null) {
+        applyUserStatusSnapshot(currentUserId, result.status, Date.now());
+      }
       setStatusDialogOpen(false);
     } finally {
       setStatusSubmitting(false);
     }
-  }, [currentUserId, statusAwayDraft, statusEmojiNameDraft, statusTextDraft]);
+  }, [
+    currentUserId,
+    statusAwayDraft,
+    statusEmojiCodeDraft,
+    statusEmojiNameDraft,
+    statusEmojiReactionTypeDraft,
+    statusTextDraft,
+    t,
+  ]);
 
   const openPersonalInfo = useCallback(() => {
     if (currentUserId != null && rightDrawer?.openUserProfile != null) {
@@ -341,8 +382,10 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
       if (!normalizedPickerName) {
         return;
       }
+      const emojiCode = (data.unified || data.unifiedWithoutSkinTone || "").trim().toLowerCase();
       setStatusEmojiNameDraft(normalizedPickerName);
-      setStatusEmojiCodeDraft("");
+      setStatusEmojiCodeDraft(emojiCode);
+      setStatusEmojiReactionTypeDraft("realm_emoji");
       setStatusEmojiPickerOpen(false);
       return;
     }
@@ -362,6 +405,7 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
     }
     setStatusEmojiNameDraft(emojiName);
     setStatusEmojiCodeDraft(emojiCode);
+    setStatusEmojiReactionTypeDraft("unicode_emoji");
     setStatusEmojiPickerOpen(false);
   }, []);
 
@@ -429,7 +473,7 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
               <RightPanelUserMenuMenuButton
                 label={t("settings.status")}
                 icon="mood"
-                subtitle={currentStatusLabel ?? t("settings.statusPlaceholder")}
+                subtitle={currentStatusSubtitle}
                 onClick={openStatusDialog}
                 right={<Icon name="chevron-right" size={16} className="text-text-muted" />}
               />
@@ -718,12 +762,13 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
         setStatusEmojiNameDraft={setStatusEmojiNameDraft}
         statusEmojiCodeDraft={statusEmojiCodeDraft}
         setStatusEmojiCodeDraft={setStatusEmojiCodeDraft}
+        setStatusEmojiReactionTypeDraft={setStatusEmojiReactionTypeDraft}
         statusTextDraft={statusTextDraft}
         setStatusTextDraft={setStatusTextDraft}
         statusAwayDraft={statusAwayDraft}
         setStatusAwayDraft={setStatusAwayDraft}
         statusSubmitting={statusSubmitting}
-        selectedStatusEmoji={selectedStatusEmoji}
+        selectedStatusEmojiDisplay={selectedStatusEmojiDisplay}
         statusEmojiPickerTheme={statusEmojiPickerTheme}
         customEmojis={customEmojis}
         t={t}

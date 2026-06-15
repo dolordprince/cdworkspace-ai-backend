@@ -1,4 +1,6 @@
 import React, { useCallback } from "react";
+import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
+import type { UserStatus } from "~/entities/user/user.model";
 import { t } from "~/i18n/i18n";
 import { Avatar } from "~/shared/ui/avatar";
 import { Copyable } from "~/shared/ui/copyable";
@@ -14,6 +16,7 @@ export interface RightPanelUserProfileHeaderProps {
   onBackFromNestedProfile: () => void;
   avatarSrc: string | undefined;
   isOwnProfile: boolean;
+  status: UserStatus | null | undefined;
   statusLabel: string | undefined;
   contactRows: RightPanelUserContactRow[];
   directMessageUserId: number | undefined;
@@ -29,6 +32,7 @@ export const RightPanelUserProfileHeader = React.memo(function RightPanelUserPro
   onBackFromNestedProfile,
   avatarSrc,
   isOwnProfile,
+  status,
   statusLabel,
   contactRows,
   directMessageUserId,
@@ -42,6 +46,7 @@ export const RightPanelUserProfileHeader = React.memo(function RightPanelUserPro
   }, [directMessageUserId, onOpenDirectMessage]);
 
   const lastSeenLabel = resolveLastSeenLabel(user.lastSeen);
+  const shouldRenderRichStatus = status?.reactionType === "realm_emoji";
 
   return (
     <header className="border-b border-border-subtle pb-3">
@@ -87,7 +92,11 @@ export const RightPanelUserProfileHeader = React.memo(function RightPanelUserPro
           <Copyable value={user.name} className="w-full">
             <p className="truncate text-sm font-medium text-text-primary">{user.name}</p>
           </Copyable>
-          {statusLabel && <p className="truncate text-[11px] text-text-secondary">{statusLabel}</p>}
+          {(shouldRenderRichStatus || statusLabel) && (
+            <p className="truncate text-[11px] text-text-secondary">
+              {shouldRenderRichStatus ? <UserStatusLabel status={status} /> : statusLabel}
+            </p>
+          )}
           {lastSeenLabel && <p className="text-[11px] text-text-secondary">{lastSeenLabel}</p>}
         </div>
       </div>

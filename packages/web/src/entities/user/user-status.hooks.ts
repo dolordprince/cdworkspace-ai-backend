@@ -4,10 +4,23 @@
  * Exposes `{ statusLabel, fetchState, hasStatus }` and routes missing-status fetches
  * through the centralized orchestrator — components never call the network directly.
  */
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createLogger } from "~/shared/lib/logger";
+import { ensureRealmEmojisLoaded, getCachedRealmEmojis } from "~/shared/lib/realm-emojis-cache";
 import { requestUserStatus, type RequestUserStatusOptions } from "./api/user.api";
-import { formatUserStatusLabel } from "./user-status.lib";
-import { useUsersStore, type UserRecord, type UserStatusFetchState } from "./user.model";
+import {
+  formatUserStatusLabel,
+  getUserStatusEmojiDisplay,
+  type UserStatusEmojiDisplay,
+} from "./user-status.lib";
+import {
+  useUsersStore,
+  type UserRecord,
+  type UserStatus,
+  type UserStatusFetchState,
+} from "./user.model";
+
+const log = createLogger("user:status");
 
 export interface UserStatusSnapshot {
   statusLabel?: string;
@@ -60,4 +73,36 @@ export function useUserStatus(
   ]);
 
   return snapshot;
+}
+
+export function useUserStatusEmojiDisplay(
+  status: UserStatus | null | undefined,
+): UserStatusEmojiDisplay | null {
+  const [realmEmojis, setRealmEmojis] = useState(() => getCachedRealmEmojis());
+  const needsRealmEmoji = status?.reactionType === "realm_emoji";
+
+  useEffect(() => {
+    if (!needsRealmEmoji) {
+      return;
+    }
+    let cancelled = false;
+    void ensureRealmEmojisLoaded()
+      .then((list) => {
+        if (!cancelled) {
+          setRealmEmojis(list);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          log.warn("Failed to load realm emojis for user status", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsRealmEmoji]);
+
+  return useMemo(() => getUserStatusEmojiDisplay(status, realmEmojis), [realmEmojis, status]);
 }

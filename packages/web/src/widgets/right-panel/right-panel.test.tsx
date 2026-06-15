@@ -19,6 +19,7 @@ import * as zulipStreams from "~/shared/api/zulip-streams";
 import { RightDrawerContext } from "~/shared/contexts/right-drawer";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
 import { resetRealmEmojisCacheForTests } from "~/shared/lib/realm-emojis-cache";
+import { resetToastStateForTests, useToastStore } from "~/shared/lib/toast/toast.model";
 import { renderWithProviders } from "~/test/render";
 import { RightPanelShell } from "./right-panel-shell.ui";
 import type * as ReactRouterDom from "react-router-dom";
@@ -61,20 +62,45 @@ vi.mock("~/entities/user/api/user.api", async (importOriginal) => {
 
 vi.mock("emoji-picker-react", () => ({
   default: (props: {
-    onEmojiClick?: (data: { emoji: string; names?: string[] }) => void;
+    onEmojiClick?: (data: {
+      emoji: string;
+      names?: string[];
+      isCustom?: boolean;
+      unified?: string;
+      unifiedWithoutSkinTone?: string;
+    }) => void;
     className?: string;
-    customEmojis?: unknown[];
+    customEmojis?: { id: string; names: string[]; imgUrl: string }[];
     emojiStyle?: string;
   }) => {
     statusEmojiPickerMock(props);
+    const customEmoji = props.customEmojis?.[0];
     return (
-      <button
-        type="button"
-        className={props.className}
-        onClick={() => props.onEmojiClick?.({ emoji: "🧪", names: ["test_tube"] })}
-      >
-        Pick status emoji
-      </button>
+      <>
+        <button
+          type="button"
+          className={props.className}
+          onClick={() => props.onEmojiClick?.({ emoji: "🧪", names: ["test_tube"] })}
+        >
+          Pick status emoji
+        </button>
+        {customEmoji != null && (
+          <button
+            type="button"
+            onClick={() =>
+              props.onEmojiClick?.({
+                emoji: customEmoji.id,
+                names: customEmoji.names,
+                isCustom: true,
+                unified: customEmoji.id,
+                unifiedWithoutSkinTone: customEmoji.id,
+              })
+            }
+          >
+            Pick custom status emoji
+          </button>
+        )}
+      </>
     );
   },
   Theme: {
@@ -139,6 +165,7 @@ describe("RightPanel truthfulness", () => {
     });
     useChatDmCallBridgeStore.getState().setInvokeDmCallFromProfileHandler(null);
     useChatDmCallBridgeStore.getState().clearPendingDmCallPartner();
+    resetToastStateForTests();
     vi.restoreAllMocks();
   });
 
@@ -307,6 +334,48 @@ describe("RightPanel truthfulness", () => {
     expect(within(statusDialog).getByText("🧪")).toBeInTheDocument();
   });
 
+  it("saves selected realm status emoji metadata without decoding its id as unicode", async () => {
+    const realmEmoji = {
+      id: "42",
+      names: ["party_parrot"],
+      imgUrl: "https://chat.example.test/user_avatars/realm/42.png",
+    };
+    fetchRealmEmojisMock.mockResolvedValue([realmEmoji]);
+
+    renderWithProviders(<RightPanelShell mode="user-menu" title="Profile" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^status/i }));
+    const statusDialog = screen.getByRole("dialog", { name: /^status$/i });
+    fireEvent.click(within(statusDialog).getByRole("button", { name: /choose emoji/i }));
+    await waitFor(() => {
+      expect(fetchRealmEmojisMock).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.click(
+      within(statusDialog).getByRole("button", { name: /pick custom status emoji/i }),
+    );
+
+    expect(within(statusDialog).queryByText("B")).not.toBeInTheDocument();
+    expect(within(statusDialog).getByRole("img", { name: ":party_parrot:" })).toHaveAttribute(
+      "src",
+      realmEmoji.imgUrl,
+    );
+
+    fireEvent.change(within(statusDialog).getByRole("textbox", { name: /^status$/i }), {
+      target: { value: "Party" },
+    });
+    fireEvent.click(within(statusDialog).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(updateOwnStatusMock).toHaveBeenCalledWith({
+        text: "Party",
+        away: false,
+        emojiName: "party_parrot",
+        emojiCode: "42",
+        reactionType: "realm_emoji",
+      });
+    });
+  });
+
   it("keeps status dialog open and preserves store status when clear fails", async () => {
     useChatListStore.setState({ currentUserId: 42 });
     useUsersStore.getState().mergeUser({
@@ -344,6 +413,85 @@ describe("RightPanel truthfulness", () => {
     expect(useUsersStore.getState().getUser(42)?.status).toEqual({
       text: "Busy",
       away: false,
+    });
+    expect(useToastStore.getState().toasts.at(-1)?.message).toBe(t("settings.statusUpdateError"));
+  });
+
+  it("saves selected status emoji metadata and applies the status locally", async () => {
+    useChatListStore.setState({ currentUserId: 42 });
+    useUsersStore.getState().mergeUser({
+      user_id: 42,
+      full_name: "Alice Doe",
+    });
+    updateOwnStatusMock.mockResolvedValue({
+      ok: true,
+      status: {
+        text: "Focus",
+        emojiName: "house",
+        emojiCode: "1f3e0",
+        reactionType: "unicode_emoji",
+        away: true,
+      },
+    });
+
+    renderWithProviders(<RightPanelShell mode="user-menu" title="Profile" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^status/i }));
+    const statusDialog = screen.getByRole("dialog", { name: /^status$/i });
+    fireEvent.click(within(statusDialog).getByRole("button", { name: /status 🏠/i }));
+    fireEvent.change(within(statusDialog).getByRole("textbox", { name: /^status$/i }), {
+      target: { value: "Focus" },
+    });
+    fireEvent.click(within(statusDialog).getByRole("checkbox", { name: /away/i }));
+    fireEvent.click(within(statusDialog).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(updateOwnStatusMock).toHaveBeenCalledWith({
+        text: "Focus",
+        away: true,
+        emojiName: "house",
+        emojiCode: "1f3e0",
+        reactionType: "unicode_emoji",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: /^status$/i })).not.toBeInTheDocument();
+    });
+    expect(useUsersStore.getState().getUser(42)?.status).toEqual({
+      text: "Focus",
+      emojiName: "house",
+      emojiCode: "1f3e0",
+      reactionType: "unicode_emoji",
+      away: true,
+    });
+  });
+
+  it("still sends status updates when the current user id is not loaded yet", async () => {
+    updateOwnStatusMock.mockResolvedValue({
+      ok: true,
+      status: {
+        text: "Booting",
+        away: false,
+      },
+    });
+
+    renderWithProviders(<RightPanelShell mode="user-menu" title="Profile" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /^status/i }));
+    const statusDialog = screen.getByRole("dialog", { name: /^status$/i });
+    fireEvent.change(within(statusDialog).getByRole("textbox", { name: /^status$/i }), {
+      target: { value: "Booting" },
+    });
+    fireEvent.click(within(statusDialog).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() => {
+      expect(updateOwnStatusMock).toHaveBeenCalledWith({
+        text: "Booting",
+        away: false,
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: /^status$/i })).not.toBeInTheDocument();
     });
   });
 
