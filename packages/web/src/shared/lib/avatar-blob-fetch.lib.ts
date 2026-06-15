@@ -9,7 +9,6 @@ import { appendDevRealmMediaProxyHeaders } from "~/shared/api/client";
 import { buildAuthHeader } from "~/shared/lib/auth-guard";
 import { buildAvatarBlobCacheKey } from "~/shared/lib/avatar-blob-cache.lib";
 import { env } from "~/shared/lib/env";
-import { resolveProtectedUploadFetchOptions } from "~/shared/lib/protected-message-media";
 
 /** Path + query for fetch (strips `_av`), relative in dev for same-origin proxy. */
 export function buildAvatarFetchUrl(resolvedUrl: string): string {
@@ -68,10 +67,10 @@ export async function fetchAvatarBlob(resolvedUrl: string): Promise<Blob | null>
   const withDevProxy = appendDevRealmMediaProxyHeaders(fetchUrl, headers);
 
   try {
-    const response = await fetch(
-      fetchUrl,
-      resolveProtectedUploadFetchOptions(fetchUrl, withDevProxy),
-    );
+    const response = await fetch(fetchUrl, {
+      headers: withDevProxy,
+      credentials: "include",
+    });
     if (!response.ok) return null;
     return await response.blob();
   } catch {

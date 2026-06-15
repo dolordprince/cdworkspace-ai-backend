@@ -4,7 +4,7 @@
 // passes through `sanitizeHtml` before render via `dangerouslySetInnerHTML`.
 // A bug here could execute arbitrary JS in the user's session.
 import { describe, expect, it, vi } from "vitest";
-import { resolveMessageMediaUrl, stripHtml, sanitizeHtml } from "./html";
+import { resolveMessageMediaUrl, sanitizeHtmlToFragment, stripHtml, sanitizeHtml } from "./html";
 
 vi.mock("~/shared/lib/env", () => ({
   env: {
@@ -208,6 +208,23 @@ describe("sanitizeHtml", () => {
     const result = sanitizeHtml(html);
     expect(result).toContain('class="user-mention"');
     expect(result).toContain('data-user-id="31"');
+  });
+
+  it("strips internal protected-media data attributes from message HTML", () => {
+    const html =
+      '<div data-auth-src="https://attacker.example/src" data-auth-poster="https://attacker.example/poster" data-auth-background-image="https://attacker.example/bg">x</div>';
+    const result = sanitizeHtml(html);
+    expect(result).toBe("<div>x</div>");
+  });
+
+  it("strips internal protected-media data attributes from sanitized fragments", () => {
+    const fragment = sanitizeHtmlToFragment(
+      '<img src="https://zulip.example.com/external_content/a.png" data-auth-src="https://attacker.example/src">',
+      "https://zulip.example.com",
+    );
+    const image = fragment?.querySelector("img");
+    expect(image?.hasAttribute("data-auth-src")).toBe(false);
+    expect(image?.getAttribute("src")).toBe("https://zulip.example.com/external_content/a.png");
   });
 
   it("preserves del tags for markdown strikethrough", () => {

@@ -20,16 +20,6 @@ vi.mock("~/shared/api/client", () => ({
   ): Record<string, string> => headers,
 }));
 
-vi.mock("~/shared/lib/protected-message-media", () => ({
-  resolveProtectedUploadFetchOptions: (
-    _candidate: string,
-    headers: Record<string, string>,
-  ): RequestInit => ({
-    headers,
-    credentials: "include",
-  }),
-}));
-
 import {
   buildAvatarFetchUrl,
   fetchAvatarBlob,
