@@ -25,21 +25,21 @@ describe("workspaceOrgOriginFromLoginServerUrlInput", () => {
 });
 
 describe("workspaceOrgApiOriginFromZulipRealmRoot", () => {
-  it("maps zulip subdomain to workspace subdomain", () => {
+  it("keeps zulip subdomain on the original realm origin", () => {
     expect(workspaceOrgApiOriginFromZulipRealmRoot("https://zulip.genesis-core.team")).toBe(
-      "https://workspace.genesis-core.team",
+      "https://zulip.genesis-core.team",
     );
   });
 
-  it("is case-insensitive on hostname", () => {
+  it("normalizes hostname case without changing the host", () => {
     expect(workspaceOrgApiOriginFromZulipRealmRoot("https://ZULIP.genesis-core.team")).toBe(
-      "https://workspace.genesis-core.team",
+      "https://zulip.genesis-core.team",
     );
   });
 
-  it("preserves non-default port", () => {
+  it("preserves non-default port on the original realm origin", () => {
     expect(workspaceOrgApiOriginFromZulipRealmRoot("https://zulip.genesis-core.team:8443")).toBe(
-      "https://workspace.genesis-core.team:8443",
+      "https://zulip.genesis-core.team:8443",
     );
   });
 
