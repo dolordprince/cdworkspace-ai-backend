@@ -33,7 +33,7 @@ export function initSentry(): void {
     integrations: [
       Sentry.browserTracingIntegration(),
       Sentry.replayIntegration({
-        maskAllText: false,
+        maskAllText: true,
         blockAllMedia: true,
       }),
     ],
