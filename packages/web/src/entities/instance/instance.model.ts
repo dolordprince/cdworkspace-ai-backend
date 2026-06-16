@@ -31,6 +31,11 @@ interface StoredState {
   unreadCountsByInstance: Record<string, number>;
 }
 
+export interface ActiveOrgRequestContext {
+  instanceId: string | null;
+  epoch: number;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
@@ -205,6 +210,7 @@ function findDuplicateInstance(
 }
 
 interface InstancesState extends StoredState {
+  activeOrgEpoch: number;
   /** DM unread per instance (in-memory; used for dock/tray/favicon badges). */
   dmUnreadCountsByInstance: Record<string, number>;
   /** Effective Jitsi base URL from last Zulip register for the active instance (not persisted). */
@@ -222,6 +228,7 @@ interface InstancesState extends StoredState {
 
 export const useInstancesStore = create<InstancesState>((set, get) => ({
   ...loadFromStorage(),
+  activeOrgEpoch: 0,
   dmUnreadCountsByInstance: {},
   jitsiMeetBaseUrl: null,
 
@@ -249,9 +256,11 @@ export const useInstancesStore = create<InstancesState>((set, get) => ({
     set((state) => {
       const instances = [...state.instances, newInstance];
       const currentInstanceId = state.currentInstanceId ?? id;
+      const activeOrgEpoch =
+        currentInstanceId === state.currentInstanceId ? state.activeOrgEpoch : state.activeOrgEpoch + 1;
       const unreadCountsByInstance = { ...state.unreadCountsByInstance };
       persist(instances, currentInstanceId, unreadCountsByInstance);
-      return { instances, currentInstanceId, unreadCountsByInstance };
+      return { instances, currentInstanceId, activeOrgEpoch, unreadCountsByInstance };
     });
 
     const addedResult: AddInstanceResult = { status: "added", id };
@@ -272,6 +281,8 @@ export const useInstancesStore = create<InstancesState>((set, get) => ({
       if (currentInstanceId === id) {
         currentInstanceId = instances[0]?.id ?? null;
       }
+      const activeOrgEpoch =
+        currentInstanceId === state.currentInstanceId ? state.activeOrgEpoch : state.activeOrgEpoch + 1;
       const unreadCountsByInstance = { ...state.unreadCountsByInstance };
       delete unreadCountsByInstance[id];
       const dmUnreadCountsByInstance = { ...state.dmUnreadCountsByInstance };
@@ -280,6 +291,7 @@ export const useInstancesStore = create<InstancesState>((set, get) => ({
       return {
         instances,
         currentInstanceId,
+        activeOrgEpoch,
         unreadCountsByInstance,
         dmUnreadCountsByInstance,
         ...(removedWasCurrent ? { jitsiMeetBaseUrl: null as string | null } : {}),
@@ -308,6 +320,7 @@ export const useInstancesStore = create<InstancesState>((set, get) => ({
       const switched = id !== state.currentInstanceId;
       return {
         currentInstanceId: id,
+        activeOrgEpoch: switched ? state.activeOrgEpoch + 1 : state.activeOrgEpoch,
         instances,
         ...(switched ? { jitsiMeetBaseUrl: null as string | null } : {}),
       };
@@ -363,3 +376,29 @@ export const useInstancesStore = create<InstancesState>((set, get) => ({
 
   getInstanceDmUnreadCount: (id) => get().dmUnreadCountsByInstance[id] ?? 0,
 }));
+
+export function captureActiveOrgRequestContext(): ActiveOrgRequestContext {
+  const { currentInstanceId, activeOrgEpoch } = useInstancesStore.getState();
+  return {
+    instanceId: currentInstanceId,
+    epoch: activeOrgEpoch,
+  };
+}
+
+export function isActiveOrgRequestContextCurrent(context: ActiveOrgRequestContext): boolean {
+  const { currentInstanceId, activeOrgEpoch } = useInstancesStore.getState();
+  return currentInstanceId === context.instanceId && activeOrgEpoch === context.epoch;
+}
+
+/**
+ * Loader coordination rules:
+ * - use requestVersion for ordering inside one active organization;
+ * - use active-org context before every organization-scoped store or IDB write;
+ * - thread AbortSignal when work is tied to component/store lifecycle or costly network I/O.
+ */
+export function isActiveOrgRequestInvalidated(
+  context: ActiveOrgRequestContext,
+  signal?: AbortSignal,
+): boolean {
+  return signal?.aborted === true || !isActiveOrgRequestContextCurrent(context);
+}
