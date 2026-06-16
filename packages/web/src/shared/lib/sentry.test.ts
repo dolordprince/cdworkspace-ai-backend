@@ -51,6 +51,7 @@ describe("initSentry", () => {
     vi.doUnmock("./logger");
     vi.doUnmock("./pwa");
     vi.unstubAllEnvs();
+    vi.resetModules();
     sentryInit.mockClear();
     setTag.mockClear();
     addTransport.mockClear();
