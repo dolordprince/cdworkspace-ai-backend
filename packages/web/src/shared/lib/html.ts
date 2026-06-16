@@ -133,6 +133,12 @@ const MESSAGE_ADD_ATTR = [
   "data-user-group-id",
 ];
 
+const MESSAGE_FORBID_ATTR = [
+  "data-auth-src",
+  "data-auth-poster",
+  "data-auth-background-image",
+];
+
 export function resolveMessageMediaUrl(src: string, baseUrl: string): string {
   const trimmedBase = baseUrl.trim();
   if (trimmedBase === "") return src;
@@ -228,6 +234,7 @@ export function sanitizeHtml(html: string, baseUrl?: string): string {
   return DOMPurify.sanitize(toSanitize, {
     ALLOWED_TAGS: MESSAGE_ALLOWED_TAGS,
     ADD_ATTR: MESSAGE_ADD_ATTR,
+    FORBID_ATTR: MESSAGE_FORBID_ATTR,
   });
 }
 
@@ -242,6 +249,7 @@ export function sanitizeHtmlToFragment(html: string, baseUrl?: string): Document
   return DOMPurify.sanitize(toSanitize, {
     ALLOWED_TAGS: MESSAGE_ALLOWED_TAGS,
     ADD_ATTR: MESSAGE_ADD_ATTR,
+    FORBID_ATTR: MESSAGE_FORBID_ATTR,
     RETURN_DOM_FRAGMENT: true,
   });
 }

@@ -6,7 +6,10 @@ import {
   AUTH_MEDIA_BACKGROUND_IMAGE_DATA_ATTR,
   buildProtectedUploadFetchUrl,
   createDisplayableBlobUrl,
+  fetchProtectedUploadBlob,
   isAuthMediaPlaceholderAttr,
+  isProtectedMessageMediaUrl,
+  isProtectedUserUploadUrl,
   prepareProtectedMessageHtml,
   resolveProtectedUploadFetchOptions,
 } from "~/shared/lib/protected-message-media";
@@ -53,6 +56,38 @@ describe("isAuthMediaPlaceholderAttr", () => {
   it("returns false for blob or http URLs", () => {
     expect(isAuthMediaPlaceholderAttr("blob:http://localhost/x")).toBe(false);
     expect(isAuthMediaPlaceholderAttr("https://zulip.test/user_uploads/1/a.png")).toBe(false);
+  });
+});
+
+describe("protected media URL trust", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not classify attacker-controlled absolute upload URLs as protected", () => {
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.example.com" },
+    });
+
+    expect(isProtectedUserUploadUrl("https://attacker.example/user_uploads/x.png")).toBe(false);
+    expect(isProtectedMessageMediaUrl("https://attacker.example/external_content/x.png")).toBe(
+      false,
+    );
+    expect(isProtectedUserUploadUrl("/\\attacker.example/user_uploads/x.png")).toBe(false);
+    expect(isProtectedMessageMediaUrl("\\\\attacker.example/external_content/x.png")).toBe(false);
+  });
+
+  it("allows relative, same-origin, and configured realm protected media URLs", () => {
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.example.com" },
+    });
+
+    expect(isProtectedUserUploadUrl("/user_uploads/1/a.png")).toBe(true);
+    expect(isProtectedUserUploadUrl("https://app.example.com/user_uploads/1/a.png")).toBe(true);
+    expect(isProtectedUserUploadUrl("https://zulip.example.com/user_uploads/1/a.png")).toBe(true);
+    expect(isProtectedMessageMediaUrl("https://zulip.example.com/external_content/a.png")).toBe(
+      true,
+    );
   });
 });
 
@@ -118,6 +153,19 @@ describe("prepareProtectedMessageHtml", () => {
     );
     expect(source?.getAttribute("src")).toBeNull();
     expectNoLiveProtectedAttrs(out);
+  });
+
+  it("protects absolute media URLs resolved from the provided message media base", () => {
+    const html =
+      '<video controls><source src="/user_uploads/1/private.webm" type="video/webm"></video>';
+    const out = prepareProtectedMessageHtml(html, "https://sys.example.com/workspace/v1");
+
+    expect(out).toContain(
+      'data-auth-src="https://sys.example.com/workspace/v1/user_uploads/1/private.webm"',
+    );
+    const template = document.createElement("template");
+    template.innerHTML = out;
+    expect(template.content.querySelector("source")?.getAttribute("src")).toBeNull();
   });
 
   it("removes style attrs only when they reference protected media", () => {
@@ -297,5 +345,54 @@ describe("resolveProtectedUploadFetchOptions", () => {
     });
     const init = resolveProtectedUploadFetchOptions("/user_uploads/1/a.png", {});
     expect(init.credentials).toBe("include");
+  });
+
+  it("drops Authorization headers for non-protected cross-origin candidates", () => {
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.example.com" },
+    });
+    const init = resolveProtectedUploadFetchOptions("https://attacker.example/collect", {
+      Authorization: "Basic abc",
+    });
+    expect(init.credentials).toBe("omit");
+    expect(init.headers).toEqual({});
+  });
+
+  it("drops Authorization headers for untrusted absolute upload candidates", () => {
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.example.com" },
+    });
+    const init = resolveProtectedUploadFetchOptions("https://attacker.example/user_uploads/x.png", {
+      Authorization: "Basic abc",
+    });
+    expect(init.credentials).toBe("omit");
+    expect(init.headers).toEqual({});
+  });
+
+  it("does not fetch non-protected raw media values", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchProtectedUploadBlob("https://attacker.example/collect", {
+        Authorization: "Basic abc",
+      }),
+    ).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not fetch untrusted absolute upload candidates", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("window", {
+      location: { origin: "https://app.example.com" },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchProtectedUploadBlob("https://attacker.example/user_uploads/x.png", {
+        Authorization: "Basic abc",
+      }),
+    ).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -48,6 +48,8 @@ export interface PrepareProtectedMessageHtmlOptions {
   resolveCustomEmojiShortcodeImageUrl?: (shortcode: string) => string | undefined;
 }
 
+export type TrustedProtectedMediaOrigins = ReadonlySet<string>;
+
 const LANGUAGE_CLASS_PATTERN = /\b(?:language|lang)-([a-z0-9#+-]+)\b/i;
 const LANGUAGE_ALIASES: Record<string, string> = {
   cjs: "javascript",
@@ -91,28 +93,111 @@ export function isAuthMediaPlaceholderAttr(value: string | null): boolean {
   return value === AUTH_IMAGE_PLACEHOLDER_SRC;
 }
 
-export function isProtectedUserUploadUrl(url: string): boolean {
-  const value = url.trim();
-  if (value.length === 0) return false;
-  if (isUserUploadsPath(value)) return true;
+function getWindowOrigin(): string | null {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  if (origin === "" || origin === "null") {
+    return null;
+  }
+  return origin;
+}
+
+function getTrustedProtectedMediaOrigins(
+  additionalOrigins?: Iterable<string>,
+): TrustedProtectedMediaOrigins {
+  const origins = new Set<string>();
+  const windowOrigin = getWindowOrigin();
+  if (windowOrigin != null) {
+    origins.add(windowOrigin);
+  }
+
+  const site = normalizeRealmSiteOriginForUploads(getRealmBaseUrl()).trim().replace(/\/+$/, "");
+  if (site !== "") {
+    try {
+      origins.add(new URL(site).origin);
+    } catch {
+      // Invalid realm config should not make absolute external media trusted.
+    }
+  }
+
+  for (const origin of additionalOrigins ?? []) {
+    try {
+      origins.add(new URL(origin).origin);
+    } catch {
+      // Invalid caller-provided media base must not extend protected media trust.
+    }
+  }
+
+  return origins;
+}
+
+function getUrlOrigin(url: string | undefined): string | null {
+  const value = url?.trim();
+  if (value == null || value.length === 0) {
+    return null;
+  }
   try {
-    const base = typeof window !== "undefined" ? window.location.origin : "https://localhost";
-    return isUserUploadsPath(new URL(value, base).pathname);
+    return new URL(value).origin;
   } catch {
-    return false;
+    return null;
   }
 }
 
-export function isProtectedMessageMediaUrl(url: string): boolean {
+function parseProtectedMessageMediaUrl(url: string): URL | null {
+  const value = url.trim();
+  if (value.length === 0) return null;
+  const base = getWindowOrigin() ?? "https://localhost";
+  try {
+    const parsed = new URL(value, base);
+    return isProtectedMessageMediaPath(parsed.pathname) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+const RELATIVE_URL_PARSE_BASE_A = "https://relative-a.invalid/base/";
+const RELATIVE_URL_PARSE_BASE_B = "https://relative-b.invalid/other/";
+
+function parseRelativeUrlLike(value: string): URL | null {
+  try {
+    const parsedA = new URL(value, RELATIVE_URL_PARSE_BASE_A);
+    const parsedB = new URL(value, RELATIVE_URL_PARSE_BASE_B);
+    return parsedA.href === parsedB.href ? null : parsedA;
+  } catch {
+    return null;
+  }
+}
+
+function isTrustedProtectedMessageMediaUrl(
+  url: string,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): boolean {
   const value = url.trim();
   if (value.length === 0) return false;
-  if (isProtectedMessageMediaPath(value)) return true;
-  try {
-    const base = typeof window !== "undefined" ? window.location.origin : "https://localhost";
-    return isProtectedMessageMediaPath(new URL(value, base).pathname);
-  } catch {
-    return false;
+
+  const relative = parseRelativeUrlLike(value);
+  if (relative != null) {
+    return isProtectedMessageMediaPath(relative.pathname);
   }
+
+  const parsed = parseProtectedMessageMediaUrl(value);
+  if (parsed == null) return false;
+  return (trustedOrigins ?? getTrustedProtectedMediaOrigins()).has(parsed.origin);
+}
+
+export function isProtectedUserUploadUrl(
+  url: string,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): boolean {
+  if (!isTrustedProtectedMessageMediaUrl(url, trustedOrigins)) return false;
+  const parsed = parseProtectedMessageMediaUrl(url);
+  return parsed != null ? isUserUploadsPath(parsed.pathname) : isUserUploadsPath(url.trim());
+}
+
+export function isProtectedMessageMediaUrl(
+  url: string,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): boolean {
+  return isTrustedProtectedMessageMediaUrl(url, trustedOrigins);
 }
 
 export function normalizeProtectedUploadPath(url: string): string | null {
@@ -128,36 +213,45 @@ function parseSrcsetCandidates(srcset: string): string[] {
     .filter((candidate) => candidate.length > 0);
 }
 
-function getProtectedSrcsetCandidate(srcset: string | null): string | null {
+function getProtectedSrcsetCandidate(
+  srcset: string | null,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): string | null {
   if (srcset == null || srcset.trim() === "") return null;
   const candidates = parseSrcsetCandidates(srcset);
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
     const candidate = candidates[index];
-    if (candidate != null && isProtectedMessageMediaUrl(candidate)) {
+    if (candidate != null && isProtectedMessageMediaUrl(candidate, trustedOrigins)) {
       return collapseDuplicateWorkspaceV1InUrl(candidate);
     }
   }
   return null;
 }
 
-function getProtectedSrcCandidate(element: Element): string | null {
+function getProtectedSrcCandidate(
+  element: Element,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): string | null {
   const src = element.getAttribute("src");
   if (src != null && src.trim() !== "") {
-    if (isProtectedMessageMediaUrl(src)) {
+    if (isProtectedMessageMediaUrl(src, trustedOrigins)) {
       return collapseDuplicateWorkspaceV1InUrl(src);
     }
     return null;
   }
-  return getProtectedSrcsetCandidate(element.getAttribute("srcset"));
+  return getProtectedSrcsetCandidate(element.getAttribute("srcset"), trustedOrigins);
 }
 
-function getProtectedBackgroundImageCandidate(styleValue: string | null): string | null {
+function getProtectedBackgroundImageCandidate(
+  styleValue: string | null,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): string | null {
   if (styleValue == null || styleValue.trim() === "") return null;
   const match = /background-image\s*:\s*url\(\s*(?:"([^"]+)"|'([^']+)'|([^)"']+))\s*\)/i.exec(
     styleValue,
   );
   const candidate = match?.[1] ?? match?.[2] ?? match?.[3] ?? "";
-  if (candidate === "" || !isProtectedMessageMediaUrl(candidate)) {
+  if (candidate === "" || !isProtectedMessageMediaUrl(candidate, trustedOrigins)) {
     return null;
   }
   return collapseDuplicateWorkspaceV1InUrl(candidate);
@@ -216,8 +310,12 @@ export function prepareProtectedUserUploadImageElement(
   markMessageMediaPreview(img);
 }
 
-function prepareProtectedMessageImageElement(img: HTMLImageElement, srcAttrValue: string): void {
-  if (isProtectedUserUploadUrl(srcAttrValue)) {
+function prepareProtectedMessageImageElement(
+  img: HTMLImageElement,
+  srcAttrValue: string,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): void {
+  if (isProtectedUserUploadUrl(srcAttrValue, trustedOrigins)) {
     prepareProtectedUserUploadImageElement(img, srcAttrValue);
     return;
   }
@@ -232,13 +330,17 @@ function prepareProtectedMessageImageElement(img: HTMLImageElement, srcAttrValue
   markMessageMediaPreview(img);
 }
 
-function protectPictureElement(picture: HTMLPictureElement): void {
+function protectPictureElement(
+  picture: HTMLPictureElement,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): void {
   const image = picture.querySelector("img");
   const imageSrc = image?.getAttribute("src")?.trim() ?? "";
-  const imageHasPublicSrc = imageSrc !== "" && !isProtectedMessageMediaUrl(imageSrc);
-  const imageCandidate = image != null ? getProtectedSrcCandidate(image) : null;
+  const imageHasPublicSrc =
+    imageSrc !== "" && !isProtectedMessageMediaUrl(imageSrc, trustedOrigins);
+  const imageCandidate = image != null ? getProtectedSrcCandidate(image, trustedOrigins) : null;
   const sourceCandidates = Array.from(picture.querySelectorAll("source"))
-    .map((source) => getProtectedSrcCandidate(source))
+    .map((source) => getProtectedSrcCandidate(source, trustedOrigins))
     .filter((candidate): candidate is string => candidate != null);
 
   for (const source of picture.querySelectorAll("source")) {
@@ -250,7 +352,7 @@ function protectPictureElement(picture: HTMLPictureElement): void {
   if (image == null) return;
   if (imageHasPublicSrc) {
     stripInlineStyleAttr(image);
-    if (getProtectedSrcsetCandidate(image.getAttribute("srcset")) != null) {
+    if (getProtectedSrcsetCandidate(image.getAttribute("srcset"), trustedOrigins) != null) {
       stripResponsiveMediaAttrs(image);
     }
     return;
@@ -260,11 +362,17 @@ function protectPictureElement(picture: HTMLPictureElement): void {
     stripInlineStyleAttr(image);
     return;
   }
-  prepareProtectedMessageImageElement(image, chosenCandidate);
+  prepareProtectedMessageImageElement(image, chosenCandidate, trustedOrigins);
 }
 
-function protectEmbedBackgroundImageElement(element: HTMLElement): void {
-  const candidate = getProtectedBackgroundImageCandidate(element.getAttribute("style"));
+function protectEmbedBackgroundImageElement(
+  element: HTMLElement,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): void {
+  const candidate = getProtectedBackgroundImageCandidate(
+    element.getAttribute("style"),
+    trustedOrigins,
+  );
   if (candidate == null) {
     return;
   }
@@ -273,13 +381,16 @@ function protectEmbedBackgroundImageElement(element: HTMLElement): void {
   element.setAttribute(AUTH_MEDIA_BACKGROUND_IMAGE_DATA_ATTR, candidate);
 }
 
-function protectStyleAttr(element: HTMLElement): void {
+function protectStyleAttr(
+  element: HTMLElement,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): void {
   const styleValue = element.getAttribute("style");
   if (!hasProtectedMessageMediaInStyle(styleValue)) {
     return;
   }
   if (element.classList.contains("message_embed_image")) {
-    protectEmbedBackgroundImageElement(element);
+    protectEmbedBackgroundImageElement(element, trustedOrigins);
     return;
   }
   stripInlineStyleAttr(element);
@@ -336,27 +447,36 @@ export function resolveProtectedUploadFetchOptions(
   candidate: string,
   headers: Record<string, string>,
 ): RequestInit {
-  const withDevUploadProxy = appendDevRealmMediaProxyHeaders(candidate, headers);
+  const isProtectedCandidate = isProtectedMessageMediaUrl(candidate);
+  const requestHeaders = isProtectedCandidate
+    ? appendDevRealmMediaProxyHeaders(candidate, headers)
+    : {};
   try {
     const base = typeof window !== "undefined" ? window.location.origin : "https://localhost";
     const parsed = new URL(candidate, base);
     const isCrossOrigin = typeof window !== "undefined" && parsed.origin !== window.location.origin;
     if (isCrossOrigin) {
       return {
-        headers: withDevUploadProxy,
-        credentials: resolveCrossOriginProtectedUploadCredentials(headers),
+        headers: requestHeaders,
+        credentials: isProtectedCandidate
+          ? resolveCrossOriginProtectedUploadCredentials(requestHeaders)
+          : "omit",
       };
     }
   } catch {
     // Fall back to same-origin defaults when URL parsing fails.
   }
-  return { headers: withDevUploadProxy, credentials: "include" };
+  return { headers: requestHeaders, credentials: "include" };
 }
 
 export async function fetchProtectedUploadBlob(
   rawValue: string,
   headers: Record<string, string>,
 ): Promise<Blob | null> {
+  if (!isProtectedMessageMediaUrl(rawValue)) {
+    return null;
+  }
+
   const fetchUrl = buildProtectedUploadFetchUrl(rawValue);
   try {
     const response = await fetch(fetchUrl, resolveProtectedUploadFetchOptions(fetchUrl, headers));
@@ -590,13 +710,16 @@ function enrichSanitizedMessageHtml(
   upgradeUserUploadVideoLinksInContainer(container);
 }
 
-export function protectMessageMediaElementsInContainer(container: ParentNode): void {
+export function protectMessageMediaElementsInContainer(
+  container: ParentNode,
+  trustedOrigins?: TrustedProtectedMediaOrigins,
+): void {
   for (const element of container.querySelectorAll<HTMLElement>("[style]")) {
-    protectStyleAttr(element);
+    protectStyleAttr(element, trustedOrigins);
   }
 
   for (const picture of container.querySelectorAll("picture")) {
-    protectPictureElement(picture);
+    protectPictureElement(picture, trustedOrigins);
   }
 
   const mediaWithSrc = container.querySelectorAll<HTMLElement>("img,source,audio,video");
@@ -605,8 +728,11 @@ export function protectMessageMediaElementsInContainer(container: ParentNode): v
       continue;
     }
 
-    const protectedSrcsetCandidate = getProtectedSrcsetCandidate(element.getAttribute("srcset"));
-    const src = getProtectedSrcCandidate(element);
+    const protectedSrcsetCandidate = getProtectedSrcsetCandidate(
+      element.getAttribute("srcset"),
+      trustedOrigins,
+    );
+    const src = getProtectedSrcCandidate(element, trustedOrigins);
     if (src == null) {
       if (protectedSrcsetCandidate != null) {
         stripInlineStyleAttr(element);
@@ -616,7 +742,7 @@ export function protectMessageMediaElementsInContainer(container: ParentNode): v
     }
 
     if (element instanceof HTMLImageElement) {
-      prepareProtectedMessageImageElement(element, src);
+      prepareProtectedMessageImageElement(element, src, trustedOrigins);
       continue;
     }
 
@@ -634,7 +760,7 @@ export function protectMessageMediaElementsInContainer(container: ParentNode): v
   const videosWithPoster = container.querySelectorAll<HTMLVideoElement>("video[poster]");
   for (const video of videosWithPoster) {
     const poster = video.getAttribute("poster");
-    if (!poster || !isProtectedMessageMediaUrl(poster)) {
+    if (!poster || !isProtectedMessageMediaUrl(poster, trustedOrigins)) {
       continue;
     }
     stripInlineStyleAttr(video);
@@ -646,17 +772,19 @@ export function protectMessageMediaElementsInContainer(container: ParentNode): v
 export function prepareProtectedSanitizedHtml(
   html: string,
   options?: PrepareProtectedMessageHtmlOptions,
+  additionalTrustedOrigins?: Iterable<string>,
 ): string {
   if (typeof document === "undefined" || html.trim().length === 0) {
     return html;
   }
 
+  const trustedOrigins = getTrustedProtectedMediaOrigins(additionalTrustedOrigins);
   const template = document.createElement("template");
   template.innerHTML = html;
   const container = template.content;
 
   enrichSanitizedMessageHtml(container, options);
-  protectMessageMediaElementsInContainer(container);
+  protectMessageMediaElementsInContainer(container, trustedOrigins);
 
   return template.innerHTML;
 }
@@ -667,5 +795,10 @@ export function prepareProtectedMessageHtml(
   options?: PrepareProtectedMessageHtmlOptions,
 ): string {
   const html = sanitizeHtml(rawHtml, baseUrl);
-  return prepareProtectedSanitizedHtml(html, options);
+  const baseOrigin = getUrlOrigin(baseUrl);
+  return prepareProtectedSanitizedHtml(
+    html,
+    options,
+    baseOrigin != null ? [baseOrigin] : undefined,
+  );
 }
