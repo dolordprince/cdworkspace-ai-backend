@@ -6,6 +6,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.10] — 2026-06-16
+
+### Added
+
+- User status emoji metadata support (`emojiCode`, `reactionType`) (#140)
+
+### Fixed
+
+- Org switch race condition (#147)
+- Protected media URL trust and sanitization (#146)
+- Sentry replay text masking to prevent credential exposure (#124)
+- Workspace sibling origin derivation hardening (#123)
+
 ## [0.1.3] — 2026-06-03
 
 ### Changed
