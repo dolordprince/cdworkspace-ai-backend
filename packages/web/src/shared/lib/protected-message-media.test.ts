@@ -73,6 +73,8 @@ describe("protected media URL trust", () => {
     expect(isProtectedMessageMediaUrl("https://attacker.example/external_content/x.png")).toBe(
       false,
     );
+    expect(isProtectedUserUploadUrl("/\\attacker.example/user_uploads/x.png")).toBe(false);
+    expect(isProtectedMessageMediaUrl("\\\\attacker.example/external_content/x.png")).toBe(false);
   });
 
   it("allows relative, same-origin, and configured realm protected media URLs", () => {
@@ -82,9 +84,7 @@ describe("protected media URL trust", () => {
 
     expect(isProtectedUserUploadUrl("/user_uploads/1/a.png")).toBe(true);
     expect(isProtectedUserUploadUrl("https://app.example.com/user_uploads/1/a.png")).toBe(true);
-    expect(isProtectedUserUploadUrl("https://zulip.example.com/user_uploads/1/a.png")).toBe(
-      true,
-    );
+    expect(isProtectedUserUploadUrl("https://zulip.example.com/user_uploads/1/a.png")).toBe(true);
     expect(isProtectedMessageMediaUrl("https://zulip.example.com/external_content/a.png")).toBe(
       true,
     );
@@ -153,6 +153,19 @@ describe("prepareProtectedMessageHtml", () => {
     );
     expect(source?.getAttribute("src")).toBeNull();
     expectNoLiveProtectedAttrs(out);
+  });
+
+  it("protects absolute media URLs resolved from the provided message media base", () => {
+    const html =
+      '<video controls><source src="/user_uploads/1/private.webm" type="video/webm"></video>';
+    const out = prepareProtectedMessageHtml(html, "https://sys.example.com/workspace/v1");
+
+    expect(out).toContain(
+      'data-auth-src="https://sys.example.com/workspace/v1/user_uploads/1/private.webm"',
+    );
+    const template = document.createElement("template");
+    template.innerHTML = out;
+    expect(template.content.querySelector("source")?.getAttribute("src")).toBeNull();
   });
 
   it("removes style attrs only when they reference protected media", () => {
