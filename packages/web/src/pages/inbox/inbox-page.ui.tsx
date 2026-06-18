@@ -2,11 +2,18 @@
 import React, { useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { fetchInboxEntries, hydrateInboxEntriesFromCache } from "~/entities/inbox/inbox.api";
+import {
+  fetchInboxEntriesWithSnapshot,
+  hydrateInboxEntriesFromCache,
+} from "~/entities/inbox/inbox.api";
 import { groupInboxEntries, isInboxEntriesSnapshotFresher } from "~/entities/inbox/inbox.lib";
 import { useInboxStore } from "~/entities/inbox/inbox.model";
 import type { InboxEntry } from "~/entities/inbox/inbox.types";
-import { isActiveOrgRequestContextCurrent, useInstancesStore } from "~/entities/instance/instance.model";
+import {
+  isActiveOrgRequestContextCurrent,
+  useInstancesStore,
+} from "~/entities/instance/instance.model";
+import { syncUnreadSurfacesFromSnapshot } from "~/entities/unread-sync/unread-surfaces-sync.lib";
 import { topicKey, useMuteStore } from "~/features/mute-chat/mute-chat.model";
 import { t } from "~/i18n/i18n";
 import { useOpenSearch } from "~/shared/contexts/open-search";
@@ -116,14 +123,29 @@ export const InboxPage: React.FC = () => {
     },
     hasCachedData: () => useInboxStore.getState().entries.length > 0,
     startRequest: (hasCached) => startRequest(hasCached),
-    fetch: async ({ orgContext, requestVersion, signal }) => {
-      const data = await fetchInboxEntries(
+    fetch: async ({ instanceId, orgContext, requestVersion, signal }) => {
+      const data = await fetchInboxEntriesWithSnapshot(
         currentUserId,
         { isStreamMuted, isEffectivelyMuted },
         { signal },
       );
       if (signal.aborted || !isActiveOrgRequestContextCurrent(orgContext)) return;
-      setEntries(data, requestVersion);
+      setEntries(data.entries, requestVersion);
+      if (data.unreadSnapshotComplete) {
+        // Only a full Inbox snapshot can safely update shared unread counters.
+        syncUnreadSurfacesFromSnapshot({
+          source: "inbox-fetch",
+          instanceId,
+          currentUserId,
+          snapshot: data.unreadSnapshot,
+          messages: data.unreadMessages,
+          applyChatList: true,
+          applyInstanceCounts: true,
+          instanceCountMode: "chat-list-derived",
+          isStreamMuted,
+          isEffectivelyMuted,
+        });
+      }
     },
     onFetchError: (err, requestVersion) => {
       setError(String(err), requestVersion);

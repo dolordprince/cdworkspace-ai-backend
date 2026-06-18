@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { ZulipInstance } from "~/entities/instance/instance.model";
+import { syncUnreadSurfacesFromSnapshot } from "~/entities/unread-sync/unread-surfaces-sync.lib";
 import {
   fetchUnreadDmMessagesCountForCredentials,
   fetchUnreadMessagesCountForCredentials,
@@ -10,7 +11,6 @@ import {
   handleInactiveInstanceQueueRegistered,
 } from "./layout-inactive-instance-queue.lib";
 import {
-  applyInstanceUnreadCountsFromRegisterSnapshot,
   getCachedRegisterUnreadSnapshot,
   isRegisterUnreadSnapshotUsable,
 } from "./layout-instance-register-unread.lib";
@@ -37,12 +37,14 @@ export function useInactiveInstancesBackgroundWork(options: {
       refreshUnreadForInstance: async (instance) => {
         const cached = getCachedRegisterUnreadSnapshot(instance.id);
         if (isRegisterUnreadSnapshotUsable(cached)) {
-          applyInstanceUnreadCountsFromRegisterSnapshot(
-            instance.id,
-            cached,
-            setUnreadCount,
-            setDmUnreadCount,
-          );
+          syncUnreadSurfacesFromSnapshot({
+            source: "inactive-cached-register",
+            instanceId: instance.id,
+            currentUserId: null,
+            snapshot: cached,
+            applyChatList: false,
+            applyInstanceCounts: true,
+          });
           return;
         }
         const credentials = {
@@ -89,8 +91,6 @@ export function useInactiveInstancesBackgroundWork(options: {
               stopped,
               credentials,
               instance,
-              setUnreadCount,
-              setDmUnreadCount,
               onQueueRegistered,
             });
             if (nextQueueId != null) {

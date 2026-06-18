@@ -88,6 +88,10 @@ const METADATA_DM_BACKFILL_PAGE_SIZE = 5000;
 const METADATA_DM_BACKFILL_MAX_BATCHES = 3;
 // Stop backfill when consecutive batches add no new DMs.
 const METADATA_DM_BACKFILL_STAGNATION_LIMIT = 2;
+const LAYOUT_REGISTER_FETCH_EVENT_TYPES = [
+  ...DEFAULT_REGISTER_FETCH_EVENT_TYPES,
+  "starred_messages",
+];
 const log = createLogger("layout-zulip-event-loop");
 
 interface LatestMessageIdRef {
@@ -150,6 +154,7 @@ function persistDmIndexFromStore(instanceId: string): void {
 
 function startSidebarUnreadReconcile(options: {
   cancelled: () => boolean;
+  instanceId: string | null;
   currentUserId: number | null;
   registerSnapshot?: ZulipUnreadMessagesSnapshot | null;
 }): void {
@@ -161,14 +166,17 @@ function startSidebarUnreadReconcile(options: {
 }
 
 function reconcileSidebarUnreadFromRegister(
+  instanceId: string | null,
   registration: RegisterQueueResult | undefined,
   currentUserId: number | null,
 ): void {
   reconcileSidebarUnreadAfterBootstrap({
     cancelled: () => false,
+    instanceId,
     currentUserId,
     registerSnapshot: registration?.unread_snapshot,
     logScope: "eventLoop: reconcileSidebarUnreadFromRegister",
+    syncSource: "event-loop-register",
   });
   void hydrateStreamSidebarPreviewsFromUnreadSnapshot(registration?.unread_snapshot, () => false);
 }
@@ -737,7 +745,7 @@ export function useLayoutZulipEventLoop(options: {
             instanceId: currentInstanceId ?? undefined,
             onTabStaleResume: refreshStaleData,
             onBadQueue: refreshStaleData,
-            fetchEventTypes: [...DEFAULT_REGISTER_FETCH_EVENT_TYPES],
+            fetchEventTypes: [...LAYOUT_REGISTER_FETCH_EVENT_TYPES],
             onQueueRegistered: onQueueRegisteredHandler,
             onEvent: onEventHandler,
           });

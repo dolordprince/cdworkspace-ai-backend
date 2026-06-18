@@ -1,3 +1,4 @@
+import { useActivityStore } from "~/entities/activity/activity.model";
 import {
   summarizeRecentPrivateConversationsForTrace,
   traceDmPreviewHydrate,
@@ -148,6 +149,7 @@ export interface LayoutBootstrapQueueRegisteredDeps {
   registerUnreadSnapshotRef: { current: ZulipUnreadMessagesSnapshot | null };
   persistDmIndexFromStore: (instanceId: string) => void;
   reconcileSidebarUnreadFromRegister: (
+    instanceId: string | null,
     registration: RegisterQueueResult | undefined,
     currentUserId: number | null,
   ) => void;
@@ -162,6 +164,7 @@ export interface LayoutBootstrapQueueRegisteredDeps {
   ) => void;
   startSidebarUnreadReconcile: (params: {
     cancelled: () => boolean;
+    instanceId: string | null;
     currentUserId: number | null;
     registerSnapshot: ZulipUnreadMessagesSnapshot | null;
   }) => void;
@@ -198,6 +201,11 @@ export function createLayoutBootstrapQueueRegisteredHandler(
       useInstancesStore.getState().setJitsiMeetBaseUrl(registration.jitsi_server_url_effective);
     } else {
       useInstancesStore.getState().setJitsiMeetBaseUrl(null);
+    }
+    if (registration?.starred_message_ids != null) {
+      useActivityStore
+        .getState()
+        .setStarredSummaryFromRegisterMessageIds(registration.starred_message_ids);
     }
     useUsersStore.getState().setCurrentUserChannelCapabilities({
       ...(registration?.realm_can_add_subscribers_group != null
@@ -280,6 +288,7 @@ export function createLayoutBootstrapQueueRegisteredHandler(
     );
     deps.startSidebarUnreadReconcile({
       cancelled: deps.isCancelled,
+      instanceId: deps.currentInstanceId,
       currentUserId: useChatListStore.getState().currentUserId ?? deps.bootstrapUserId,
       registerSnapshot: deps.registerUnreadSnapshotRef.current,
     });

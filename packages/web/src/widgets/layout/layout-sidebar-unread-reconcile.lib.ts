@@ -2,6 +2,11 @@
  * Sidebar unread reconcile after bootstrap — register `unread_msgs` is authoritative in metadata-first.
  */
 import { useChatListStore } from "~/entities/chat-list/chat-list.model";
+import {
+  syncUnreadSurfacesFromSnapshot,
+  type UnreadSurfaceSyncSource,
+} from "~/entities/unread-sync/unread-surfaces-sync.lib";
+import { useMuteStore } from "~/features/mute-chat/mute-chat.model";
 import type { ZulipUnreadMessagesSnapshot } from "~/shared/api/zulip-unread.lib";
 import { logChatListFlow } from "~/shared/lib/message-flow-debug.lib";
 import {
@@ -12,8 +17,7 @@ import {
   isRegisterUnreadSnapshotUsable,
   shouldPreserveLocalUnreadOnCachedReconcile,
 } from "./layout-instance-register-unread.lib";
-
-let lastReconciledSnapshotKey: string | null = null;
+const lastReconciledSnapshotKeyByInstanceId = new Map<string, string>();
 
 function buildUnreadSnapshotDedupeKey(snapshot: ZulipUnreadMessagesSnapshot): string {
   const streamPart = snapshot.streams
@@ -32,7 +36,7 @@ function buildUnreadSnapshotDedupeKey(snapshot: ZulipUnreadMessagesSnapshot): st
 
 /** Clears dedupe guard (e.g. after logout or instance switch). */
 export function resetSidebarUnreadReconcileDedupe(): void {
-  lastReconciledSnapshotKey = null;
+  lastReconciledSnapshotKeyByInstanceId.clear();
 }
 
 export type SidebarUnreadReconcileSkippedReason =
@@ -43,6 +47,7 @@ export type SidebarUnreadReconcileSnapshotSource = "fresh-register" | "cached-re
 
 export interface ReconcileSidebarUnreadAfterBootstrapOptions {
   cancelled: () => boolean;
+  instanceId?: string | null;
   currentUserId: number | null;
   registerSnapshot?: ZulipUnreadMessagesSnapshot | null;
   logScope?: string;
@@ -51,6 +56,18 @@ export interface ReconcileSidebarUnreadAfterBootstrapOptions {
    * `fresh-register` — queue register or bootstrap (server snapshot is authoritative).
    */
   snapshotSource?: SidebarUnreadReconcileSnapshotSource;
+  syncSource?: UnreadSurfaceSyncSource;
+  instanceCountMode?: "snapshot-total" | "chat-list-derived";
+}
+
+function dedupeScopeKey(instanceId: string | null | undefined): string {
+  return instanceId ?? "active:null";
+}
+
+function resolveSyncSource(
+  snapshotSource: SidebarUnreadReconcileSnapshotSource,
+): UnreadSurfaceSyncSource {
+  return snapshotSource === "cached-register" ? "reconnect-light" : "event-loop-register";
 }
 
 /**
@@ -95,15 +112,17 @@ export function reconcileSidebarUnreadAfterBootstrap(
     }
 
     const dedupeKey = buildUnreadSnapshotDedupeKey(snapshot);
-    if (dedupeKey === lastReconciledSnapshotKey) {
+    const scopedDedupeKey = dedupeScopeKey(options.instanceId);
+    if (dedupeKey === lastReconciledSnapshotKeyByInstanceId.get(scopedDedupeKey)) {
       logSidebarUnreadFlow(`bootstrap:${logScope}:skipped`, {
         skippedReason: "duplicate_register_snapshot",
+        instanceId: options.instanceId ?? null,
         snapshotSource,
       });
       logChatListFlow(`${logScope}: reconcile skipped (duplicate snapshot)`, { snapshotSource });
       return;
     }
-    lastReconciledSnapshotKey = dedupeKey;
+    lastReconciledSnapshotKeyByInstanceId.set(scopedDedupeKey, dedupeKey);
 
     logChatListFlow(`${logScope}: reconcileUnreadFromSnapshot`, {
       streamBuckets: snapshot.streams.length,
@@ -115,7 +134,20 @@ export function reconcileSidebarUnreadAfterBootstrap(
       snapshotSource,
       ...summarizeRegisterUnreadSnapshot(snapshot),
     });
-    useChatListStore.getState().reconcileUnreadFromSnapshot(snapshot, options.currentUserId);
+    // Active org uses derived count; inactive callers can force snapshot-total.
+    const instanceCountMode = options.instanceCountMode ?? "chat-list-derived";
+    const mute = instanceCountMode === "chat-list-derived" ? useMuteStore.getState() : null;
+    syncUnreadSurfacesFromSnapshot({
+      source: options.syncSource ?? resolveSyncSource(snapshotSource),
+      instanceId: options.instanceId ?? null,
+      currentUserId: options.currentUserId,
+      snapshot,
+      applyChatList: true,
+      applyInstanceCounts: options.instanceId != null,
+      instanceCountMode,
+      isStreamMuted: mute?.isStreamMuted,
+      isEffectivelyMuted: mute?.isEffectivelyMuted,
+    });
     return;
   }
 

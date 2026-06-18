@@ -170,7 +170,7 @@ describe("SidebarActivity", () => {
 
   it("shows favorites badge in expanded view from starred summary", () => {
     useChatListStore.setState({ currentUserId: 7, lastAppliedMessages: [] });
-    useActivityStore.getState().setStarredSummaryFromCache(4, false);
+    useActivityStore.getState().setStarredSummaryFromRegisterMessageIds([1, 2, 3, 4]);
 
     render(
       <MemoryRouter>
@@ -250,9 +250,25 @@ describe("SidebarActivity", () => {
     expect(within(inboxLink).getByText("3")).toHaveClass("text-text-primary", "h-4");
   });
 
+  it("keeps compact activity badges above adjacent button hovers", () => {
+    useChatListStore.getState().setFromMessages(INBOX_COUNT_THREE_MESSAGES, 7);
+    useChatListStore.setState({ mentionsUnreadCount: 180 });
+
+    render(
+      <MemoryRouter>
+        <SidebarActivity open={false} onToggle={() => {}} />
+      </MemoryRouter>,
+    );
+
+    const inboxLink = screen.getByRole("link", { name: /inbox/i });
+    const inboxBadgeWrapper = within(inboxLink).getByText("3").parentElement;
+    expect(inboxBadgeWrapper).toHaveClass("z-sticky", "pointer-events-none");
+    expect(inboxLink.closest("li")).toHaveClass("z-sticky");
+  });
+
   it("shows compact favorites badge from starred summary", () => {
     useChatListStore.setState({ currentUserId: 7, lastAppliedMessages: [] });
-    useActivityStore.getState().setStarredSummaryFromCache(7, false);
+    useActivityStore.getState().setStarredSummaryFromRegisterMessageIds([1, 2, 3, 4, 5, 6, 7]);
 
     render(
       <MemoryRouter>
