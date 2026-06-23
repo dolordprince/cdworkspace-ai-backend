@@ -1,6 +1,7 @@
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useCallParticipantsStore } from "~/entities/call/call.model";
+import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { useUsersStore } from "~/entities/user/user.model";
 import { useMediaViewerStore } from "~/features/media-viewer/media-viewer.model";
 import type { MockMessage } from "~/shared/api/zulip.types";
@@ -35,6 +36,7 @@ function createMessage(overrides: Partial<MockMessage> = {}): MockMessage {
 describe("MessageBubble markdown body", () => {
   afterEach(() => {
     window.getSelection()?.removeAllRanges();
+    useChatListStore.getState().clear();
     useUsersStore.getState().clear();
     useCallParticipantsStore.setState({ participantsByUrl: {} });
     useMediaViewerStore.getState().close();
@@ -100,6 +102,26 @@ describe("MessageBubble markdown body", () => {
     expect(body?.className).toContain("[&_pre]:[overflow-wrap:anywhere]");
     expect(body?.className).toContain("min-w-0");
     expect(body?.querySelector("pre")?.textContent).toBe(longToken);
+  });
+
+  it("adds wrap classes for long auto-linked urls in the bubble", () => {
+    useUsersStore.getState().mergeUser(createUser({ user_id: 77, full_name: "Alice" }));
+
+    const longUrl =
+      "http://localhost:5473/messenger#narrow/channel/345/topic/" +
+      encodeURIComponent("Офисная эксплуатация").repeat(8);
+
+    const { container } = render(
+      <MessageBubble message={createMessage({ content: longUrl })} isOwn={false} />,
+    );
+
+    const body = container.querySelector(".message-body");
+    expect(body).toBeTruthy();
+    expect(body?.querySelector("a")).toBeTruthy();
+    expect(body?.className).toContain("[overflow-wrap:anywhere]");
+    expect(body?.className).toContain("[word-break:break-word]");
+    expect(body?.className).toContain("[&_a]:[overflow-wrap:anywhere]");
+    expect(body?.className).toContain("[&_a]:[word-break:break-word]");
   });
 
   it("adds syntax-highlight classes to fenced code blocks in bubble markdown", () => {
@@ -187,6 +209,49 @@ describe("MessageBubble markdown body", () => {
     expect(emojiImage).toHaveAttribute("src", "https://cdn.example.com/parrot.png");
     expect(emojiImage).toHaveAttribute("alt", ":party_parrot:");
     expect(emojiImage).toHaveAttribute("title", ":party_parrot:");
+  });
+
+  it("renders resolved zulip topic reference as clickable in-app link", () => {
+    useUsersStore.getState().mergeUser(createUser({ user_id: 77, full_name: "Alice" }));
+    useChatListStore.getState().upsertStreamMetadataRows([{ streamId: 10, name: "Engineering" }]);
+
+    const { container } = render(
+      <MessageBubble message={createMessage({ content: "#**Engineering>Bugs**" })} isOwn={false} />,
+    );
+
+    const link = container.querySelector<HTMLAnchorElement>(".message-body a.stream-topic");
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("/stream/10-engineering/topic/Bugs");
+    expect(link?.textContent).toBe("#Engineering>Bugs");
+  });
+
+  it("renders unresolved zulip message reference as internal message redirect link", () => {
+    useUsersStore.getState().mergeUser(createUser({ user_id: 77, full_name: "Alice" }));
+
+    const { container } = render(
+      <MessageBubble
+        message={createMessage({ content: "#**Unknown>Bugs@12345**" })}
+        isOwn={false}
+      />,
+    );
+
+    const link = container.querySelector<HTMLAnchorElement>(".message-body a.message-link");
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("/message/12345");
+    expect(link?.textContent).toBe("#Unknown>Bugs@12345");
+  });
+
+  it("renders unresolved zulip topic reference as name-route link", () => {
+    useUsersStore.getState().mergeUser(createUser({ user_id: 77, full_name: "Alice" }));
+
+    const { container } = render(
+      <MessageBubble message={createMessage({ content: "#**Unknown>Bugs**" })} isOwn={false} />,
+    );
+
+    const link = container.querySelector<HTMLAnchorElement>(".message-body a.stream-topic");
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("/stream/Unknown/topic/Bugs");
+    expect(link?.textContent).toBe("#Unknown>Bugs");
   });
 
   it("does not open media viewer on a regular inline video click", () => {

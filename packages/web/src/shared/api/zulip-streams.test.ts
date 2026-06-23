@@ -16,6 +16,7 @@ import {
   fetchSubscriptions,
   fetchTopics,
   removeMembersFromStream,
+  resolveStreamIdByName,
   unarchiveStream,
   updateStream,
 } from "./zulip-streams";
@@ -120,6 +121,55 @@ describe("fetchStreamMembers", () => {
   });
 });
 
+describe("resolveStreamIdByName", () => {
+  it("returns stream id on success", async () => {
+    mockZulipApi.get.mockResolvedValue({
+      ok: true,
+      status: 200,
+      data: { result: "success", stream_id: 77 },
+      raw: { statusText: "OK" },
+    });
+
+    await expect(resolveStreamIdByName("engineering")).resolves.toEqual({
+      ok: true,
+      streamId: 77,
+    });
+    expect(mockZulipApi.get).toHaveBeenCalledWith(
+      "/get_stream_id",
+      { stream: "engineering" },
+      undefined,
+    );
+  });
+
+  it("maps forbidden response", async () => {
+    mockZulipApi.get.mockResolvedValue({
+      ok: false,
+      status: 403,
+      data: { result: "error" },
+      raw: { statusText: "Forbidden" },
+    });
+
+    await expect(resolveStreamIdByName("engineering")).resolves.toEqual({
+      ok: false,
+      kind: "forbidden",
+    });
+  });
+
+  it("maps not found response", async () => {
+    mockZulipApi.get.mockResolvedValue({
+      ok: false,
+      status: 400,
+      data: { result: "error", code: "BAD_REQUEST" },
+      raw: { statusText: "Bad Request" },
+    });
+
+    await expect(resolveStreamIdByName("missing")).resolves.toEqual({
+      ok: false,
+      kind: "not_found",
+    });
+  });
+});
+
 describe("addMembersToStream", () => {
   it("posts subscriptions and principals and returns normalized success result", async () => {
     mockZulipApi.post.mockResolvedValue({
@@ -149,10 +199,14 @@ describe("addMembersToStream", () => {
       alreadySubscribedUserIds: [2],
       unauthorizedStreams: [],
     });
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/users/me/subscriptions", {
-      subscriptions: JSON.stringify([{ name: "engineering" }]),
-      principals: JSON.stringify([1, 2, 3]),
-    });
+    expect(mockZulipApi.post).toHaveBeenCalledWith(
+      "/users/me/subscriptions",
+      {
+        subscriptions: JSON.stringify([{ name: "engineering" }]),
+        principals: JSON.stringify([1, 2, 3]),
+      },
+      undefined,
+    );
   });
 
   it("passes authorization_errors_fatal when provided", async () => {
@@ -174,6 +228,7 @@ describe("addMembersToStream", () => {
       expect.objectContaining({
         authorization_errors_fatal: "false",
       }),
+      undefined,
     );
   });
 
@@ -714,9 +769,13 @@ describe("deleteTopic", () => {
       complete: true,
       attempts: 1,
     });
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/streams/10/delete_topic", {
-      topic_name: "incident",
-    });
+    expect(mockZulipApi.post).toHaveBeenCalledWith(
+      "/streams/10/delete_topic",
+      {
+        topic_name: "incident",
+      },
+      undefined,
+    );
   });
 
   it("allows deleting empty topic name", async () => {
@@ -732,9 +791,13 @@ describe("deleteTopic", () => {
       complete: true,
       attempts: 1,
     });
-    expect(mockZulipApi.post).toHaveBeenCalledWith("/streams/10/delete_topic", {
-      topic_name: "",
-    });
+    expect(mockZulipApi.post).toHaveBeenCalledWith(
+      "/streams/10/delete_topic",
+      {
+        topic_name: "",
+      },
+      undefined,
+    );
   });
 
   it("retries on complete=false and succeeds on second attempt", async () => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadFoldersSnapshotRow } from "~/shared/lib/folders-snapshot-db";
 import { SYSTEM_ALL_FOLDER_ID } from "./folder-sync-constants.lib";
 import { loadFolderSyncSnapshot } from "./folder-sync.api";
 import { useFolderSyncStore } from "./folder-sync.model";
@@ -942,6 +943,33 @@ describe("applyLocallyDeletedFolder", () => {
     expect(state.selectedFolderId).toBe("current");
     expect(state.folders.some((f) => f.id === victim)).toBe(false);
   });
+
+  it("keeps personal/channels when deleting the last custom folder", () => {
+    const victim = "folder-last";
+    useFolderSyncStore.setState({
+      instanceId: "inst-1",
+      showSystemFolders: true,
+      folders: [
+        { id: SYSTEM_ALL_FOLDER_ID, label: "All", backgroundColor: 0, systemType: "all" },
+        { id: "system:personal", label: "Personal", backgroundColor: 0, systemType: "personal" },
+        { id: "system:channels", label: "Channels", backgroundColor: 0, systemType: "channels" },
+        { id: victim, label: "Only custom", backgroundColor: 1, systemType: "created" },
+      ],
+      selectedFolderId: victim,
+      selectedFolderChatIds: new Set<string>(),
+      folderItemsByFolderId: new Map([[victim, []]]),
+    });
+
+    useFolderSyncStore.getState().applyLocallyDeletedFolder(victim);
+
+    const state = useFolderSyncStore.getState();
+    expect(state.folders.map((folder) => folder.id)).toEqual([
+      SYSTEM_ALL_FOLDER_ID,
+      "system:personal",
+      "system:channels",
+    ]);
+    expect(state.selectedFolderId).toBe(SYSTEM_ALL_FOLDER_ID);
+  });
 });
 
 describe("syncDerived", () => {
@@ -995,6 +1023,26 @@ describe("syncDerived", () => {
     expect(useFolderSyncStore.getState().selectedFolderChatIds).toBeNull();
   });
 
+  it("restores personal/channels when only synthetic all-folder is present", () => {
+    useFolderSyncStore.setState({
+      instanceId: "inst-1",
+      labels,
+      showSystemFolders: true,
+      folders: [{ id: SYSTEM_ALL_FOLDER_ID, label: "All", backgroundColor: 0, systemType: "all" }],
+      selectedFolderId: SYSTEM_ALL_FOLDER_ID,
+      selectedFolderChatIds: null,
+      folderItemsByFolderId: new Map(),
+    });
+
+    useFolderSyncStore.getState().syncDerived(true, labels);
+
+    expect(useFolderSyncStore.getState().folders.map((folder) => folder.id)).toEqual([
+      SYSTEM_ALL_FOLDER_ID,
+      "system:personal",
+      "system:channels",
+    ]);
+  });
+
   it("syncSidebarProjection updates folder rail badges from chat-list unread", () => {
     useFolderSyncStore.setState({
       instanceId: "inst-1",
@@ -1034,5 +1082,147 @@ describe("syncDerived", () => {
     const { folders } = useFolderSyncStore.getState();
     expect(folders.find((f) => f.id === SYSTEM_ALL_FOLDER_ID)?.badge).toBe(5);
     expect(folders.find((f) => f.id === "system:personal")?.badge).toBe(2);
+  });
+
+  it("restores personal/channels badges immediately after show system folders is re-enabled", () => {
+    useFolderSyncStore.setState({
+      instanceId: "inst-1",
+      labels,
+      showSystemFolders: true,
+      folders: [
+        { id: SYSTEM_ALL_FOLDER_ID, label: "All", backgroundColor: 0, systemType: "all" },
+        { id: "system:personal", label: "Personal", backgroundColor: 0, systemType: "personal" },
+        { id: "system:channels", label: "Channels", backgroundColor: 0, systemType: "channels" },
+      ],
+      selectedFolderId: SYSTEM_ALL_FOLDER_ID,
+      selectedFolderChatIds: null,
+      folderItemsByFolderId: new Map(),
+    });
+
+    useFolderSyncStore.getState().syncSidebarProjection({
+      chatsSortedByLastMessage: [
+        {
+          type: "dm",
+          id: 42,
+          name: "Alice",
+          slug: "42-alice",
+          badge: 2,
+        },
+        {
+          type: "stream",
+          stream_id: 1,
+          name: "General",
+          badge: 3,
+        },
+      ],
+      streamsMap: new Map(),
+      usersMapForChatInfo: new Map(),
+      currentUserId: 10,
+      hideUnknownArchivedStreams: false,
+    });
+
+    useFolderSyncStore.getState().syncDerived(false, labels);
+    useFolderSyncStore.getState().syncDerived(true, labels);
+
+    const { folders } = useFolderSyncStore.getState();
+    expect(folders.find((f) => f.id === "system:personal")?.badge).toBe(2);
+    expect(folders.find((f) => f.id === "system:channels")?.badge).toBe(3);
+  });
+});
+
+describe("bootstrap", () => {
+  const labels = { allChats: "All", personal: "Personal", channels: "Channels" };
+
+  beforeEach(() => {
+    useFolderSyncStore.getState().clear();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    useFolderSyncStore.getState().clear();
+  });
+
+  it("keeps personal/channels after hydrating cached system all-folder", async () => {
+    vi.mocked(loadFoldersSnapshotRow).mockResolvedValue({
+      instanceId: "inst-1",
+      version: 1,
+      folders: [{ id: SYSTEM_ALL_FOLDER_ID, label: "All", backgroundColor: 0, systemType: "all" }],
+    });
+    vi.mocked(loadFolderSyncSnapshot).mockResolvedValue({
+      folders: [],
+      itemsByFolderId: new Map(),
+      loadedAt: Date.now(),
+    });
+
+    await useFolderSyncStore.getState().bootstrap({
+      instanceId: "inst-1",
+      showSystemFolders: true,
+      labels,
+    });
+
+    expect(useFolderSyncStore.getState().folders.map((folder) => folder.id)).toEqual([
+      SYSTEM_ALL_FOLDER_ID,
+      "system:personal",
+      "system:channels",
+    ]);
+  });
+
+  it("preserves system folder badges across refresh after sidebar projection already ran", async () => {
+    useFolderSyncStore.setState({
+      instanceId: "inst-1",
+      labels,
+      showSystemFolders: true,
+      folders: [
+        { id: SYSTEM_ALL_FOLDER_ID, label: "All", backgroundColor: 0, systemType: "all" },
+        { id: "system:personal", label: "Personal", backgroundColor: 0, systemType: "personal" },
+        { id: "system:channels", label: "Channels", backgroundColor: 0, systemType: "channels" },
+      ],
+      selectedFolderId: SYSTEM_ALL_FOLDER_ID,
+      selectedFolderChatIds: null,
+      folderItemsByFolderId: new Map(),
+    });
+    useFolderSyncStore.getState().syncSidebarProjection({
+      chatsSortedByLastMessage: [
+        {
+          type: "dm",
+          id: 42,
+          name: "Alice",
+          slug: "42-alice",
+          badge: 2,
+        },
+        {
+          type: "stream",
+          stream_id: 1,
+          name: "General",
+          badge: 3,
+        },
+      ],
+      streamsMap: new Map(),
+      usersMapForChatInfo: new Map(),
+      currentUserId: 10,
+      hideUnknownArchivedStreams: false,
+    });
+    vi.mocked(loadFolderSyncSnapshot).mockResolvedValue({
+      folders: [
+        {
+          uuid: "api-all",
+          title: "All",
+          background_color_value: 0,
+          unread_messages: [],
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          system_type: "all",
+        },
+      ],
+      itemsByFolderId: new Map(),
+      loadedAt: Date.now(),
+    });
+
+    await useFolderSyncStore.getState().refresh("mutation");
+
+    const { folders } = useFolderSyncStore.getState();
+    expect(folders.find((f) => f.id === SYSTEM_ALL_FOLDER_ID)?.badge).toBe(5);
+    expect(folders.find((f) => f.id === "system:personal")?.badge).toBe(2);
+    expect(folders.find((f) => f.id === "system:channels")?.badge).toBe(3);
   });
 });
