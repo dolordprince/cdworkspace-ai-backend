@@ -9,6 +9,10 @@ import {
   MESSAGE_BUBBLE_BODY_CLASS_NAME,
   MESSAGE_MEDIA_PREVIEW_CLASS_NAME,
 } from "~/shared/lib/message-body-rich-text-classes";
+import {
+  resetZulipEmojiCatalogForTests,
+  setZulipEmojiCatalogForTests,
+} from "~/shared/lib/zulip-emoji-catalog.lib";
 import { createUser } from "~/test/factories";
 import { MessageBubble } from "./message-bubble.ui";
 import { buildMessageMediaGallery } from "./message-list-media.lib";
@@ -107,6 +111,7 @@ describe("MessageBubble edit/delete actions parity", () => {
     useCallParticipantsStore.setState({ participantsByUrl: {} });
     buildAuthHeaderMock.mockReset();
     emojiPickerMock.mockReset();
+    resetZulipEmojiCatalogForTests();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -352,6 +357,12 @@ describe("MessageBubble edit/delete actions parity", () => {
 
   it("keeps the extended reaction picker interactive", async () => {
     const onAddReaction = vi.fn();
+    setZulipEmojiCatalogForTests({
+      code_to_names: {
+        "1f600": ["grinning"],
+      },
+    });
+
     render(
       <MessageBubble
         message={createMessage()}
@@ -500,6 +511,154 @@ describe("MessageBubble edit/delete actions parity", () => {
 
     const ownBubbleSurface = messageBody?.parentElement;
     expect(ownBubbleSurface).toHaveClass("bg-msg-own-bg");
+  });
+
+  it("uses inline meta reserve for simple text messages", () => {
+    const { container } = render(<MessageBubble message={createMessage()} isOwn />);
+
+    const messageBody = container.querySelector(".message-body");
+    const deliveryMeta = screen.getByTestId("message-delivery-101").parentElement;
+
+    expect(messageBody).toHaveClass("message-bubble-body-inline-meta");
+    expect(deliveryMeta).toHaveClass("absolute");
+    expect(deliveryMeta).toHaveClass("bottom-2");
+    expect(deliveryMeta).toHaveClass("right-3");
+  });
+
+  it("uses inline meta reserve for plain text messages with punctuation", () => {
+    const markdown =
+      "так сервер раздеплоили. сейчас досматриваю и вам отдам. пошло как\nвсегда не по плану )";
+    const { container } = render(
+      <MessageBubble
+        message={createMessage({
+          content: markdown,
+          markdown_source: markdown,
+        })}
+        isOwn
+      />,
+    );
+
+    const messageBody = container.querySelector(".message-body");
+    const deliveryMeta = screen.getByTestId("message-delivery-101").parentElement;
+
+    expect(messageBody).toHaveClass("message-bubble-body-inline-meta");
+    expect(deliveryMeta).toHaveClass("absolute");
+  });
+
+  it("uses inline meta reserve for text messages with user mentions", () => {
+    const { container } = render(
+      <MessageBubble
+        message={createMessage({
+          content: '<p><span class="user-mention" data-user-id="42">@Sleep</span> hello</p>',
+        })}
+        isOwn
+      />,
+    );
+
+    const messageBody = container.querySelector(".message-body");
+    const deliveryMeta = screen.getByTestId("message-delivery-101").parentElement;
+
+    expect(messageBody).toHaveClass("message-bubble-body-inline-meta");
+    expect(deliveryMeta).toHaveClass("absolute");
+  });
+
+  it("uses inline meta reserve for text messages with rendered links", () => {
+    const { container } = render(
+      <MessageBubble
+        message={createMessage({
+          content: '<p>Read <a href="/help/docs">docs</a></p>',
+        })}
+        isOwn
+      />,
+    );
+
+    const messageBody = container.querySelector(".message-body");
+    const deliveryMeta = screen.getByTestId("message-delivery-101").parentElement;
+
+    expect(messageBody).toHaveClass("message-bubble-body-inline-meta");
+    expect(messageBody?.querySelector("a")?.textContent).toBe("docs");
+    expect(deliveryMeta).toHaveClass("absolute");
+  });
+
+  it("uses inline meta reserve for raw html-like markdown text", () => {
+    const markdown =
+      "hi <img src=x onerror=\"window.__xss_test__={fired:true,ts:Date.now(),source:'message-render'}\">";
+    const { container } = render(
+      <MessageBubble
+        message={createMessage({
+          content: markdown,
+          markdown_source: markdown,
+        })}
+        isOwn
+      />,
+    );
+
+    const messageBody = container.querySelector(".message-body");
+    const deliveryMeta = screen.getByTestId("message-delivery-101").parentElement;
+
+    expect(messageBody).toHaveClass("message-bubble-body-inline-meta");
+    expect(messageBody?.querySelector("img")).toBeNull();
+    expect(messageBody?.textContent).toContain("<img src=x onerror=");
+    expect(deliveryMeta).toHaveClass("absolute");
+  });
+
+  it("uses inline meta reserve for reply quotes with simple reply text", () => {
+    const markdown =
+      "@_**Alice|77** [wrote](https://zulip.example.com/#narrow/dm/near/1):\n```quote\nQuoted text\n```\n\nMy reply";
+    const { container } = render(
+      <MessageBubble
+        message={createMessage({
+          content: markdown,
+          markdown_source: markdown,
+        })}
+        isOwn
+      />,
+    );
+
+    const messageBody = container.querySelector(".message-body");
+    const deliveryMeta = screen.getByTestId("message-delivery-101").parentElement;
+
+    expect(messageBody).toHaveClass("message-bubble-body-inline-meta");
+    expect(messageBody?.querySelector(".zulip-quote-block + p")?.textContent).toContain("My reply");
+    expect(deliveryMeta).toHaveClass("absolute");
+  });
+
+  it("keeps short peer text bubbles shrink-wrapped", () => {
+    const { container } = render(
+      <MessageBubble message={createMessage({ content: "<p>66666</p>" })} isOwn={false} />,
+    );
+
+    const messageBody = container.querySelector(".message-body");
+    const bubbleWidthContainer = messageBody?.parentElement?.parentElement;
+
+    expect(messageBody).toHaveClass("message-bubble-body-inline-meta");
+    expect(bubbleWidthContainer).toHaveClass("w-fit");
+    expect(bubbleWidthContainer).toHaveClass("max-w-[85%]");
+  });
+
+  it("keeps row meta when simple text has reactions", () => {
+    const { container } = render(
+      <MessageBubble
+        message={createMessage({
+          reactions: [
+            {
+              emoji_name: "thumbs_up",
+              emoji_code: "1f44d",
+              reaction_type: "unicode_emoji",
+              user_id: 88,
+            },
+          ],
+        })}
+        isOwn
+      />,
+    );
+
+    const messageBody = container.querySelector(".message-body");
+    const deliveryMeta = screen.getByTestId("message-delivery-101").parentElement;
+
+    expect(messageBody).not.toHaveClass("message-bubble-body-inline-meta");
+    expect(deliveryMeta).not.toHaveClass("absolute");
+    expect(deliveryMeta).toHaveClass("flex-shrink-0");
   });
 
   it("shows single sent indicator for delivered own messages", () => {
