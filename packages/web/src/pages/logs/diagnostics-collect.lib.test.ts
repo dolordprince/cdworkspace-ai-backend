@@ -4,7 +4,6 @@ import type { LogEntry } from "~/shared/lib/logger";
 import {
   collectDiagnosticsPageSnapshot,
   resolveDiagnosticsOverallStatus,
-  truncateQueueId,
 } from "./diagnostics-collect.lib";
 
 const readyConnection: ConnectionHealthSnapshot = {
@@ -15,9 +14,6 @@ const readyConnection: ConnectionHealthSnapshot = {
   failureReason: null,
   isReconnecting: false,
 };
-
-/** Sample FCM token for redaction tests — not a real credential. */
-const SAMPLE_PUSH_TOKEN = "abcdefghijklmnop";
 
 function createEntry(partial: Partial<LogEntry> & Pick<LogEntry, "level" | "message">): LogEntry {
   return {
@@ -51,7 +47,7 @@ describe("resolveDiagnosticsOverallStatus", () => {
 });
 
 describe("collectDiagnosticsPageSnapshot", () => {
-  it("does not include raw push token in snapshot", () => {
+  it("collects runtime notification permission without push state", () => {
     const snapshot = collectDiagnosticsPageSnapshot({
       pathname: "/settings/logs",
       entries: [],
@@ -59,28 +55,25 @@ describe("collectDiagnosticsPageSnapshot", () => {
       connection: readyConnection,
       rateLimitBlockedUntil: null,
       memorySnapshot: null,
-      pushState: {
-        permission: "granted",
-        token: SAMPLE_PUSH_TOKEN,
-        registered: true,
-        provider: "fcm",
-        registrationError: null,
-      },
       vitals: [],
       cache: null,
       realtimeStats: { eventsReceivedCount: 0, lastEventAt: null, lastEventType: null },
       sessionRemainingMs: null,
       authIdleTimeoutMs: null,
-      currentUserId: 1,
+      currentUserUuid: "user-uuid-1",
       streamsCount: 2,
-      dmsCount: 1,
+      conversationsCount: 1,
+      foldersCount: 1,
       usersCount: 10,
       currentChatMessagesCount: 5,
-      currentInstanceId: "inst-1",
-      currentRealm: "https://zulip.example.com",
-      currentEmail: "user@example.com",
-      instancesCount: 1,
-      unreadCountsByInstance: { "inst-1": 3 },
+      workspaceSessionsCount: 1,
+      workspaceAccountId: "account-1",
+      workspaceInstanceId: "instance-1",
+      workspaceOrganizationOrigin: "https://workspace.example.com",
+      workspaceProjectId: "project-1",
+      workspaceUserUuid: "user-uuid-1",
+      workspaceLogin: "user@example.com",
+      workspaceOwnerKey: "owner-key-1",
       settingsLanguage: "en",
       themeMode: "dark",
       themePalette: "orange-warm",
@@ -90,8 +83,9 @@ describe("collectDiagnosticsPageSnapshot", () => {
       folderRailLayout: "expanded",
     });
 
-    expect(snapshot.push.tokenPrefix).toBe("abcdefgh…");
-    expect(JSON.stringify(snapshot)).not.toContain(SAMPLE_PUSH_TOKEN);
+    expect(snapshot).not.toHaveProperty("push");
+    expect(snapshot.realtime).not.toHaveProperty("eventQueueId");
+    expect(snapshot.notifications.permission).toBe("unsupported");
   });
 
   it("collects recent errors from log entries", () => {
@@ -105,28 +99,25 @@ describe("collectDiagnosticsPageSnapshot", () => {
       connection: readyConnection,
       rateLimitBlockedUntil: null,
       memorySnapshot: null,
-      pushState: {
-        permission: "default",
-        token: null,
-        registered: false,
-        provider: null,
-        registrationError: null,
-      },
       vitals: [],
       cache: null,
       realtimeStats: { eventsReceivedCount: 2, lastEventAt: Date.now(), lastEventType: "message" },
       sessionRemainingMs: 120_000,
       authIdleTimeoutMs: 86_400_000,
-      currentUserId: null,
+      currentUserUuid: null,
       streamsCount: 0,
-      dmsCount: 0,
+      conversationsCount: 0,
+      foldersCount: 0,
       usersCount: 0,
       currentChatMessagesCount: 0,
-      currentInstanceId: null,
-      currentRealm: null,
-      currentEmail: null,
-      instancesCount: 0,
-      unreadCountsByInstance: {},
+      workspaceSessionsCount: 0,
+      workspaceAccountId: null,
+      workspaceInstanceId: null,
+      workspaceOrganizationOrigin: null,
+      workspaceProjectId: null,
+      workspaceUserUuid: null,
+      workspaceLogin: null,
+      workspaceOwnerKey: null,
       settingsLanguage: "en",
       themeMode: "dark",
       themePalette: "orange-warm",
@@ -139,11 +130,5 @@ describe("collectDiagnosticsPageSnapshot", () => {
     expect(snapshot.logs.recentErrors).toHaveLength(1);
     expect(snapshot.logs.recentErrors[0]?.message).toBe("boom");
     expect(snapshot.overallStatus).toBe("degraded");
-  });
-});
-
-describe("truncateQueueId", () => {
-  it("truncates long queue ids", () => {
-    expect(truncateQueueId("abcdefghijklmnop", 8)).toBe("abcdefgh…");
   });
 });

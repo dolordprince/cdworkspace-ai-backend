@@ -33,7 +33,7 @@ export interface NotificationOptions {
 export interface NotificationService {
   getPermission(): NotificationPermissionStatus;
   requestPermission(): Promise<NotificationPermissionStatus>;
-  show(options: NotificationOptions): Promise<void>;
+  show(options: NotificationOptions): Promise<boolean>;
   closeByTag(tag: string): Promise<void>;
   setBadgeCount(count: number): Promise<void>;
   clearBadge(): Promise<void>;
@@ -41,6 +41,15 @@ export interface NotificationService {
 }
 
 function createElectronNotificationService(): NotificationService {
+  const clickHandlersByTag = new Map<string, () => void>();
+  const api = getElectronAPI();
+  api?.notifications.onClick?.((tag) => {
+    const handler = clickHandlersByTag.get(tag);
+    if (handler == null) return;
+    clickHandlersByTag.delete(tag);
+    handler();
+  });
+
   function readLocalPermission(): NotificationPermissionStatus {
     try {
       return localStorage.getItem(ELECTRON_NOTIFICATION_PERMISSION_KEY) === "1"
@@ -78,15 +87,18 @@ function createElectronNotificationService(): NotificationService {
       return "granted";
     },
 
-    async show({ title, body, tag, silent, clickRoute }) {
-      const api = getElectronAPI();
+    async show({ title, body, tag, silent, clickRoute, onClick }) {
       if (api) {
-        await api.notifications.show(title, body, { tag, silent, clickRoute });
+        if (tag != null && onClick != null) {
+          clickHandlersByTag.set(tag, onClick);
+        }
+        return api.notifications.show(title, body, { tag, silent, clickRoute });
       }
+      return false;
     },
 
     async closeByTag(tag: string) {
-      const api = getElectronAPI();
+      clickHandlersByTag.delete(tag);
       if (api?.notifications.closeByTag) {
         await api.notifications.closeByTag(tag);
       }
@@ -117,9 +129,10 @@ function createWebNotificationService(): NotificationService {
       return result;
     },
 
-    // eslint-disable-next-line @typescript-eslint/require-await
-    async show({ title, body, icon, tag, silent, onClick }) {
-      if (!("Notification" in window) || Notification.permission !== "granted") return;
+    show({ title, body, icon, tag, silent, onClick }) {
+      if (!("Notification" in window) || Notification.permission !== "granted") {
+        return Promise.resolve(false);
+      }
 
       if (tag != null && tag.length > 0) {
         activeNotificationsByTag.get(tag)?.close();
@@ -148,6 +161,8 @@ function createWebNotificationService(): NotificationService {
           notification.close();
         };
       }
+
+      return Promise.resolve(true);
     },
 
     closeByTag(tag: string) {

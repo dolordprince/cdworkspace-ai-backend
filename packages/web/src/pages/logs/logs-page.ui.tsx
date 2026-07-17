@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { useInstancesStore } from "~/entities/instance/instance.model";
-import { useCurrentChatMessagesStore } from "~/entities/message/message.model";
+import { useMessengerStore } from "~/entities/messenger/messenger.model";
+import { useWorkspaceMessageStore } from "~/entities/message/message.model";
 import { useThemeStore } from "~/entities/theme/theme.model";
 import { useUsersStore } from "~/entities/user/user.model";
+import { useWorkspaceAuthStore } from "~/entities/workspace-auth/workspace-auth.model";
+import { getWorkspaceSessionStorageScopeFromAuthState } from "~/entities/workspace-auth/workspace-session-storage-scope.lib";
 import { authIdleTimeoutToMs } from "~/features/settings/auth-idle-timeout.lib";
 import { useSettingsStore } from "~/features/settings/settings.model";
 import { t } from "~/i18n/i18n";
@@ -27,7 +28,6 @@ import {
   type LogEntry,
 } from "~/shared/lib/logger";
 import { probeApiTransportWithLatency } from "~/shared/lib/network-transport-probe.lib";
-import { pushService } from "~/shared/lib/push/push.service";
 import { getZulipRateLimitBlockedUntil } from "~/shared/lib/zulip-rate-limit-gate";
 import {
   buildConnectionReportSnapshot,
@@ -58,15 +58,23 @@ export const LogsPage: React.FC = () => {
   const [dashboardTick, setDashboardTick] = useState(0);
   const [logsModalOpen, setLogsModalOpen] = useState(false);
 
-  const currentUserId = useChatListStore((s) => s.currentUserId);
-  const streamsCount = useChatListStore((s) => s.streams().length);
-  const dmsCount = useChatListStore((s) => s.dms().length);
-  const usersCount = useUsersStore((s) => s.users.size);
-  const currentChatMessagesCount = useCurrentChatMessagesStore((s) => s.messages.length);
-  const currentInstance = useInstancesStore((s) => s.getCurrentInstance());
-  const currentInstanceId = useInstancesStore((s) => s.currentInstanceId);
-  const instancesCount = useInstancesStore((s) => s.instances.length);
-  const unreadCountsByInstance = useInstancesStore((s) => s.unreadCountsByInstance);
+  const currentWorkspaceSession = useWorkspaceAuthStore((s) => {
+    const accountId = s.currentAccountId;
+    return accountId != null
+      ? (s.sessions.find((session) => session.accountId === accountId) ?? null)
+      : null;
+  });
+  const workspaceSessionsCount = useWorkspaceAuthStore((s) => s.sessions.length);
+  const workspaceOwnerKey = useWorkspaceAuthStore(
+    (s) => getWorkspaceSessionStorageScopeFromAuthState(s).ownerKey,
+  );
+  const streamsCount = useMessengerStore((s) => s.streamIds.length);
+  const conversationsCount = useMessengerStore((s) => s.conversationIds.length);
+  const foldersCount = useMessengerStore((s) => s.folderIds.length);
+  const usersCount = useUsersStore((s) => s.userIds.length);
+  const currentChatMessagesCount = useWorkspaceMessageStore(
+    (s) => Object.keys(s.messagesById).length,
+  );
   const themeMode = useThemeStore((s) => s.mode);
   const themePalette = useThemeStore((s) => s.paletteId);
   const settingsLanguage = useSettingsStore((s) => s.language);
@@ -97,13 +105,13 @@ export const LogsPage: React.FC = () => {
 
   useEffect(() => {
     let cancelled = false;
-    void estimateDiagnosticsIdbFootprint(currentInstanceId).then((snapshot) => {
+    void estimateDiagnosticsIdbFootprint(workspaceOwnerKey).then((snapshot) => {
       if (!cancelled) setCacheSnapshot(snapshot);
     });
     return () => {
       cancelled = true;
     };
-  }, [currentInstanceId, dashboardTick]);
+  }, [workspaceOwnerKey, dashboardTick]);
 
   const clearLogs = useCallback(() => {
     clearLogHistory();
@@ -132,22 +140,25 @@ export const LogsPage: React.FC = () => {
         connection: connectionHealth,
         rateLimitBlockedUntil: getZulipRateLimitBlockedUntil(),
         memorySnapshot,
-        pushState: pushService.getState(),
         vitals: getDiagnosticVitalsSnapshot(),
         cache: cacheSnapshot,
         realtimeStats: getDiagnosticRealtimeStats(),
         sessionRemainingMs: getSessionRemainingMs(),
         authIdleTimeoutMs: authIdleTimeoutToMs(authIdleTimeout),
-        currentUserId,
+        currentUserUuid: currentWorkspaceSession?.userUuid ?? null,
         streamsCount,
-        dmsCount,
+        conversationsCount,
+        foldersCount,
         usersCount,
         currentChatMessagesCount,
-        currentInstanceId,
-        currentRealm: currentInstance?.realm ?? null,
-        currentEmail: currentInstance?.email ?? null,
-        instancesCount,
-        unreadCountsByInstance,
+        workspaceSessionsCount,
+        workspaceAccountId: currentWorkspaceSession?.accountId ?? null,
+        workspaceInstanceId: currentWorkspaceSession?.instanceId ?? null,
+        workspaceOrganizationOrigin: currentWorkspaceSession?.organizationOrigin ?? null,
+        workspaceProjectId: currentWorkspaceSession?.projectId ?? null,
+        workspaceUserUuid: currentWorkspaceSession?.userUuid ?? null,
+        workspaceLogin: currentWorkspaceSession?.login ?? null,
+        workspaceOwnerKey,
         settingsLanguage,
         themeMode,
         themePalette,
@@ -160,16 +171,18 @@ export const LogsPage: React.FC = () => {
       authIdleTimeout,
       cacheSnapshot,
       connectionHealth,
+      conversationsCount,
       currentChatMessagesCount,
-      currentInstance?.email,
-      currentInstance?.realm,
-      currentInstanceId,
-      currentUserId,
-      dmsCount,
+      currentWorkspaceSession?.accountId,
+      currentWorkspaceSession?.instanceId,
+      currentWorkspaceSession?.login,
+      currentWorkspaceSession?.organizationOrigin,
+      currentWorkspaceSession?.projectId,
+      currentWorkspaceSession?.userUuid,
       entries,
       filteredCount,
       folderRailLayout,
-      instancesCount,
+      foldersCount,
       location.pathname,
       memorySnapshot,
       notificationSound,
@@ -179,8 +192,9 @@ export const LogsPage: React.FC = () => {
       streamsCount,
       themeMode,
       themePalette,
-      unreadCountsByInstance,
       usersCount,
+      workspaceOwnerKey,
+      workspaceSessionsCount,
     ],
   );
 

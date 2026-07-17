@@ -1,11 +1,11 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useCallback, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useMessengerStore } from "~/entities/messenger/messenger.model";
+import type { MessengerStream, MessengerTopic } from "~/entities/messenger/messenger.types";
 import { useUsersStore } from "~/entities/user/user.model";
+import type { User } from "~/entities/user/user.types";
 import { useMentionSuggestStore } from "~/features/mention-suggest/mention-suggest.model";
-import type * as ZulipMessagesApi from "~/shared/api/zulip-messages";
-import { resetRealmEmojisCacheForTests } from "~/shared/lib/realm-emojis-cache";
-import { createUser } from "~/test/factories";
 import { renderWithProviders } from "~/test/render";
 import { computeFloatingPickerPosition } from "./message-composer-picker-position.lib";
 import { resetComposerSavedSnippetsModelForTests } from "./message-composer-saved-snippets.model";
@@ -14,11 +14,7 @@ import { MessageComposer } from "./message-composer.ui";
 
 const isWebViewMock = vi.fn(() => false);
 const useViewportKeyboardMock = vi.fn(() => ({ isOpen: false, keyboardHeight: 0 }));
-const renderMessageContentMock = vi.hoisted(() => vi.fn());
-const fetchSavedSnippetsMock = vi.hoisted(() => vi.fn());
-const createSavedSnippetMock = vi.hoisted(() => vi.fn());
 const emojiPickerMock = vi.hoisted(() => vi.fn());
-const fetchRealmEmojisMock = vi.hoisted(() => vi.fn());
 
 vi.mock("~/shared/config/constants", async (importOriginal) => {
   const actual = await importOriginal<typeof import("~/shared/config/constants")>();
@@ -38,24 +34,6 @@ vi.mock("~/shared/lib/touch", async () => {
   return {
     ...actual,
     useViewportKeyboard: () => useViewportKeyboardMock(),
-  };
-});
-
-vi.mock("~/shared/api/zulip-messages", async () => {
-  const actual = await vi.importActual<typeof ZulipMessagesApi>("~/shared/api/zulip-messages");
-  return {
-    ...actual,
-    renderMessageContent: (...args: unknown[]) => renderMessageContentMock(...args),
-    fetchSavedSnippets: (...args: unknown[]) => fetchSavedSnippetsMock(...args),
-    createSavedSnippet: (...args: unknown[]) => createSavedSnippetMock(...args),
-  };
-});
-
-vi.mock("~/shared/api/zulip-users", async () => {
-  const actual = await vi.importActual("~/shared/api/zulip-users");
-  return {
-    ...actual,
-    fetchRealmEmojis: (...args: unknown[]) => fetchRealmEmojisMock(...args),
   };
 });
 
@@ -103,25 +81,17 @@ vi.mock("~/entities/sticker/sticker.api", () => ({
 }));
 
 afterEach(() => {
+  useMessengerStore.getState().clear();
   useUsersStore.getState().clear();
   useMentionSuggestStore.getState().clear();
   isWebViewMock.mockReset();
   isWebViewMock.mockReturnValue(false);
   useViewportKeyboardMock.mockReset();
   useViewportKeyboardMock.mockReturnValue({ isOpen: false, keyboardHeight: 0 });
-  renderMessageContentMock.mockReset();
-  renderMessageContentMock.mockResolvedValue("<p>preview</p>");
-  fetchSavedSnippetsMock.mockReset();
-  fetchSavedSnippetsMock.mockResolvedValue([]);
-  createSavedSnippetMock.mockReset();
-  createSavedSnippetMock.mockResolvedValue(1);
   emojiPickerMock.mockReset();
-  fetchRealmEmojisMock.mockReset();
-  fetchRealmEmojisMock.mockResolvedValue([]);
 });
 
 beforeEach(() => {
-  resetRealmEmojisCacheForTests();
   resetComposerSavedSnippetsModelForTests();
 });
 
@@ -131,8 +101,133 @@ const focusComposerInput = () => {
   return textbox;
 };
 
+const TEST_USER_TIMESTAMP = new Date(0).toISOString();
+
+function createWorkspaceUser(overrides: Partial<User> = {}): User {
+  const uuid = overrides.uuid ?? "workspace-user-uuid";
+  const username = overrides.username ?? uuid;
+  return {
+    uuid,
+    username,
+    firstName: overrides.firstName ?? null,
+    lastName: overrides.lastName ?? null,
+    displayName: overrides.displayName ?? username,
+    email: overrides.email ?? `${username}@example.com`,
+    avatarUrl: overrides.avatarUrl ?? null,
+    status: overrides.status ?? "offline",
+    statusEmoji: overrides.statusEmoji ?? null,
+    statusText: overrides.statusText ?? null,
+    lastPingAt: overrides.lastPingAt ?? TEST_USER_TIMESTAMP,
+    createdAt: overrides.createdAt ?? TEST_USER_TIMESTAMP,
+    updatedAt: overrides.updatedAt ?? TEST_USER_TIMESTAMP,
+  };
+}
+
+const COMPOSER_STREAM_UUID = "11111111-1111-4111-8111-111111111111";
+const COMPOSER_TOPIC_UUID = "22222222-2222-4222-8222-222222222222";
+const COMPOSER_OWNER_KEY = "composer-workspace-owner";
+
+function createComposerStream(): MessengerStream {
+  return {
+    uuid: COMPOSER_STREAM_UUID,
+    projectId: "project-uuid",
+    ownerUuid: "owner-uuid",
+    userUuid: "user-uuid",
+    role: "member",
+    notificationMode: "all_messages",
+    name: "Engineering",
+    description: "",
+    unreadCount: 0,
+    sourceName: "native",
+    source: { kind: "native" },
+    audience: "channel",
+    isPrivate: false,
+    inviteOnly: false,
+    announce: false,
+    isArchived: false,
+    directUserUuid: null,
+    lastMessageUuid: null,
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+function createComposerTopic(): MessengerTopic {
+  return {
+    uuid: COMPOSER_TOPIC_UUID,
+    projectId: "project-uuid",
+    streamUuid: COMPOSER_STREAM_UUID,
+    userUuid: "user-uuid",
+    name: "Releases",
+    unreadCount: 0,
+    isDefault: false,
+    isDone: false,
+    notificationMode: "default",
+    lastMessageUuid: null,
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+function seedComposerWorkspaceStore(): void {
+  const store = useMessengerStore.getState();
+  store.startBootstrap(COMPOSER_OWNER_KEY);
+  store.upsertStream(COMPOSER_OWNER_KEY, createComposerStream());
+  store.upsertTopic(COMPOSER_OWNER_KEY, createComposerTopic());
+}
+
 describe("MessageComposer async send behavior", () => {
-  it("clears the composer as soon as send starts, before onSend resolves", async () => {
+  it("sends the parent-provided outgoing body instead of the active draft", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const outgoingBody = "Full Workspace reply A\n\nFull Workspace reply B";
+
+    renderWithProviders(
+      <MessageComposer
+        onSend={onSend}
+        initialValue="Active tab reply"
+        outgoingBodyOverride={outgoingBody}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /write a message/i }));
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith(outgoingBody, "", undefined);
+    });
+  });
+
+  it("allows an empty active draft only when the external body has content", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+
+    renderWithProviders(
+      <MessageComposer
+        onSend={onSend}
+        outgoingBodyOverride="Reply from another tab"
+        allowEmptyActiveValueSend
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /write a message/i }));
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith("Reply from another tab", "", undefined);
+    });
+  });
+
+  it("does not send when the external body is empty even if empty active sends are allowed", () => {
+    const onSend = vi.fn();
+
+    renderWithProviders(
+      <MessageComposer onSend={onSend} outgoingBodyOverride="" allowEmptyActiveValueSend />,
+    );
+
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: /write a message/i }));
+
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("keeps the composer draft until onSend resolves successfully", async () => {
     let resolveSend: () => void = () => {
       throw new Error("Expected send resolver to be assigned");
     };
@@ -149,14 +244,83 @@ describe("MessageComposer async send behavior", () => {
     fireEvent.click(screen.getByRole("button", { name: /write a message/i }));
 
     expect(onSend).toHaveBeenCalledWith("Hello world", "", undefined);
+    expect(textbox).toHaveValue("Hello world");
+
+    resolveSend();
     await waitFor(() => {
       expect(textbox).toHaveValue("");
     });
-
-    resolveSend();
   });
 
-  it("keeps textarea editable while previous async send is still pending", async () => {
+  it("clears optimistically and accepts the next message while the first send is pending", async () => {
+    let resolveFirstSend: () => void = () => {
+      throw new Error("Expected send resolver to be assigned");
+    };
+    const onSend = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirstSend = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    renderWithProviders(<MessageComposer onSend={onSend} optimisticClearOnSend />);
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "First message" } });
+    fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenNthCalledWith(1, "First message", "", undefined);
+      expect(textbox).toHaveValue("");
+      expect(textbox).not.toBeDisabled();
+    });
+
+    fireEvent.change(textbox, { target: { value: "Second message" } });
+    fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenNthCalledWith(2, "Second message", "", undefined);
+      expect(textbox).toHaveValue("");
+    });
+
+    resolveFirstSend();
+  });
+
+  it("keeps the visible draft when a successful send reports a newer draft", async () => {
+    const onClearReply = vi.fn();
+    const onSend = vi.fn().mockResolvedValue({ shouldClearComposer: false });
+
+    renderWithProviders(
+      <MessageComposer
+        onSend={onSend}
+        draftSessionKey="workspace-chat-a"
+        initialValue="newer draft"
+        replyQuote={{
+          id: "reply-a",
+          content: "quoted message",
+          sender_full_name: "Bob Reed",
+          sender_uuid: "user-b",
+          permalinkUrl: "/messages/reply-a",
+          quoteFormat: "workspace",
+        }}
+        onClearReply={onClearReply}
+      />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.click(screen.getByRole("button", { name: /write a message/i }));
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith(expect.stringContaining("newer draft"), "", undefined);
+    });
+    expect(textbox).toHaveValue("newer draft");
+    expect(onClearReply).not.toHaveBeenCalled();
+  });
+
+  it("prevents duplicate sends while previous async send is still pending", async () => {
     let resolveFirstSend: () => void = () => {
       throw new Error("Expected first send resolver to be assigned");
     };
@@ -178,24 +342,23 @@ describe("MessageComposer async send behavior", () => {
 
     await waitFor(() => {
       expect(onSend).toHaveBeenNthCalledWith(1, "First message", "", undefined);
-      expect(textbox).toHaveValue("");
-      expect(textbox).toHaveFocus();
+      expect(textbox).toHaveValue("First message");
+      expect(textbox).toBeDisabled();
     });
 
-    fireEvent.change(textbox, { target: { value: "Second message" } });
     fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
 
-    await waitFor(() => {
-      expect(onSend).toHaveBeenNthCalledWith(2, "Second message", "", undefined);
-    });
+    expect(onSend).toHaveBeenCalledTimes(1);
 
     resolveFirstSend();
     await waitFor(() => {
-      expect(onSend).toHaveBeenCalledTimes(2);
+      expect(textbox).toHaveValue("");
+      expect(textbox).not.toBeDisabled();
+      expect(textbox).toHaveFocus();
     });
   });
 
-  it("leaves the composer empty when async onSend rejects", async () => {
+  it("keeps the composer draft when async onSend rejects", async () => {
     const onSend = vi.fn().mockRejectedValue(new Error("send failed"));
 
     renderWithProviders(<MessageComposer onSend={onSend} />);
@@ -208,7 +371,50 @@ describe("MessageComposer async send behavior", () => {
       expect(onSend).toHaveBeenCalledWith("Draft text", "", undefined);
     });
 
-    expect(textbox).toHaveValue("");
+    expect(textbox).toHaveValue("Draft text");
+  });
+
+  it.each([
+    { value: "@ali", query: "ali", seed: "mention" },
+    { value: "#eng", query: "eng", seed: "reference" },
+  ])("closes stale $seed suggestions after a successful send", async ({ value, query, seed }) => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    if (seed === "mention") {
+      useUsersStore.getState().upsertUsers([
+        createWorkspaceUser({
+          uuid: "user-alice-johnson",
+          displayName: "Alice Johnson",
+          username: "alice",
+        }),
+      ]);
+    } else {
+      seedComposerWorkspaceStore();
+    }
+
+    renderWithProviders(
+      <MessageComposer onSend={onSend} capabilities={{ mentions: { mode: "enabled" } }} />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value, selectionStart: value.length } });
+    await waitFor(() => {
+      expect(screen.getByRole("listbox")).toBeInTheDocument();
+    });
+
+    if (seed === "mention") {
+      expect(useMentionSuggestStore.getState().query).toBe(query);
+    }
+    fireEvent.click(screen.getByRole("button", { name: /write a message/i }));
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalled();
+      expect(textbox).toHaveValue("");
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    });
+    expect(textbox).not.toHaveAttribute("aria-controls");
+    expect(textbox).not.toHaveAttribute("aria-activedescendant");
+    expect(useMentionSuggestStore.getState().visible).toBe(false);
+    expect(useMentionSuggestStore.getState().query).toBe("");
   });
 
   it("restores textarea focus when parent re-enables composer after async send", async () => {
@@ -277,35 +483,38 @@ describe("MessageComposer scheduled send", () => {
 });
 
 describe("MessageComposer saved snippets", () => {
-  it("loads saved snippets and inserts selected content into composer", async () => {
-    fetchSavedSnippetsMock.mockResolvedValue([
-      {
-        id: 101,
-        title: "Incident template",
-        content: "Status update:\n- Impact\n- Mitigation",
-        date_created: 1710000000,
-      },
-    ]);
+  it("hides saved snippets when the action is unsupported", () => {
+    renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        capabilities={{
+          savedSnippets: {
+            mode: "unsupported",
+            unsupportedText: "Saved snippets are not connected.",
+          },
+        }}
+      />,
+    );
 
+    focusComposerInput();
+
+    expect(screen.queryByRole("button", { name: /saved snippets/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /filter snippets/i })).not.toBeInTheDocument();
+  });
+
+  it("opens an empty saved snippets stub without fetching legacy snippets", async () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     const textbox = screen.getByRole("textbox");
     fireEvent.focus(textbox);
     fireEvent.click(screen.getByRole("button", { name: /saved snippets/i }));
 
-    await screen.findByRole("button", { name: "Incident template" });
-    fireEvent.click(screen.getByRole("button", { name: "Incident template" }));
-
-    expect(textbox).toHaveValue("Status update:\n- Impact\n- Mitigation");
-    expect(fetchSavedSnippetsMock).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole("textbox", { name: /filter snippets/i })).toBeInTheDocument();
+    expect(screen.getByText("No matching results")).toBeInTheDocument();
+    expect(textbox).toHaveValue("");
   });
 
-  it("filters snippets and shows no matching state", async () => {
-    fetchSavedSnippetsMock.mockResolvedValue([
-      { id: 101, title: "Incident template", content: "Status update", date_created: 1710000000 },
-      { id: 102, title: "Release notes", content: "## Changes", date_created: 1710000001 },
-    ]);
-
+  it("keeps the empty stub when filtering snippets", async () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     fireEvent.focus(screen.getByRole("textbox"));
@@ -318,36 +527,21 @@ describe("MessageComposer saved snippets", () => {
     expect(screen.getByRole("button", { name: /create new saved snippet/i })).toBeInTheDocument();
   });
 
-  it("reuses snippets cache when menu is reopened within ttl window", async () => {
-    fetchSavedSnippetsMock.mockResolvedValue([
-      { id: 101, title: "Incident template", content: "Status update", date_created: 1710000000 },
-    ]);
-
+  it("reopens the empty saved snippets stub without fetching", async () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     fireEvent.focus(screen.getByRole("textbox"));
     const trigger = screen.getByRole("button", { name: /saved snippets/i });
 
     fireEvent.click(trigger);
-    await screen.findByRole("button", { name: "Incident template" });
+    await screen.findByRole("textbox", { name: /filter snippets/i });
     fireEvent.click(trigger);
 
     fireEvent.click(trigger);
-    await screen.findByRole("button", { name: "Incident template" });
-
-    expect(fetchSavedSnippetsMock).toHaveBeenCalledTimes(1);
+    await screen.findByRole("textbox", { name: /filter snippets/i });
   });
 
-  it("creates a saved snippet from the current draft", async () => {
-    fetchSavedSnippetsMock.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        id: 333,
-        title: "Bug report",
-        content: "Current draft body",
-        date_created: 1710000002,
-      },
-    ]);
-
+  it("shows unsupported when creating a saved snippet from the current draft", async () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     const textbox = screen.getByRole("textbox");
@@ -365,26 +559,74 @@ describe("MessageComposer saved snippets", () => {
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() => {
-      expect(createSavedSnippetMock).toHaveBeenCalledWith({
-        title: "Bug report",
-        content: "Current draft body",
-      });
+      expect(screen.getByText("Saved snippets are not connected yet.")).toBeInTheDocument();
     });
-
-    await waitFor(() => {
-      expect(fetchSavedSnippetsMock).toHaveBeenCalledTimes(2);
-    });
-    expect(await screen.findByRole("button", { name: "Bug report" })).toBeInTheDocument();
   });
 });
 
 describe("MessageComposer mention suggestions", () => {
+  it("does not open hash suggestions in the legacy composer", () => {
+    renderWithProviders(<MessageComposer onSend={vi.fn()} />);
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "#eng", selectionStart: 4 } });
+
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("selects a Workspace hash reference and clears suggestion state", async () => {
+    seedComposerWorkspaceStore();
+    renderWithProviders(
+      <MessageComposer onSend={vi.fn()} capabilities={{ mentions: { mode: "enabled" } }} />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "#rel", selectionStart: 4 } });
+
+    const option = await screen.findByRole("option", { name: /Engineering.*Releases/ });
+    expect(option).toHaveAttribute("aria-selected", "true");
+    expect(textbox).toHaveAttribute("aria-controls");
+
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    expect(textbox).toHaveValue(`[#Engineering › Releases](urn:topic:${COMPOSER_TOPIC_UUID}) `);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(textbox).not.toHaveAttribute("aria-controls");
+    expect(textbox).not.toHaveAttribute("aria-activedescendant");
+  });
+
+  it.each(["ArrowLeft", "ArrowRight", "Home", "End"])(
+    "rechecks hash suggestions after %s",
+    async (key) => {
+      seedComposerWorkspaceStore();
+      renderWithProviders(
+        <MessageComposer onSend={vi.fn()} capabilities={{ mentions: { mode: "enabled" } }} />,
+      );
+
+      const textbox = screen.getByRole("textbox");
+      if (!(textbox instanceof HTMLTextAreaElement)) {
+        throw new Error("Expected textarea element");
+      }
+      fireEvent.change(textbox, { target: { value: "#eng", selectionStart: 4 } });
+      const options = await screen.findAllByRole("option");
+      expect(options[0]).toHaveTextContent("Engineering");
+
+      textbox.setSelectionRange(0, 0);
+      fireEvent.keyUp(textbox, { key });
+
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    },
+  );
+
   it("opens mention popup for a standalone @ after supported delimiters", async () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 1001, full_name: "Alice Johnson", email: "alice@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+    ]);
 
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
@@ -412,11 +654,14 @@ describe("MessageComposer mention suggestions", () => {
   });
 
   it("does not open mention popup when @ is inside a word or email", () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 1001, full_name: "Alice Johnson", email: "alice@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+    ]);
 
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
@@ -429,12 +674,20 @@ describe("MessageComposer mention suggestions", () => {
   });
 
   it("uses mention store state and inserts the first suggestion on Enter", async () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 1001, full_name: "Alice Johnson", email: "alice@example.com" }),
-        createUser({ user_id: 1002, full_name: "Bob Smith", email: "bob@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+      createWorkspaceUser({
+        uuid: "user-bob-smith",
+        displayName: "Bob Smith",
+        username: "bob",
+        email: "bob@example.com",
+      }),
+    ]);
 
     const onSend = vi.fn();
     renderWithProviders(<MessageComposer onSend={onSend} />);
@@ -449,18 +702,36 @@ describe("MessageComposer mention suggestions", () => {
     fireEvent.keyDown(textbox, { key: "Enter" });
 
     expect(onSend).not.toHaveBeenCalled();
-    expect(textbox).toHaveValue("@**Alice Johnson** ");
+    expect(textbox).toHaveValue("[Alice Johnson](urn:user:user-alice-johnson) ");
     expect(useMentionSuggestStore.getState().visible).toBe(false);
     expect(useMentionSuggestStore.getState().query).toBe("");
+
+    fireEvent.keyDown(textbox, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith(
+        "[Alice Johnson](urn:user:user-alice-johnson)",
+        "",
+        undefined,
+      );
+    });
   });
 
   it("supports arrow navigation before selecting a mention", async () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 2001, full_name: "Alice Johnson", email: "alice@example.com" }),
-        createUser({ user_id: 2002, full_name: "Alex Roe", email: "alex@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+      createWorkspaceUser({
+        uuid: "user-alex-roe",
+        displayName: "Alex Roe",
+        username: "alex",
+        email: "alex@example.com",
+      }),
+    ]);
 
     const onSend = vi.fn();
     renderWithProviders(<MessageComposer onSend={onSend} />);
@@ -475,15 +746,18 @@ describe("MessageComposer mention suggestions", () => {
     fireEvent.keyDown(textbox, { key: "Enter" });
 
     expect(onSend).not.toHaveBeenCalled();
-    expect(textbox).toHaveValue("@**Alex Roe** ");
+    expect(textbox).toHaveValue("[Alex Roe](urn:user:user-alex-roe) ");
   });
 
   it("shows no-results popup when mention query has no matches", async () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 3001, full_name: "Alice Johnson", email: "alice@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+    ]);
 
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
@@ -494,12 +768,20 @@ describe("MessageComposer mention suggestions", () => {
   });
 
   it("updates mention suggestions as the query changes", async () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 2001, full_name: "Alice Johnson", email: "alice@example.com" }),
-        createUser({ user_id: 2002, full_name: "Alex Roe", email: "alex@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+      createWorkspaceUser({
+        uuid: "user-alex-roe",
+        displayName: "Alex Roe",
+        username: "alex",
+        email: "alex@example.com",
+      }),
+    ]);
 
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
@@ -519,11 +801,14 @@ describe("MessageComposer mention suggestions", () => {
   });
 
   it("renders a compact, scrollable mention dropdown", async () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 3001, full_name: "Alice Johnson", email: "alice@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+    ]);
 
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
@@ -543,51 +828,80 @@ describe("MessageComposer mention suggestions", () => {
     expect(inputRow).toHaveClass("overflow-visible");
   });
 
-  it("renders presence indicators in mention suggestions", async () => {
+  it("renders Workspace presence indicators in mention suggestions", async () => {
     const now = Math.floor(Date.now() / 1000);
-    useUsersStore.getState().mergeUsers([
-      createUser({
-        user_id: 5001,
-        full_name: "Alice Johnson",
-        email: "alice@example.com",
-        presence: { status: "active", timestamp: now },
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-presence-active",
+        displayName: "Presence Active",
+        username: "presence-active",
+        email: "active@example.com",
+        status: "active",
+        lastPingAt: new Date(now * 1000).toISOString(),
       }),
-      createUser({
-        user_id: 5002,
-        full_name: "Alex Roe",
-        email: "alex@example.com",
-        presence: { status: "idle", timestamp: now },
+      createWorkspaceUser({
+        uuid: "user-presence-idle",
+        displayName: "Presence Idle",
+        username: "presence-idle",
+        email: "idle@example.com",
+        status: "idle",
+        lastPingAt: new Date(now * 1000).toISOString(),
+      }),
+      createWorkspaceUser({
+        uuid: "user-presence-dnd",
+        displayName: "Presence Dnd",
+        username: "presence-dnd",
+        email: "dnd@example.com",
+        status: "do_not_disturb",
+        lastPingAt: new Date(now * 1000).toISOString(),
+      }),
+      createWorkspaceUser({
+        uuid: "user-presence-offline",
+        displayName: "Presence Offline",
+        username: "presence-offline",
+        email: "offline@example.com",
+        status: "offline",
+        lastPingAt: new Date(now * 1000).toISOString(),
       }),
     ]);
 
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     const textbox = screen.getByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "@a", selectionStart: 2 } });
+    fireEvent.change(textbox, { target: { value: "@presence", selectionStart: 9 } });
 
-    await screen.findByText("Alice Johnson");
-    expect(screen.getByRole("status", { name: /online/i })).toBeInTheDocument();
-    expect(screen.getByRole("status", { name: /away/i })).toBeInTheDocument();
+    await screen.findByText("Presence Active");
+    expect(screen.getByText("Presence Idle")).toBeInTheDocument();
+    expect(screen.getByText("Presence Dnd")).toBeInTheDocument();
+    expect(screen.getByText("Presence Offline")).toBeInTheDocument();
+    expect(screen.getByText("@presence-active")).toBeInTheDocument();
+
+    expect(screen.getByRole("status", { name: /online/i })).toHaveAttribute(
+      "data-presence",
+      "active",
+    );
+    const awayIndicators = screen.getAllByRole("status", { name: /away/i });
+    expect(awayIndicators).toHaveLength(2);
+    awayIndicators.forEach((indicator) => {
+      expect(indicator).toHaveAttribute("data-presence", "idle");
+    });
+    expect(screen.getByRole("status", { name: /offline/i })).toHaveAttribute(
+      "data-presence",
+      "offline",
+    );
   });
 
-  it("renders emoji-only realm custom status in mention suggestions without falling back to email", async () => {
-    fetchRealmEmojisMock.mockResolvedValue([
-      {
-        id: "42",
-        names: ["scam"],
-        imgUrl: "https://chat.example.test/user_avatars/realm/42.png",
-      },
-    ]);
-    useUsersStore.getState().mergeUser({
-      ...createUser({ user_id: 5003, full_name: "Scam User", email: "scam@example.com" }),
-      status: {
-        text: "",
-        away: false,
-        emojiName: "scam",
-        emojiCode: "42",
-        reactionType: "realm_emoji",
-      },
-    });
+  it("keeps legacy custom status emoji out of mention suggestions during cutover", async () => {
+    useUsersStore.getState().upsertUser(
+      createWorkspaceUser({
+        uuid: "user-scam",
+        displayName: "Scam User",
+        username: "",
+        email: "scam@example.com",
+        statusEmoji: "scam",
+        statusText: "",
+      }),
+    );
 
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
@@ -595,18 +909,20 @@ describe("MessageComposer mention suggestions", () => {
     fireEvent.change(textbox, { target: { value: "@scam", selectionStart: 5 } });
 
     await screen.findByText("Scam User");
-    const emoji = await screen.findByRole("img", { name: ":scam:" });
-    expect(emoji).toHaveAttribute("src", "https://chat.example.test/user_avatars/realm/42.png");
-    expect(screen.queryByText("scam@example.com")).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: ":scam:" })).not.toBeInTheDocument();
+    expect(screen.getByText("scam@example.com")).toBeInTheDocument();
     expect(screen.queryByText(":scam:")).not.toBeInTheDocument();
   });
 
   it("sends message on Enter when mention popup is open with no suggestions", async () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 3001, full_name: "Alice Johnson", email: "alice@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+    ]);
 
     const onSend = vi.fn();
     renderWithProviders(<MessageComposer onSend={onSend} />);
@@ -624,12 +940,20 @@ describe("MessageComposer mention suggestions", () => {
   });
 
   it("does not wrap mention navigation at the list boundaries", async () => {
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 4001, full_name: "Alice Johnson", email: "alice@example.com" }),
-        createUser({ user_id: 4002, full_name: "Alex Roe", email: "alex@example.com" }),
-      ]);
+    useUsersStore.getState().upsertUsers([
+      createWorkspaceUser({
+        uuid: "user-alice-johnson",
+        displayName: "Alice Johnson",
+        username: "alice",
+        email: "alice@example.com",
+      }),
+      createWorkspaceUser({
+        uuid: "user-alex-roe",
+        displayName: "Alex Roe",
+        username: "alex",
+        email: "alex@example.com",
+      }),
+    ]);
 
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
@@ -643,7 +967,7 @@ describe("MessageComposer mention suggestions", () => {
     fireEvent.keyDown(textbox, { key: "ArrowDown" });
     fireEvent.keyDown(textbox, { key: "Enter" });
 
-    expect(textbox).toHaveValue("@**Alex Roe** ");
+    expect(textbox).toHaveValue("[Alex Roe](urn:user:user-alex-roe) ");
   });
 });
 
@@ -741,47 +1065,89 @@ describe("MessageComposer formatting shortcuts", () => {
 });
 
 describe("MessageComposer preview mode", () => {
-  it("renders markdown preview via Zulip render API and keeps draft intact", async () => {
-    renderMessageContentMock.mockResolvedValue("<p><strong>Hello</strong> world</p>");
+  it("renders the parent-provided full outgoing body", () => {
+    renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        outgoingBodyOverride={"Reply from the first tab\n\nReply from the second tab"}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    const preview = screen.getByRole("region", { name: "Preview" });
+    expect(within(preview).getByText("Reply from the first tab")).toBeInTheDocument();
+    expect(within(preview).getByText("Reply from the second tab")).toBeInTheDocument();
+  });
+
+  it("hides preview tab when unsupported", () => {
+    renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        capabilities={{
+          preview: {
+            mode: "unsupported",
+            unsupportedText: "Preview is not connected.",
+          },
+        }}
+      />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "**Hello** world" } });
+
+    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+  });
+
+  it("opens preview mode and keeps draft intact", () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     const textbox = screen.getByRole("textbox");
     fireEvent.change(textbox, { target: { value: "**Hello** world" } });
-    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const previewButton = screen.getByRole("button", { name: "Preview" });
+    expect(previewButton).toBeInTheDocument();
+    fireEvent.click(previewButton);
 
-    await waitFor(() => {
-      expect(renderMessageContentMock).toHaveBeenCalledWith("**Hello** world");
-      expect(screen.getByRole("region", { name: "Preview" })).toHaveTextContent("Hello world");
-    });
+    expect(screen.getByRole("region", { name: "Preview" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Write" }));
     expect(screen.getByRole("textbox")).toHaveValue("**Hello** world");
   });
 
-  it("keeps rendering preview after switching back to write mode and opening preview again", async () => {
-    renderMessageContentMock.mockResolvedValue("<p><strong>Hello</strong> world</p>");
+  it("keeps preview mode available after switching back to write mode", () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     const textbox = screen.getByRole("textbox");
     fireEvent.change(textbox, { target: { value: "**Hello** world" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-    await waitFor(() => {
-      expect(screen.getByRole("region", { name: "Preview" })).toHaveTextContent("Hello world");
-    });
+    expect(screen.getByRole("region", { name: "Preview" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Write" }));
     expect(screen.getByRole("textbox")).toHaveValue("**Hello** world");
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
-    await waitFor(() => {
-      expect(screen.getByRole("region", { name: "Preview" })).toHaveTextContent("Hello world");
-    });
-    expect(renderMessageContentMock).toHaveBeenCalledTimes(2);
-    expect(renderMessageContentMock).toHaveBeenNthCalledWith(2, "**Hello** world");
+    expect(screen.getByRole("region", { name: "Preview" })).toBeInTheDocument();
   });
 
-  it("does not call preview API for empty draft", async () => {
+  it("returns to write mode after sending from preview mode", async () => {
+    const onSend = vi.fn();
+    renderWithProviders(<MessageComposer onSend={onSend} />);
+
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "**Hello** world" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(screen.getByRole("region", { name: "Preview" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /write a message/i }));
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith("**Hello** world", "", undefined);
+      expect(screen.getByRole("textbox")).toHaveValue("");
+    });
+    expect(screen.queryByRole("region", { name: "Preview" })).not.toBeInTheDocument();
+  });
+
+  it("shows empty preview state for empty draft", async () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     const textbox = screen.getByRole("textbox");
@@ -789,43 +1155,188 @@ describe("MessageComposer preview mode", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
 
     await waitFor(() => {
-      expect(renderMessageContentMock).not.toHaveBeenCalled();
       expect(screen.getByText("Nothing to preview yet")).toBeInTheDocument();
     });
   });
 
-  it("falls back to local markdown rendering when preview API fails", async () => {
-    renderMessageContentMock.mockRejectedValue(new Error("preview unavailable"));
-    renderWithProviders(<MessageComposer onSend={vi.fn()} />);
+  it("renders Workspace preview with mentions during edit session", () => {
+    const userUuid = "11111111-1111-4111-8111-111111111111";
 
-    const textbox = screen.getByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "**Fallback works**" } });
+    renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        onSubmitEdit={vi.fn().mockResolvedValue(undefined)}
+        editSession={{
+          messageId: 7,
+          initialMarkdown: [
+            `Hello [Alice Reed](urn:user:${userUuid})`,
+            "",
+            "> quoted line",
+            "",
+            "```ts",
+            "const editPreview = true;",
+            "```",
+          ].join("\n"),
+        }}
+        resolveMention={(displayText) =>
+          displayText === "Alice Reed"
+            ? {
+                userUuid,
+                displayText: "Alice Reed",
+              }
+            : null
+        }
+      />,
+    );
+
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
 
-    await waitFor(() => {
-      const previewRegion = screen.getByRole("region", { name: "Preview" });
-      const strong = previewRegion.querySelector("strong");
-      expect(strong).not.toBeNull();
-      expect(strong).toHaveTextContent("Fallback works");
-    });
+    const preview = screen.getByRole("region", { name: "Preview" });
+    expect(within(preview).getByText("@Alice Reed")).toBeInTheDocument();
+    expect(preview.querySelector("blockquote.workspace-message-quote")).not.toBeNull();
+    expect(preview.querySelector('code[class*="language-ts"]')).not.toBeNull();
   });
 
-  it("adds syntax-highlight classes to code blocks in preview", async () => {
-    renderMessageContentMock.mockResolvedValue(
-      '<pre><code class="language-javascript">const value = 1;</code></pre>',
+  it("loads Workspace image URN previews during edit preview", async () => {
+    const fileUuid = "22222222-2222-4222-8222-222222222222";
+    const createObjectURLMock = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:composer-edit-workspace-preview");
+    const revokeObjectURLMock = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const onLoadWorkspaceFilePreview = vi.fn().mockResolvedValue(
+      new Blob(["image-bytes"], {
+        type: "image/png",
+      }),
     );
-    renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
-    const textbox = screen.getByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "```javascript\\nconst value = 1;\\n```" } });
+    try {
+      const { unmount } = renderWithProviders(
+        <MessageComposer
+          onSend={vi.fn()}
+          onSubmitEdit={vi.fn().mockResolvedValue(undefined)}
+          editSession={{
+            messageId: 7,
+            initialMarkdown: `![screen.png](urn:image:${fileUuid}?name=screen.png&content_type=image%2Fpng)`,
+          }}
+          onLoadWorkspaceFilePreview={onLoadWorkspaceFilePreview}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+      expect(onLoadWorkspaceFilePreview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "media",
+          fileUuid,
+          name: "screen.png",
+          contentType: "image/png",
+          mediaKind: "image",
+        }),
+        expect.any(AbortSignal),
+      );
+      await waitFor(() => {
+        expect(createObjectURLMock).toHaveBeenCalledTimes(1);
+      });
+
+      const preview = screen.getByRole("region", { name: "Preview" });
+      const image = preview.querySelector<HTMLImageElement>(
+        "img[data-workspace-file-preview='true']",
+      );
+      expect(image).not.toBeNull();
+      expect(image).toHaveAttribute("src", "blob:composer-edit-workspace-preview");
+      expect(preview.innerHTML).not.toContain(`urn:image:${fileUuid}`);
+
+      unmount();
+      expect(revokeObjectURLMock).toHaveBeenCalledWith("blob:composer-edit-workspace-preview");
+    } finally {
+      createObjectURLMock.mockRestore();
+      revokeObjectURLMock.mockRestore();
+    }
+  });
+
+  it("renders attached local image files in preview mode with a blob URL", async () => {
+    const createObjectURLMock = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:composer-preview-image");
+    const revokeObjectURLMock = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    try {
+      const { container } = renderWithProviders(<MessageComposer onSend={vi.fn()} />);
+      const input = container.querySelector('input[type="file"]');
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error("Expected hidden file input");
+      }
+
+      const imageFile = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "preview.png", {
+        type: "image/png",
+      });
+      fireEvent.change(input, { target: { files: [imageFile] } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+      const preview = screen.getByRole("region", { name: "Preview" });
+      const thumbnail = await within(preview).findByRole("img", { name: "preview.png" });
+      expect(thumbnail).toHaveAttribute("src", "blob:composer-preview-image");
+      expect(within(preview).queryByText("preview.png")).not.toBeInTheDocument();
+      expect(within(preview).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Nothing to preview yet")).not.toBeInTheDocument();
+      expect(createObjectURLMock).toHaveBeenCalledTimes(1);
+      expect(createObjectURLMock).toHaveBeenCalledWith(imageFile);
+    } finally {
+      createObjectURLMock.mockRestore();
+      revokeObjectURLMock.mockRestore();
+    }
+  });
+
+  it("renders attached non-image files as preview plaques", () => {
+    const { container } = renderWithProviders(<MessageComposer onSend={vi.fn()} />);
+    const input = container.querySelector('input[type="file"]');
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error("Expected hidden file input");
+    }
+
+    const file = new File([new Uint8Array(2048)], "brief.final.pdf", {
+      type: "application/pdf",
+    });
+    fireEvent.change(input, { target: { files: [file] } });
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
 
-    await waitFor(() => {
-      const previewRegion = screen.getByRole("region", { name: "Preview" });
-      const highlightedCode = previewRegion.querySelector("code.hljs");
-      expect(highlightedCode).not.toBeNull();
-      expect(highlightedCode?.querySelector(".hljs-keyword")).not.toBeNull();
-    });
+    const preview = screen.getByRole("region", { name: "Preview" });
+    expect(within(preview).getByText("brief.final.pdf")).toBeInTheDocument();
+    expect(within(preview).getByText("PDF")).toBeInTheDocument();
+    expect(within(preview).getByText("2 KB")).toBeInTheDocument();
+  });
+
+  it("revokes attached image preview blob URLs when preview unmounts", async () => {
+    const createObjectURLMock = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:composer-preview-unmount");
+    const revokeObjectURLMock = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    try {
+      const { container, unmount } = renderWithProviders(<MessageComposer onSend={vi.fn()} />);
+      const input = container.querySelector('input[type="file"]');
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error("Expected hidden file input");
+      }
+
+      const imageFile = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "remove.png", {
+        type: "image/png",
+      });
+      fireEvent.change(input, { target: { files: [imageFile] } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+      const preview = screen.getByRole("region", { name: "Preview" });
+      await within(preview).findByRole("img", { name: "remove.png" });
+      expect(within(preview).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+      unmount();
+
+      await waitFor(() => {
+        expect(revokeObjectURLMock).toHaveBeenCalledWith("blob:composer-preview-unmount");
+      });
+    } finally {
+      createObjectURLMock.mockRestore();
+      revokeObjectURLMock.mockRestore();
+    }
   });
 });
 
@@ -1211,6 +1722,101 @@ describe("MessageComposer reply quote", () => {
 
     expect(textbox).not.toHaveFocus();
   });
+
+  it("renders leading reply content inside the regular composer card", () => {
+    renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        leadingContent={<div data-testid="workspace-reply-tabs">Reply tabs</div>}
+      />,
+    );
+
+    const composer = screen.getByRole("form", { name: /message composer/i });
+    expect(composer).toContainElement(screen.getByTestId("workspace-reply-tabs"));
+  });
+});
+
+describe("MessageComposer focus key", () => {
+  it("focuses the textarea when focusKey changes without reacting to draft updates", () => {
+    const { rerender } = renderWithProviders(
+      <MessageComposer onSend={vi.fn()} focusKey="reply-a" initialValue="answer A" />,
+    );
+    const textbox = screen.getByRole("textbox");
+    textbox.blur();
+    expect(textbox).not.toHaveFocus();
+
+    rerender(<MessageComposer onSend={vi.fn()} focusKey="reply-a" initialValue="answer B" />);
+    expect(textbox).not.toHaveFocus();
+
+    rerender(<MessageComposer onSend={vi.fn()} focusKey="reply-b" initialValue="answer B" />);
+    expect(textbox).toHaveFocus();
+  });
+
+  it("keeps the legacy composer path unchanged when focusKey is omitted", () => {
+    const { rerender } = renderWithProviders(
+      <MessageComposer onSend={vi.fn()} initialValue="answer A" />,
+    );
+    const textbox = screen.getByRole("textbox");
+    textbox.blur();
+
+    rerender(<MessageComposer onSend={vi.fn()} initialValue="answer B" />);
+
+    expect(textbox).not.toHaveFocus();
+  });
+});
+
+describe("MessageComposer draft session", () => {
+  it("applies the initial value when the draft session changes", () => {
+    const { rerender } = renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        draftSessionKey="chat-a"
+        initialValue="saved draft for chat A"
+      />,
+    );
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "new text in chat A" } });
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        draftSessionKey="chat-b"
+        initialValue="saved draft for chat B"
+      />,
+    );
+
+    expect(textbox).toHaveValue("saved draft for chat B");
+  });
+
+  it("does not overwrite local input when initialValue arrives late in the same draft session", () => {
+    const { rerender } = renderWithProviders(
+      <MessageComposer onSend={vi.fn()} draftSessionKey="chat-a" initialValue="" />,
+    );
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "local input" } });
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        draftSessionKey="chat-a"
+        initialValue="late persisted draft"
+      />,
+    );
+
+    expect(textbox).toHaveValue("local input");
+  });
+
+  it("keeps the legacy initialValue reset behavior when draftSessionKey is omitted", () => {
+    const { rerender } = renderWithProviders(
+      <MessageComposer onSend={vi.fn()} initialValue="initial draft" />,
+    );
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "local input" } });
+
+    rerender(<MessageComposer onSend={vi.fn()} initialValue="updated draft" />);
+
+    expect(textbox).toHaveValue("updated draft");
+  });
 });
 
 describe("MessageComposer edit session", () => {
@@ -1328,6 +1934,129 @@ describe("MessageComposer edit session", () => {
       <MessageComposer onSend={vi.fn()} initialValue="draft text" onCancelEdit={onCancelEdit} />,
     );
     expect(textbox).toHaveValue("draft text");
+  });
+
+  it("restores the current draft session after edit mode ignores a late initial value", () => {
+    const { rerender } = renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        draftSessionKey="chat-a"
+        initialValue="draft before edit"
+      />,
+    );
+    const textbox = screen.getByRole("textbox");
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        draftSessionKey="chat-a"
+        initialValue="late persisted draft"
+        editSession={{ messageId: 7, initialMarkdown: "message to edit" }}
+      />,
+    );
+    expect(textbox).toHaveValue("message to edit");
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        draftSessionKey="chat-a"
+        initialValue="late persisted draft"
+      />,
+    );
+
+    expect(textbox).toHaveValue("draft before edit");
+  });
+
+  it("edits a restored Workspace reply through the active tab body", async () => {
+    const onSubmitEdit = vi.fn().mockResolvedValue(undefined);
+    const onValueChange = vi.fn();
+    const replyQuote = {
+      id: "reply-a",
+      content: "quoted message",
+      sender_full_name: "Alice",
+      sender_uuid: "11111111-1111-4111-8111-111111111111",
+      quoteFormat: "workspace" as const,
+      permalinkUrl: null,
+    };
+    const { rerender } = renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        onSubmitEdit={onSubmitEdit}
+        onValueChange={onValueChange}
+        replyQuote={replyQuote}
+        outgoingBodyOverride="full restored body A"
+        editSession={{
+          messageId: 42,
+          initialMarkdown: "answer A",
+          preserveWorkspaceReplyContext: true,
+          sessionKey: "reply-a",
+        }}
+      />,
+    );
+
+    const textbox = screen.getByRole("textbox");
+    expect(textbox).toHaveValue("answer A");
+    expect(screen.getByText("Reply: Alice")).toBeInTheDocument();
+
+    fireEvent.change(textbox, { target: { value: "changed answer A" } });
+    expect(onValueChange).toHaveBeenLastCalledWith("changed answer A");
+    fireEvent.keyDown(textbox, { key: "Enter" });
+    await waitFor(() => {
+      expect(onSubmitEdit).toHaveBeenCalledWith(42, "full restored body A");
+    });
+
+    rerender(
+      <MessageComposer
+        onSend={vi.fn()}
+        onSubmitEdit={onSubmitEdit}
+        onValueChange={onValueChange}
+        replyQuote={replyQuote}
+        outgoingBodyOverride="full restored body B"
+        editSession={{
+          messageId: 42,
+          initialMarkdown: "answer B",
+          preserveWorkspaceReplyContext: true,
+          sessionKey: "reply-b",
+        }}
+      />,
+    );
+
+    expect(textbox).toHaveValue("answer B");
+  });
+
+  it("places the edit notice above restored reply tabs and quote", () => {
+    const replyQuote = {
+      id: "reply-a",
+      content: "quoted message",
+      sender_full_name: "Alice",
+      sender_uuid: "11111111-1111-4111-8111-111111111111",
+      quoteFormat: "workspace" as const,
+      permalinkUrl: null,
+    };
+    renderWithProviders(
+      <MessageComposer
+        onSend={vi.fn()}
+        replyQuote={replyQuote}
+        leadingContent={<div data-testid="reply-tabs">Reply tabs</div>}
+        outgoingBodyOverride="full restored body"
+        editSession={{
+          messageId: 42,
+          initialMarkdown: "answer",
+          preserveWorkspaceReplyContext: true,
+          sessionKey: "reply-a",
+        }}
+      />,
+    );
+
+    const editNotice = screen.getByText("Edit message");
+    const replyTabs = screen.getByTestId("reply-tabs");
+    const replyQuoteLabel = screen.getByText("Reply: Alice");
+    expect(editNotice.compareDocumentPosition(replyTabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(
+      replyTabs.compareDocumentPosition(replyQuoteLabel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 });
 
@@ -1471,7 +2200,7 @@ describe("MessageComposer emoji picker behavior", () => {
     expect(textbox).toHaveFocus();
   });
 
-  it("passes custom emoji picker class for themed scrollbar styling", async () => {
+  it("passes composer emoji picker class for themed scrollbar styling", async () => {
     renderWithProviders(<MessageComposer onSend={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: /emoji/i }));
@@ -1482,30 +2211,6 @@ describe("MessageComposer emoji picker behavior", () => {
       | undefined;
     expect(props?.className).toContain("composer-emoji-picker");
     expect(props?.emojiStyle).toBe("native");
-  });
-
-  it("loads and passes realm custom emojis to composer emoji picker", async () => {
-    const realmEmoji = {
-      id: "9001",
-      names: ["party_parrot"],
-      imgUrl: "https://chat.example.test/user_avatars/realm/9001.png",
-    };
-    fetchRealmEmojisMock.mockResolvedValue([realmEmoji]);
-
-    renderWithProviders(<MessageComposer onSend={vi.fn()} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /emoji/i }));
-
-    await waitFor(() => {
-      expect(fetchRealmEmojisMock).toHaveBeenCalledTimes(1);
-    });
-    await waitFor(() => {
-      const props = emojiPickerMock.mock.calls.at(-1)?.[0] as
-        | { customEmojis?: unknown[]; emojiStyle?: string }
-        | undefined;
-      expect(props?.customEmojis).toEqual([realmEmoji]);
-      expect(props?.emojiStyle).toBe("native");
-    });
   });
 });
 

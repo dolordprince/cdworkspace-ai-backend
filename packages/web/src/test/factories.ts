@@ -1,4 +1,4 @@
-import type { Reaction } from "~/shared/api/zulip.types";
+import type { UserPresenceStatus } from "~/entities/user/user.types";
 
 /**
  * Test data factories — typed builders for domain objects.
@@ -41,7 +41,14 @@ interface MessageOverrides {
   type?: "stream" | "private";
   display_recipient?: string | { id: number; full_name: string; email?: string }[];
   avatar_url?: string | null;
-  reactions?: Reaction[];
+  reactions?: TestMessageReaction[];
+}
+
+interface TestMessageReaction {
+  emoji_name: string;
+  emoji_code: string;
+  reaction_type: "unicode_emoji" | "realm_emoji" | "zulip_extra_emoji";
+  user_id: number;
 }
 
 export function createMessage(overrides: MessageOverrides = {}) {
@@ -84,20 +91,64 @@ export function createDmMessage(overrides: MessageOverrides & { to?: number[] } 
 
 interface UserOverrides {
   user_id?: number;
+  uuid?: string;
+  username?: string;
   full_name?: string;
   email?: string;
   avatar_url?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  displayName?: string;
+  status?:
+    | UserPresenceStatus
+    | {
+        text?: string | null;
+        emojiName?: string | null;
+        emojiCode?: string | null;
+        reactionType?: string | null;
+        away?: boolean;
+      };
+  statusEmoji?: string | null;
+  statusText?: string | null;
+  statusFetchedAt?: number;
+  lastPingAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
   presence?: { status: "active" | "idle"; timestamp: number };
 }
 
 export function createUser(overrides: UserOverrides = {}) {
   const id = overrides.user_id ?? autoId();
+  const uuid = overrides.uuid ?? String(id);
+  const username = overrides.username ?? `user${id}`;
+  const displayName = overrides.displayName ?? overrides.full_name ?? `User ${id}`;
+  const legacyStatus = typeof overrides.status === "object" ? overrides.status : null;
+  const presenceStatus = overrides.presence?.status;
+  const userStatus =
+    presenceStatus ??
+    (typeof overrides.status === "string" ? overrides.status : undefined) ??
+    "offline";
+  const statusText = overrides.statusText ?? legacyStatus?.text ?? null;
+  const statusEmoji = overrides.statusEmoji ?? legacyStatus?.emojiName ?? null;
+  const now = new Date(0).toISOString();
   return {
     user_id: id,
-    full_name: overrides.full_name ?? `User ${id}`,
+    full_name: displayName,
     email: overrides.email ?? `user${id}@example.com`,
     avatar_url: overrides.avatar_url ?? null,
     presence: overrides.presence,
+    uuid,
+    username,
+    firstName: overrides.firstName ?? null,
+    lastName: overrides.lastName ?? null,
+    displayName,
+    avatarUrl: overrides.avatar_url ?? null,
+    status: userStatus,
+    statusEmoji,
+    statusText,
+    lastPingAt: overrides.lastPingAt ?? now,
+    createdAt: overrides.createdAt ?? now,
+    updatedAt: overrides.updatedAt ?? now,
   };
 }
 

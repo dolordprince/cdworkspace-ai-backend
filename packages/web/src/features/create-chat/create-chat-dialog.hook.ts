@@ -1,28 +1,40 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
+import {
+  runWorkspaceChannelCreate,
+  runWorkspaceDirectStreamCreate,
+} from "~/entities/messenger/messenger-create-chat-actions.lib";
+import { runWorkspaceCreateTopicRequest } from "~/entities/messenger/messenger-sidebar-actions.lib";
+import { useMessengerStore } from "~/entities/messenger/messenger.model";
+import type { MessengerStream } from "~/entities/messenger/messenger.types";
+import { selectUserDisplayName } from "~/entities/user/user-selectors.lib";
 import { useUsersStore } from "~/entities/user/user.model";
-import { useUserGroupsStore } from "~/entities/user-group/user-group.model";
-import { fetchStreams, fetchSubscriptions } from "~/shared/api/zulip-streams";
-import type { MockStream, ZulipSubscription } from "~/shared/api/zulip.types";
+import type { User } from "~/entities/user/user.types";
+import {
+  selectCurrentWorkspaceRuntimeContext,
+  useWorkspaceAuthStore,
+} from "~/entities/workspace-auth/workspace-auth.model";
 import { createLogger } from "~/shared/lib/logger";
-import { buildAnnouncementOnlyCanSendGroup } from "~/shared/lib/user-group-policy";
-import { buildUserPickerOptions, type UserPickerOption } from "~/shared/lib/user-picker";
+import type { UserPickerOption } from "~/shared/lib/user-picker";
 import {
-  buildBrowseChannelRows,
-  resolveBrowseChannelSelection,
-  type BrowseChannelRow,
-  type BrowseChannelSubscriptionFilter,
-} from "./create-chat-browse-channels.lib";
-import { buildDmSlug, resolveNextTabFromKey, type CreateChatTab } from "./create-chat-dialog.lib";
-import {
-  createChannel,
-  subscribeCurrentUserToStream,
-  unarchiveChannel,
-  unsubscribeChannel,
-} from "./create-chat.api";
+  CREATE_CHAT_TABS,
+  resolveNextTabFromKey,
+  type CreateChatTab,
+} from "./create-chat-dialog.lib";
 
 const log = createLogger("create-chat:dialog");
+
+const SYSTEM_WORKSPACE_USER_UUID = "00000000-0000-0000-0000-000000000000";
+const EMPTY_ARCHIVED_CHANNELS: ArchivedChannelOption[] = [];
+const EMPTY_BROWSE_CHANNELS: [] = [];
+
+export type BrowseChannelSubscriptionFilter = "unsubscribed" | "subscribed" | "all";
+
+function resolveWorkspacePickerPresence(status: User["status"]): UserPickerOption["presence"] {
+  if (status === "active" || status === "idle") {
+    return status;
+  }
+  return "offline";
+}
 
 interface ArchivedChannelOption {
   streamId: number;
@@ -31,7 +43,21 @@ interface ArchivedChannelOption {
   time: string;
 }
 
-/** Inline unarchive error state on the Archived tab. */
+export interface CreateChatUserOption {
+  userKey: string;
+  workspaceUserUuid: string | null;
+  fullName: string;
+  email: string;
+  presence: UserPickerOption["presence"];
+  statusLabel: string | null;
+}
+
+export interface CreateChatWorkspaceStreamOption {
+  streamUuid: string;
+  name: string;
+}
+
+/** Archived tab is kept as a Workspace placeholder; no legacy API errors are produced. */
 export type UnarchiveInlineErrorState =
   | { kind: "unsupported" }
   | { kind: "failed"; message: string };
@@ -39,6 +65,7 @@ export type UnarchiveInlineErrorState =
 export interface UseCreateChatDialogResult {
   tab: CreateChatTab;
   setTab: (tab: CreateChatTab) => void;
+  visibleTabs: readonly CreateChatTab[];
 
   tabIds: Record<CreateChatTab, string>;
   panelIds: Record<CreateChatTab, string>;
@@ -47,15 +74,11 @@ export interface UseCreateChatDialogResult {
 
   userSearch: string;
   setUserSearch: (v: string) => void;
-  filteredUsers: UserPickerOption[];
+  filteredUsers: CreateChatUserOption[];
+  openDirectUser: (user: CreateChatUserOption) => void;
 
-  groupSelectedUserIds: Set<number>;
-  toggleGroupUser: (userId: number) => void;
-  groupUsers: UseCreateChatDialogResult["filteredUsers"];
-  createGroup: () => void;
-
-  channelSelectedUserIds: Set<number>;
-  toggleChannelUser: (userId: number) => void;
+  channelSelectedUserKeys: Set<string>;
+  toggleChannelUser: (userKey: string) => void;
   channelUsers: UseCreateChatDialogResult["filteredUsers"];
 
   channelName: string;
@@ -74,13 +97,18 @@ export interface UseCreateChatDialogResult {
   channelCreateBlocked: boolean;
   channelCreateBlockedReasonKey: string | null;
   createChannel: () => void;
+  workspaceTopicStreams: CreateChatWorkspaceStreamOption[];
+  workspaceTopicStreamUuid: string;
+  setWorkspaceTopicStreamUuid: (streamUuid: string) => void;
+  workspaceTopicName: string;
+  setWorkspaceTopicName: (name: string) => void;
+  workspaceTopicCreateBlocked: boolean;
+  createWorkspaceTopic: () => void;
 
   archivedSearch: string;
   setArchivedSearch: (v: string) => void;
   archivedChannels: ArchivedChannelOption[];
-  /** Async unarchive; on success the channel drops from the list after store refresh. */
   onUnarchiveArchivedChannel: (streamId: number) => Promise<void>;
-  /** Stream ids with in-flight unarchive (button shows loading). */
   unarchivePendingStreamIds: readonly number[];
   unarchiveInlineError: UnarchiveInlineErrorState | null;
 
@@ -88,44 +116,62 @@ export interface UseCreateChatDialogResult {
   setChannelsSearch: (v: string) => void;
   channelsSubscriptionFilter: BrowseChannelSubscriptionFilter;
   setChannelsSubscriptionFilter: (filter: BrowseChannelSubscriptionFilter) => void;
-  browseChannels: BrowseChannelRow[];
+  browseChannels: [];
   selectedBrowseChannelId: number | null;
   setSelectedBrowseChannelId: (streamId: number) => void;
-  selectedBrowseChannel: BrowseChannelRow | null;
+  selectedBrowseChannel: null;
   channelsLoading: boolean;
   channelsError: boolean;
   onSubscribeToChannel: (streamId: number, streamName: string) => Promise<void>;
   onUnsubscribeFromChannel: (streamId: number, streamName: string) => Promise<void>;
   subscribePendingStreamIds: readonly number[];
   subscribeInlineError: string | null;
-
-  buildDmSlug: (userId: number, fullName: string) => string;
 }
 
 export function useCreateChatDialog(options: {
   open: boolean;
-  onNavigateDm: (slug: string) => void;
-  onNavigateStream: (streamId: number, streamName: string) => void;
+  visibleTabs?: readonly CreateChatTab[];
+  onNavigateWorkspaceStream?: (streamUuid: string) => void;
+  onNavigateWorkspaceTopic?: (streamUuid: string, topicUuid: string) => void;
   onChannelCreated: () => void;
 }): UseCreateChatDialogResult {
-  const { open, onNavigateDm, onChannelCreated } = options;
+  const {
+    open,
+    visibleTabs: requestedVisibleTabs = CREATE_CHAT_TABS,
+    onNavigateWorkspaceStream,
+    onNavigateWorkspaceTopic,
+    onChannelCreated,
+  } = options;
+  const visibleTabs = useMemo(() => {
+    const uniqueTabs = requestedVisibleTabs.filter(
+      (candidate, index, tabs) => tabs.indexOf(candidate) === index,
+    );
+    return uniqueTabs.length > 0 ? uniqueTabs : CREATE_CHAT_TABS;
+  }, [requestedVisibleTabs]);
 
-  const [tab, setTab] = useState<CreateChatTab>("dm");
+  const [tab, setTabState] = useState<CreateChatTab>("dm");
+  const setTab = useCallback(
+    (nextTab: CreateChatTab) => {
+      if (!visibleTabs.includes(nextTab)) return;
+      setTabState(nextTab);
+    },
+    [visibleTabs],
+  );
   const tabBaseId = useId();
   const tabRefs = useRef<Record<CreateChatTab, HTMLButtonElement | null>>({
     dm: null,
-    group: null,
     channels: null,
     channel: null,
+    topic: null,
     archived: null,
   });
 
   const tabIds: Record<CreateChatTab, string> = useMemo(
     () => ({
       dm: `${tabBaseId}-tab-dm`,
-      group: `${tabBaseId}-tab-group`,
       channels: `${tabBaseId}-tab-channels`,
       channel: `${tabBaseId}-tab-channel`,
+      topic: `${tabBaseId}-tab-topic`,
       archived: `${tabBaseId}-tab-archived`,
     }),
     [tabBaseId],
@@ -133,9 +179,9 @@ export function useCreateChatDialog(options: {
   const panelIds: Record<CreateChatTab, string> = useMemo(
     () => ({
       dm: `${tabBaseId}-panel-dm`,
-      group: `${tabBaseId}-panel-group`,
       channels: `${tabBaseId}-panel-channels`,
       channel: `${tabBaseId}-panel-channel`,
+      topic: `${tabBaseId}-panel-topic`,
       archived: `${tabBaseId}-panel-archived`,
     }),
     [tabBaseId],
@@ -143,419 +189,266 @@ export function useCreateChatDialog(options: {
 
   const [userSearch, setUserSearch] = useState("");
   const [archivedSearch, setArchivedSearch] = useState("");
-  const [groupSelectedUserIds, setGroupSelectedUserIds] = useState<Set<number>>(new Set());
-  const [channelSelectedUserIds, setChannelSelectedUserIds] = useState<Set<number>>(new Set());
+  const [channelSelectedUserKeys, setChannelSelectedUserKeys] = useState<Set<string>>(new Set());
   const [channelName, setChannelName] = useState("");
   const [channelDesc, setChannelDesc] = useState("");
   const [channelInviteOnly, setChannelInviteOnly] = useState(false);
   const [channelAnnounce, setChannelAnnounce] = useState(false);
   const [channelAnnouncementOnly, setChannelAnnouncementOnly] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [unarchiveInlineError, setUnarchiveInlineError] =
-    useState<UnarchiveInlineErrorState | null>(null);
-  const [unarchivePendingStreamIds, setUnarchivePendingStreamIds] = useState<number[]>([]);
   const [channelsSearch, setChannelsSearch] = useState("");
   const [channelsSubscriptionFilter, setChannelsSubscriptionFilter] =
     useState<BrowseChannelSubscriptionFilter>("unsubscribed");
-  const [browseStreams, setBrowseStreams] = useState<MockStream[]>([]);
-  const [browseSubscriptions, setBrowseSubscriptions] = useState<ZulipSubscription[]>([]);
-  const [channelsLoading, setChannelsLoading] = useState(false);
-  const [channelsError, setChannelsError] = useState(false);
-  const [subscribePendingStreamIds, setSubscribePendingStreamIds] = useState<number[]>([]);
-  const [subscribeInlineError, setSubscribeInlineError] = useState<string | null>(null);
   const [selectedBrowseChannelId, setSelectedBrowseChannelIdState] = useState<number | null>(null);
-  const channelsFetchedRef = useRef(false);
+  const [workspaceTopicStreamUuid, setWorkspaceTopicStreamUuid] = useState("");
+  const [workspaceTopicName, setWorkspaceTopicName] = useState("");
 
-  const allUsers = useUsersStore((s) => s.users);
-  const userGroups = useUserGroupsStore((s) => s.groups);
-  const currentUserId = useChatListStore((s) => s.currentUserId ?? null);
-  const streamsMap = useChatListStore((s) => s.streamsMap);
-  // Block channel create until author profile is loaded.
-  const channelCreateBlocked = currentUserId == null || currentUserId <= 0;
+  const usersById = useUsersStore((s) => s.usersById);
+  const userIds = useUsersStore((s) => s.userIds);
+  const workspaceSessions = useWorkspaceAuthStore((state) => state.sessions);
+  const workspaceCurrentAccountId = useWorkspaceAuthStore((state) => state.currentAccountId);
+  const workspaceRuntimeContext = useMemo(
+    () =>
+      selectCurrentWorkspaceRuntimeContext({
+        sessions: workspaceSessions,
+        currentAccountId: workspaceCurrentAccountId,
+      }),
+    [workspaceCurrentAccountId, workspaceSessions],
+  );
+  const workspaceStreamIds = useMessengerStore((state) => state.streamIds);
+  const workspaceStreamsById = useMessengerStore((state) => state.streamsById);
+  const workspaceStreams = useMemo(
+    () =>
+      workspaceStreamIds
+        .map((streamId) => workspaceStreamsById[streamId])
+        .filter((stream): stream is MessengerStream => stream != null),
+    [workspaceStreamIds, workspaceStreamsById],
+  );
+
+  const channelCreateBlocked = workspaceRuntimeContext == null;
   const channelCreateBlockedReasonKey = channelCreateBlocked
     ? "channel.creatorProfileLoading"
     : null;
-  // Default posting policy for announcement-only channels.
-  const announcementOnlyCanSendMessageGroup = useMemo(
-    () => buildAnnouncementOnlyCanSendGroup({ userGroups, currentUserId }),
-    [userGroups, currentUserId],
-  );
-  // Disable announcement-only toggle when no valid policy is available.
-  const channelAnnouncementOnlyBlocked = announcementOnlyCanSendMessageGroup == null;
-  const channelAnnouncementOnlyBlockedReasonKey = channelAnnouncementOnlyBlocked
-    ? "channel.announcementOnlyUnsupported"
-    : null;
-  const effectiveChannelAnnouncementOnly =
-    channelAnnouncementOnly && !channelAnnouncementOnlyBlocked;
+  const channelAnnouncementOnlyBlocked = true;
+  const channelAnnouncementOnlyBlockedReasonKey = "channel.workspaceAnnouncementOnlyUnsupported";
 
-  const pickerCandidates = useMemo(
-    () =>
-      Array.from(allUsers.values()).map((user) => ({
-        userId: user.user_id,
-        fullName: user.full_name,
-        email: user.email,
-        presenceStatus: user.presence?.status,
-        presenceTimestamp: user.presence?.timestamp,
-        statusLabel: formatUserStatusLabel(user.status),
-      })),
-    [allUsers],
-  );
-
-  const excludedUserIds = useMemo(
-    () => (currentUserId != null ? [currentUserId] : []),
-    [currentUserId],
-  );
-
-  const filteredUsers = useMemo(
-    () =>
-      buildUserPickerOptions({
-        candidates: pickerCandidates,
-        selectedUserIds: [],
-        excludedUserIds,
-        query: userSearch,
-      }),
-    [pickerCandidates, excludedUserIds, userSearch],
-  );
-
-  const groupUsers = useMemo(
-    () =>
-      buildUserPickerOptions({
-        candidates: pickerCandidates,
-        selectedUserIds: Array.from(groupSelectedUserIds),
-        excludedUserIds,
-        query: userSearch,
-      }),
-    [pickerCandidates, groupSelectedUserIds, excludedUserIds, userSearch],
-  );
-
-  const channelUsers = useMemo(
-    () =>
-      buildUserPickerOptions({
-        candidates: pickerCandidates,
-        selectedUserIds: Array.from(channelSelectedUserIds),
-        excludedUserIds,
-        query: userSearch,
-      }),
-    [pickerCandidates, channelSelectedUserIds, excludedUserIds, userSearch],
-  );
-
-  const archivedChannels = useMemo<ArchivedChannelOption[]>(() => {
-    const normalizedQuery = archivedSearch.trim().toLowerCase();
-    const archived = Array.from(streamsMap.values())
-      .filter((stream) => stream.isArchived === true)
-      .map((stream) => ({
-        streamId: stream.stream_id,
-        name: stream.name,
-        lastMessage: stream.lastMessage,
-        time: stream.time,
-        ts: stream.ts,
+  const workspaceUserOptions = useMemo<CreateChatUserOption[]>(() => {
+    const normalizedQuery = userSearch.trim().toLowerCase();
+    const currentUserUuid = workspaceRuntimeContext?.userUuid ?? null;
+    return userIds
+      .map((userId) => usersById[userId])
+      .filter((user): user is User => user != null)
+      .filter((user) => user.uuid !== currentUserUuid)
+      .filter((user) => user.uuid !== SYSTEM_WORKSPACE_USER_UUID)
+      .map((user) => ({
+        userKey: user.uuid,
+        workspaceUserUuid: user.uuid,
+        fullName: selectUserDisplayName(user, user.uuid),
+        email: user.email ?? "",
+        presence: resolveWorkspacePickerPresence(user.status),
+        statusLabel: user.statusText,
       }))
-      .sort((left, right) => right.ts - left.ts)
-      .filter((stream) => stream.name.toLowerCase().includes(normalizedQuery))
-      .map((stream) => ({
-        streamId: stream.streamId,
-        name: stream.name,
-        lastMessage: stream.lastMessage,
-        time: stream.time,
-      }));
-    return archived;
-  }, [archivedSearch, streamsMap]);
+      .filter((user) => {
+        if (user.fullName.trim().length === 0) return false;
+        if (normalizedQuery.length === 0) return true;
+        return (
+          user.fullName.toLowerCase().includes(normalizedQuery) ||
+          user.email.toLowerCase().includes(normalizedQuery)
+        );
+      })
+      .sort((left, right) => left.fullName.localeCompare(right.fullName));
+  }, [userIds, userSearch, usersById, workspaceRuntimeContext?.userUuid]);
 
-  const browseChannels = useMemo(
+  const filteredUsers = workspaceUserOptions;
+  const channelUsers = useMemo(() => {
+    return [...workspaceUserOptions].sort((left, right) => {
+      const leftSelected = channelSelectedUserKeys.has(left.userKey) ? 0 : 1;
+      const rightSelected = channelSelectedUserKeys.has(right.userKey) ? 0 : 1;
+      if (leftSelected !== rightSelected) return leftSelected - rightSelected;
+      return left.fullName.localeCompare(right.fullName);
+    });
+  }, [channelSelectedUserKeys, workspaceUserOptions]);
+
+  const workspaceTopicStreams = useMemo<CreateChatWorkspaceStreamOption[]>(
     () =>
-      buildBrowseChannelRows({
-        streams: browseStreams,
-        subscriptions: browseSubscriptions,
-        searchQuery: channelsSearch,
-        subscriptionFilter: channelsSubscriptionFilter,
-      }),
-    [browseStreams, browseSubscriptions, channelsSearch, channelsSubscriptionFilter],
+      workspaceStreams
+        .filter((stream) => !stream.isArchived)
+        .map((stream) => ({
+          streamUuid: stream.uuid,
+          name: stream.name,
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    [workspaceStreams],
   );
+  const selectedWorkspaceTopicStreamUuid = workspaceTopicStreams.some(
+    (stream) => stream.streamUuid === workspaceTopicStreamUuid,
+  )
+    ? workspaceTopicStreamUuid
+    : (workspaceTopicStreams[0]?.streamUuid ?? "");
 
-  const selectedBrowseChannel = useMemo(
-    () => browseChannels.find((channel) => channel.streamId === selectedBrowseChannelId) ?? null,
-    [browseChannels, selectedBrowseChannelId],
-  );
-
-  const setSelectedBrowseChannelId = useCallback((streamId: number) => {
-    setSelectedBrowseChannelIdState(streamId);
-  }, []);
-
-  useEffect(() => {
-    setSelectedBrowseChannelIdState((currentId) =>
-      resolveBrowseChannelSelection(browseChannels, currentId),
-    );
-  }, [browseChannels]);
-
-  useEffect(() => {
-    if (!open || tab !== "channels") {
-      return;
-    }
-    if (channelsFetchedRef.current) {
-      return;
-    }
-
-    let cancelled = false;
-    setChannelsLoading(true);
-    setChannelsError(false);
-
-    void (async () => {
-      try {
-        const [streams, subscriptions] = await Promise.all([fetchStreams(), fetchSubscriptions()]);
-        if (cancelled) {
-          return;
-        }
-        setBrowseStreams(streams);
-        setBrowseSubscriptions(subscriptions);
-        channelsFetchedRef.current = true;
-      } catch (err) {
-        if (!cancelled) {
-          setChannelsError(true);
-          log.error("browse channels fetch failed", {
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      } finally {
-        if (!cancelled) {
-          setChannelsLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [open, tab]);
-
-  useEffect(() => {
-    setSubscribeInlineError(null);
-  }, [channelsSearch]);
-
-  useEffect(() => {
-    setUnarchiveInlineError(null);
-  }, [archivedSearch]);
+  const workspaceTopicCreateBlocked =
+    selectedWorkspaceTopicStreamUuid.trim().length === 0 || !workspaceTopicName.trim();
 
   useEffect(() => {
     if (open) return;
     void Promise.resolve().then(() => {
-      setTab("dm");
+      setTabState(visibleTabs[0] ?? "dm");
       setUserSearch("");
       setArchivedSearch("");
-      setGroupSelectedUserIds(new Set());
-      setChannelSelectedUserIds(new Set());
+      setChannelSelectedUserKeys(new Set());
       setChannelName("");
       setChannelDesc("");
       setChannelInviteOnly(false);
       setChannelAnnounce(false);
       setChannelAnnouncementOnly(false);
       setCreating(false);
-      setUnarchiveInlineError(null);
-      setUnarchivePendingStreamIds([]);
       setChannelsSearch("");
-      setBrowseStreams([]);
-      setBrowseSubscriptions([]);
-      channelsFetchedRef.current = false;
-      setChannelsLoading(false);
-      setChannelsError(false);
-      setSubscribePendingStreamIds([]);
-      setSubscribeInlineError(null);
+      setChannelsSubscriptionFilter("unsubscribed");
       setSelectedBrowseChannelIdState(null);
+      setWorkspaceTopicStreamUuid("");
+      setWorkspaceTopicName("");
     });
-  }, [open]);
+  }, [open, visibleTabs]);
 
-  const toggleGroupUser = useCallback((userId: number) => {
-    setGroupSelectedUserIds((prev) => {
+  useEffect(() => {
+    if (visibleTabs.includes(tab)) return;
+    setTabState(visibleTabs[0] ?? "dm");
+  }, [tab, visibleTabs]);
+
+  const toggleChannelUser = useCallback((userKey: string) => {
+    setChannelSelectedUserKeys((prev) => {
       const next = new Set(prev);
-      if (next.has(userId)) next.delete(userId);
-      else next.add(userId);
+      if (next.has(userKey)) next.delete(userKey);
+      else next.add(userKey);
       return next;
     });
   }, []);
 
-  const toggleChannelUser = useCallback((userId: number) => {
-    setChannelSelectedUserIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(userId)) next.delete(userId);
-      else next.add(userId);
-      return next;
-    });
-  }, []);
-
-  const createGroup = useCallback(() => {
-    if (groupSelectedUserIds.size === 0 || currentUserId == null) return;
-    const ids = [...groupSelectedUserIds, currentUserId].sort((a, b) => a - b);
-    onNavigateDm(ids.join(","));
-    setGroupSelectedUserIds(new Set());
-  }, [groupSelectedUserIds, currentUserId, onNavigateDm]);
+  const openDirectUser = useCallback(
+    (user: CreateChatUserOption) => {
+      if (user.workspaceUserUuid == null || creating) return;
+      setCreating(true);
+      void runWorkspaceDirectStreamCreate({ directUserUuid: user.workspaceUserUuid })
+        .then((result) => {
+          if (result.status !== "applied") return;
+          onNavigateWorkspaceStream?.(result.stream.uuid);
+          onChannelCreated();
+        })
+        .catch((err) => {
+          log.error("workspace direct stream create failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        })
+        .finally(() => {
+          setCreating(false);
+        });
+    },
+    [creating, onChannelCreated, onNavigateWorkspaceStream],
+  );
 
   const focusTab = useCallback((nextTab: CreateChatTab) => {
     tabRefs.current[nextTab]?.focus();
   }, []);
 
-  // Encapsulate tab ref mutation inside the hook.
   const setTabRef = useCallback((tab: CreateChatTab, node: HTMLButtonElement | null) => {
     tabRefs.current[tab] = node;
   }, []);
 
   const onTabKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLButtonElement>, currentTab: CreateChatTab) => {
-      const nextTab = resolveNextTabFromKey({ key: event.key, currentTab });
+      const nextTab = resolveNextTabFromKey({ key: event.key, currentTab, tabs: visibleTabs });
       if (nextTab == null) return;
       event.preventDefault();
-      setTab(nextTab);
+      setTabState(nextTab);
       focusTab(nextTab);
     },
-    [focusTab],
+    [focusTab, visibleTabs],
   );
 
   const createChannelAction = useCallback(() => {
-    if (!channelName.trim() || creating || currentUserId == null || currentUserId <= 0) return;
-    // Always include channel author in subscribers even if not manually selected.
-    const subscribers = Array.from(new Set([...channelSelectedUserIds, currentUserId])).sort(
-      (a, b) => a - b,
-    );
+    if (!channelName.trim() || creating || workspaceRuntimeContext == null) return;
+    const memberUserUuids = channelUsers
+      .filter((user) => channelSelectedUserKeys.has(user.userKey))
+      .map((user) => user.workspaceUserUuid)
+      .filter((userUuid): userUuid is string => userUuid != null);
+
     setCreating(true);
-    const runCreateChannel = async (): Promise<void> => {
-      try {
-        const result = await createChannel({
-          name: channelName.trim(),
-          description: channelDesc.trim(),
-          subscribers,
-          inviteOnly: channelInviteOnly,
-          announce: channelAnnounce,
-          // Send posting policy only when announcement-only is enabled with a valid group setting.
-          ...(effectiveChannelAnnouncementOnly && announcementOnlyCanSendMessageGroup != null
-            ? { canSendMessageGroup: announcementOnlyCanSendMessageGroup }
-            : {}),
-        });
-        if (!result) return;
+    void runWorkspaceChannelCreate({
+      name: channelName.trim(),
+      description: channelDesc.trim(),
+      memberUserUuids,
+      inviteOnly: channelInviteOnly,
+      announce: channelAnnounce,
+    })
+      .then((result) => {
+        if (result.status !== "applied") return;
         setChannelName("");
         setChannelDesc("");
-        setChannelSelectedUserIds(new Set());
+        setChannelSelectedUserKeys(new Set());
         setChannelInviteOnly(false);
         setChannelAnnounce(false);
         setChannelAnnouncementOnly(false);
+        onNavigateWorkspaceStream?.(result.stream.uuid);
         onChannelCreated();
-      } catch {
-        // API layer already logs errors — do not let the UI handler throw.
-      } finally {
+      })
+      .catch((err) => {
+        log.error("workspace channel create failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      })
+      .finally(() => {
         setCreating(false);
-      }
-    };
-    void runCreateChannel();
+      });
   }, [
-    channelName,
-    channelDesc,
-    channelSelectedUserIds,
-    channelInviteOnly,
     channelAnnounce,
-    effectiveChannelAnnouncementOnly,
-    announcementOnlyCanSendMessageGroup,
+    channelDesc,
+    channelInviteOnly,
+    channelName,
+    channelSelectedUserKeys,
+    channelUsers,
     creating,
-    currentUserId,
     onChannelCreated,
+    onNavigateWorkspaceStream,
+    workspaceRuntimeContext,
   ]);
 
-  const buildDmSlugFn = useCallback((userId: number, fullName: string) => {
-    return buildDmSlug(userId, fullName);
-  }, []);
-
-  const onUnarchiveArchivedChannel = useCallback(async (streamId: number) => {
-    setUnarchiveInlineError(null);
-    setUnarchivePendingStreamIds((prev) => (prev.includes(streamId) ? prev : [...prev, streamId]));
-    try {
-      const result = await unarchiveChannel(streamId);
-      if (result.ok) {
-        return;
-      }
-      if (result.kind === "unsupported") {
-        setUnarchiveInlineError({ kind: "unsupported" });
-      } else {
-        setUnarchiveInlineError({ kind: "failed", message: result.message });
-      }
-      log.warn("unarchive channel rejected", {
-        streamId,
-        kind: result.kind,
-        status: result.status,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setUnarchiveInlineError({ kind: "failed", message });
-      log.error("unarchive channel threw", { streamId, error: message });
-    } finally {
-      setUnarchivePendingStreamIds((prev) => prev.filter((id) => id !== streamId));
-    }
-  }, []);
-
-  const onSubscribeToChannel = useCallback(
-    async (streamId: number, streamName: string) => {
-      if (currentUserId == null || currentUserId <= 0) {
-        return;
-      }
-      setSubscribeInlineError(null);
-      setSubscribePendingStreamIds((prev) =>
-        prev.includes(streamId) ? prev : [...prev, streamId],
-      );
-      try {
-        const result = await subscribeCurrentUserToStream(streamName, currentUserId);
-        if (!result.ok) {
-          setSubscribeInlineError(result.errorCode ?? "unknown_error");
-          log.warn("subscribe to channel rejected", { streamId, errorCode: result.errorCode });
-          return;
-        }
-        useChatListStore.getState().upsertStreamMetadataRows([{ streamId, name: streamName }]);
-        setBrowseSubscriptions((prev) => {
-          if (prev.some((subscription) => subscription.stream_id === streamId)) {
-            return prev;
-          }
-          return [
-            ...prev,
-            {
-              stream_id: streamId,
-              name: streamName,
-              is_muted: false,
-              is_archived: false,
-              invite_only: false,
-            },
-          ];
+  const createWorkspaceTopic = useCallback(() => {
+    const streamUuid = selectedWorkspaceTopicStreamUuid.trim();
+    const name = workspaceTopicName.trim();
+    if (streamUuid.length === 0 || name.length === 0 || creating) return;
+    setCreating(true);
+    void runWorkspaceCreateTopicRequest({ streamUuid, name })
+      .then((result) => {
+        if (result.status !== "applied") return;
+        setWorkspaceTopicName("");
+        onNavigateWorkspaceTopic?.(result.topic.streamUuid, result.topic.uuid);
+        onChannelCreated();
+      })
+      .catch((err) => {
+        log.error("workspace topic create failed", {
+          error: err instanceof Error ? err.message : String(err),
         });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setSubscribeInlineError(message);
-        log.error("subscribe to channel threw", { streamId, error: message });
-      } finally {
-        setSubscribePendingStreamIds((prev) => prev.filter((id) => id !== streamId));
-      }
-    },
-    [currentUserId],
-  );
+      })
+      .finally(() => {
+        setCreating(false);
+      });
+  }, [
+    creating,
+    onChannelCreated,
+    onNavigateWorkspaceTopic,
+    selectedWorkspaceTopicStreamUuid,
+    workspaceTopicName,
+  ]);
 
-  const onUnsubscribeFromChannel = useCallback(async (streamId: number, streamName: string) => {
-    setSubscribeInlineError(null);
-    setSubscribePendingStreamIds((prev) => (prev.includes(streamId) ? prev : [...prev, streamId]));
-    try {
-      const ok = await unsubscribeChannel(streamName);
-      if (!ok) {
-        setSubscribeInlineError("unsubscribe_failed");
-        log.warn("unsubscribe from channel rejected", { streamId });
-        return;
-      }
-      useChatListStore.getState().removeStream(streamId);
-      setBrowseSubscriptions((prev) =>
-        prev.filter((subscription) => subscription.stream_id !== streamId),
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setSubscribeInlineError(message);
-      log.error("unsubscribe from channel threw", { streamId, error: message });
-    } finally {
-      setSubscribePendingStreamIds((prev) => prev.filter((id) => id !== streamId));
-    }
+  const onUnsupportedAsyncAction = useCallback(async () => {}, []);
+  const onUnsupportedBrowseSelect = useCallback((streamId: number) => {
+    setSelectedBrowseChannelIdState(streamId);
   }, []);
 
   return {
     tab,
     setTab,
+    visibleTabs,
     tabIds,
     panelIds,
     setTabRef,
@@ -563,11 +456,8 @@ export function useCreateChatDialog(options: {
     userSearch,
     setUserSearch,
     filteredUsers,
-    groupSelectedUserIds,
-    toggleGroupUser,
-    groupUsers,
-    createGroup,
-    channelSelectedUserIds,
+    openDirectUser,
+    channelSelectedUserKeys,
     toggleChannelUser,
     channelUsers,
     channelName,
@@ -578,7 +468,7 @@ export function useCreateChatDialog(options: {
     setChannelInviteOnly,
     channelAnnounce,
     setChannelAnnounce,
-    channelAnnouncementOnly: effectiveChannelAnnouncementOnly,
+    channelAnnouncementOnly: channelAnnouncementOnly && !channelAnnouncementOnlyBlocked,
     setChannelAnnouncementOnly,
     channelAnnouncementOnlyBlocked,
     channelAnnouncementOnlyBlockedReasonKey,
@@ -586,26 +476,32 @@ export function useCreateChatDialog(options: {
     channelCreateBlocked,
     channelCreateBlockedReasonKey,
     createChannel: createChannelAction,
+    workspaceTopicStreams,
+    workspaceTopicStreamUuid: selectedWorkspaceTopicStreamUuid,
+    setWorkspaceTopicStreamUuid,
+    workspaceTopicName,
+    setWorkspaceTopicName,
+    workspaceTopicCreateBlocked,
+    createWorkspaceTopic,
     archivedSearch,
     setArchivedSearch,
-    archivedChannels,
-    onUnarchiveArchivedChannel,
-    unarchivePendingStreamIds,
-    unarchiveInlineError,
+    archivedChannels: EMPTY_ARCHIVED_CHANNELS,
+    onUnarchiveArchivedChannel: onUnsupportedAsyncAction,
+    unarchivePendingStreamIds: [],
+    unarchiveInlineError: null,
     channelsSearch,
     setChannelsSearch,
     channelsSubscriptionFilter,
     setChannelsSubscriptionFilter,
-    browseChannels,
+    browseChannels: EMPTY_BROWSE_CHANNELS,
     selectedBrowseChannelId,
-    setSelectedBrowseChannelId,
-    selectedBrowseChannel,
-    channelsLoading,
-    channelsError,
-    onSubscribeToChannel,
-    onUnsubscribeFromChannel,
-    subscribePendingStreamIds,
-    subscribeInlineError,
-    buildDmSlug: buildDmSlugFn,
+    setSelectedBrowseChannelId: onUnsupportedBrowseSelect,
+    selectedBrowseChannel: null,
+    channelsLoading: false,
+    channelsError: false,
+    onSubscribeToChannel: onUnsupportedAsyncAction,
+    onUnsubscribeFromChannel: onUnsupportedAsyncAction,
+    subscribePendingStreamIds: [],
+    subscribeInlineError: null,
   };
 }

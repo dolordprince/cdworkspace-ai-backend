@@ -1,5 +1,8 @@
 import { useEffect } from "react";
-import { withCurrentOrgRoute } from "~/shared/lib/org-route";
+import {
+  parseWorkspaceMessengerRoute,
+  workspaceInboxRoute,
+} from "~/shared/lib/workspace-messenger-route.lib";
 import {
   isInteractiveElementFocused,
   isModalShortcutContextOpen,
@@ -28,7 +31,12 @@ export function useLayoutEscapeNavigation(options: {
       if (action !== "navigate-inbox") return;
 
       event.preventDefault();
-      void navigate(withCurrentOrgRoute("/inbox"));
+      const workspaceRoute = parseWorkspaceMessengerRoute(pathname);
+      const target =
+        workspaceRoute != null
+          ? workspaceInboxRoute(workspaceRoute.orgId, workspaceRoute.projectId)
+          : "/";
+      void navigate(target);
     };
 
     document.addEventListener("keydown", handleKeyDown);

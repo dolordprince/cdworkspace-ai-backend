@@ -1,6 +1,5 @@
 import React from "react";
 import { t } from "~/i18n/i18n";
-import { truncateQueueId } from "./diagnostics-collect.lib";
 import type { DiagnosticsPageSnapshot } from "./diagnostics-collect.lib";
 
 export interface LogsPageOverviewProps {
@@ -30,7 +29,6 @@ export const LogsPageOverview: React.FC<LogsPageOverviewProps> = ({
   onPingServer,
   onOpenLogs,
 }) => {
-  const queueLabel = truncateQueueId(snapshot.realtime.eventQueueId);
   const collectedAtMs = Date.parse(snapshot.collectedAt);
   const lastEventAgeMs =
     snapshot.realtime.stats.lastEventAt != null && !Number.isNaN(collectedAtMs)
@@ -80,7 +78,9 @@ export const LogsPageOverview: React.FC<LogsPageOverviewProps> = ({
 
         <DiagnosticCard title={t("settings.diagnosticsRealtime")}>
           <p className="font-medium text-text-primary">
-            {queueLabel ?? t("settings.diagnosticsQueueInactive")}
+            {t("settings.diagnosticsEventsReceived", {
+              count: snapshot.realtime.stats.eventsReceivedCount,
+            })}
           </p>
           <p className="text-text-muted">
             {snapshot.realtime.online ? t("presence.online") : t("settings.diagnosticsOffline")}
@@ -101,11 +101,15 @@ export const LogsPageOverview: React.FC<LogsPageOverviewProps> = ({
 
         <DiagnosticCard title={t("settings.diagnosticsSession")}>
           <p className="truncate font-medium text-text-primary">
-            {snapshot.instances.currentEmail ?? t("settings.diagnosticsNoSession")}
+            {snapshot.workspaceSession.login ?? t("settings.diagnosticsNoSession")}
           </p>
-          <p className="truncate text-text-muted">{snapshot.instances.currentRealm ?? "—"}</p>
+          <p className="truncate text-text-muted">
+            {snapshot.workspaceSession.organizationOrigin ?? "—"}
+          </p>
           <p className="text-text-muted">
-            {t("settings.diagnosticsInstancesCount", { count: snapshot.instances.count })}
+            {t("settings.diagnosticsWorkspaceSessionsCount", {
+              count: snapshot.workspaceSession.count,
+            })}
           </p>
           {snapshot.session.sessionRemainingMs != null && (
             <p className="text-text-muted">
@@ -122,16 +126,11 @@ export const LogsPageOverview: React.FC<LogsPageOverviewProps> = ({
           <p className="truncate text-text-muted">{snapshot.environment.brandAppName}</p>
         </DiagnosticCard>
 
-        <DiagnosticCard title={t("settings.diagnosticsPush")}>
-          <p className="font-medium capitalize text-text-primary">{snapshot.push.permission}</p>
-          <p className="text-text-muted">
-            {snapshot.push.registered
-              ? t("settings.diagnosticsPushRegistered")
-              : t("settings.diagnosticsPushNotRegistered")}
+        <DiagnosticCard title={t("settings.diagnosticsNotifications")}>
+          <p className="font-medium capitalize text-text-primary">
+            {snapshot.notifications.permission}
           </p>
-          {snapshot.push.provider != null && (
-            <p className="text-text-muted">{snapshot.push.provider}</p>
-          )}
+          <p className="text-text-muted">{t("settings.diagnosticsNotificationPermission")}</p>
         </DiagnosticCard>
 
         <DiagnosticCard title={t("settings.diagnosticsLogCounts")}>
@@ -178,11 +177,11 @@ export const LogsPageOverview: React.FC<LogsPageOverviewProps> = ({
             <>
               <p className="text-text-muted">
                 {t("settings.diagnosticsCachePartitions", {
-                  count: snapshot.cache.messagePartitionCount,
+                  count: snapshot.cache.messagesCount,
                 })}
               </p>
               <p className="text-text-muted">
-                {snapshot.cache.hasChatListSnapshot
+                {snapshot.cache.hasOwnerMeta
                   ? t("settings.diagnosticsCacheChatListYes")
                   : t("settings.diagnosticsCacheChatListNo")}
               </p>
@@ -200,7 +199,7 @@ export const LogsPageOverview: React.FC<LogsPageOverviewProps> = ({
             {t("settings.diagnosticsStoresStreams", { count: snapshot.stores.streamsCount })}
           </p>
           <p className="text-text-muted">
-            {t("settings.diagnosticsStoresDms", { count: snapshot.stores.dmsCount })}
+            {t("settings.diagnosticsStoresDms", { count: snapshot.stores.conversationsCount })}
           </p>
           <p className="text-text-muted">
             {t("settings.diagnosticsStoresUsers", { count: snapshot.stores.usersCount })}

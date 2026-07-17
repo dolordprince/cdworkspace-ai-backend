@@ -1,11 +1,11 @@
 import React from "react";
-import { JitsiCallShell } from "~/features/jitsi-call/jitsi-call-shell.ui";
+import { JitsiIncomingInviteHost } from "~/features/jitsi-call/jitsi-call-shell.ui";
 import { MediaViewerOverlay } from "~/features/media-viewer/media-viewer-overlay.ui";
 import { OpenSearchContext } from "~/shared/contexts/open-search";
 import { RightDrawerContext } from "~/shared/contexts/right-drawer";
 import { brand } from "~/shared/lib/brand";
 import type { RightDrawerMode } from "~/widgets/right-panel/right-drawer.model";
-import type { RightPanelUserInfo } from "~/widgets/right-panel/right-panel.types";
+import type { WorkspaceRightPanelInfoView } from "~/widgets/right-panel/right-panel.types";
 import { TopBar } from "~/widgets/top-bar/top-bar.ui";
 import { LayoutMainWorkspace } from "./layout-main-workspace.ui";
 
@@ -15,15 +15,16 @@ export interface LayoutAppShellProps {
   setRightDrawerOpen: (open: boolean) => void;
   openRightDrawerInfo: () => void;
   openRightDrawerUserProfile: (userId: number) => void;
+  openWorkspaceUserProfile: (userUuid: string) => void;
   shouldShowChatShell: boolean;
+  pathname: string;
   sidebarOpen: boolean;
   rightDrawerMode: RightDrawerMode;
   onCloseRightDrawer: () => void;
   rightPanelTitle: string;
   participantsCount: number;
   onlineCount: number;
-  rightPanelUser: RightPanelUserInfo | undefined;
-  onSelectCommonGroup: (slug: string) => void;
+  workspaceRightPanelInfo: WorkspaceRightPanelInfoView | null;
   onOpenSettingsDrawer: () => void;
   onOpenAboutDrawer: () => void;
 }
@@ -34,15 +35,16 @@ export const LayoutAppShell = React.memo<LayoutAppShellProps>(function LayoutApp
   setRightDrawerOpen,
   openRightDrawerInfo,
   openRightDrawerUserProfile,
+  openWorkspaceUserProfile,
   shouldShowChatShell,
+  pathname,
   sidebarOpen,
   rightDrawerMode,
   onCloseRightDrawer,
   rightPanelTitle,
   participantsCount,
   onlineCount,
-  rightPanelUser,
-  onSelectCommonGroup,
+  workspaceRightPanelInfo,
   onOpenSettingsDrawer,
   onOpenAboutDrawer,
 }) {
@@ -54,6 +56,7 @@ export const LayoutAppShell = React.memo<LayoutAppShellProps>(function LayoutApp
           setOpen: setRightDrawerOpen,
           openInfo: openRightDrawerInfo,
           openUserProfile: openRightDrawerUserProfile,
+          openWorkspaceUserProfile,
         }}
       >
         <div
@@ -62,10 +65,11 @@ export const LayoutAppShell = React.memo<LayoutAppShellProps>(function LayoutApp
           aria-label={brand.appName}
         >
           <MediaViewerOverlay />
-          <JitsiCallShell />
+          <JitsiIncomingInviteHost />
           <TopBar />
           <LayoutMainWorkspace
             shouldShowChatShell={shouldShowChatShell}
+            pathname={pathname}
             sidebarOpen={sidebarOpen}
             rightDrawerOpen={rightDrawerOpen}
             rightDrawerMode={rightDrawerMode}
@@ -73,8 +77,7 @@ export const LayoutAppShell = React.memo<LayoutAppShellProps>(function LayoutApp
             rightPanelTitle={rightPanelTitle}
             participantsCount={participantsCount}
             onlineCount={onlineCount}
-            rightPanelUser={rightPanelUser}
-            onSelectCommonGroup={onSelectCommonGroup}
+            workspaceRightPanelInfo={workspaceRightPanelInfo}
             onOpenSettingsDrawer={onOpenSettingsDrawer}
             onOpenAboutDrawer={onOpenAboutDrawer}
           />

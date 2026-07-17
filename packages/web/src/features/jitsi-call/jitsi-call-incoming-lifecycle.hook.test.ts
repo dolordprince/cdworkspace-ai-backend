@@ -12,7 +12,7 @@ vi.mock("~/shared/lib/notification-sound", () => ({
 function buildInvite(messageId = 777): IncomingDmCallInvite {
   return {
     messageId,
-    meetingUrl: `https://meet.jit.si/zulip-dm-room-${messageId}`,
+    meetingUrl: `https://meet.workspace.example.com/workspace-room-${messageId}`,
     callerName: "Fox",
     locationName: "Fox",
     avatarUrl: undefined,
@@ -22,9 +22,11 @@ function buildInvite(messageId = 777): IncomingDmCallInvite {
 
 function buildActiveCall(): ActiveJitsiCall {
   return {
+    callKey: ":https://meet.jit.si/active-room",
     meetingUrl: "https://meet.jit.si/active-room",
     locationName: "Active",
     startWithVideoMuted: true,
+    startedAtMs: 1_700_000_100_000,
   };
 }
 

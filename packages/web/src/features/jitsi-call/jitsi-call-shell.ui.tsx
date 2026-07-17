@@ -1,32 +1,50 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { t } from "~/i18n/i18n";
-import { getRealmBaseUrl } from "~/shared/api/zulip-client.internal";
 import { CALL_INCOMING_MODAL_VARIANT } from "~/shared/config/constants";
-import { resolveAvatarUrl } from "~/shared/lib/avatar";
 import { IncomingCallCompact } from "./jitsi-call-incoming-compact.ui";
 import { IncomingCallLarge } from "./jitsi-call-incoming-large.ui";
 import { useIncomingCallLifecycle } from "./jitsi-call-incoming-lifecycle.hook";
 import { useJitsiCallStore } from "./jitsi-call.model";
 import { JitsiCallModal } from "./jitsi-call.ui";
 
-export const JitsiCallShell: React.FC = () => {
+export const JitsiActiveCallHost: React.FC = () => {
   const activeCall = useJitsiCallStore((s) => s.activeCall);
+  const closeCall = useJitsiCallStore((s) => s.closeCall);
+
+  if (activeCall == null) {
+    return null;
+  }
+
+  return (
+    <JitsiCallModal
+      open={true}
+      meetingUrl={activeCall.meetingUrl}
+      locationName={activeCall.locationName}
+      displayName={activeCall.displayName}
+      startWithVideoMuted={activeCall.startWithVideoMuted}
+      onClose={closeCall}
+    />
+  );
+};
+
+export const JitsiIncomingInviteHost: React.FC = () => {
   const incomingInvite = useJitsiCallStore((s) => s.incomingInvite);
+  const activeCall = useJitsiCallStore((s) => s.activeCall);
   const acceptIncomingInvite = useJitsiCallStore((s) => s.acceptIncomingInvite);
   const declineIncomingInvite = useJitsiCallStore((s) => s.declineIncomingInvite);
-  const closeCall = useJitsiCallStore((s) => s.closeCall);
-  const [videoEnabledByInvite, setVideoEnabledByInvite] = useState<Record<number, boolean>>({});
+  const [videoEnabledByInvite, setVideoEnabledByInvite] = useState<Record<string, boolean>>({});
 
   const trimmedCallerName = incomingInvite?.callerName.trim() ?? "";
   const inviteTitle = trimmedCallerName.length > 0 ? trimmedCallerName : t("call.participant");
-  const inviteAvatarSrc = resolveAvatarUrl(incomingInvite?.avatarUrl, getRealmBaseUrl()) ?? null;
+  const inviteAvatarUrn = incomingInvite?.avatarUrl;
   const inviteAvatarLetter = inviteTitle[0]?.toUpperCase() ?? "?";
   const incomingMessageId = incomingInvite?.messageId ?? null;
+  const incomingMessageKey = incomingMessageId == null ? null : String(incomingMessageId);
   const videoEnabled =
-    incomingMessageId != null ? (videoEnabledByInvite[incomingMessageId] ?? false) : false;
+    incomingMessageKey != null ? (videoEnabledByInvite[incomingMessageKey] ?? false) : false;
   const isCompactIncomingVariant = CALL_INCOMING_MODAL_VARIANT === "compact";
 
-  const clearVideoPreference = useCallback((messageId: number | null) => {
+  const clearVideoPreference = useCallback((messageId: string | null) => {
     if (messageId == null) return;
     setVideoEnabledByInvite((current) => {
       if (current[messageId] == null) return current;
@@ -38,21 +56,21 @@ export const JitsiCallShell: React.FC = () => {
 
   const handleAcceptIncomingInvite = useCallback(() => {
     acceptIncomingInvite({ startWithVideoMuted: !videoEnabled });
-    clearVideoPreference(incomingMessageId);
-  }, [acceptIncomingInvite, videoEnabled, clearVideoPreference, incomingMessageId]);
+    clearVideoPreference(incomingMessageKey);
+  }, [acceptIncomingInvite, videoEnabled, clearVideoPreference, incomingMessageKey]);
 
   const handleDeclineIncomingInvite = useCallback(() => {
-    clearVideoPreference(incomingMessageId);
+    clearVideoPreference(incomingMessageKey);
     declineIncomingInvite();
-  }, [clearVideoPreference, declineIncomingInvite, incomingMessageId]);
+  }, [clearVideoPreference, declineIncomingInvite, incomingMessageKey]);
 
   const handleToggleVideo = useCallback(() => {
-    if (incomingMessageId == null) return;
+    if (incomingMessageKey == null) return;
     setVideoEnabledByInvite((current) => ({
       ...current,
-      [incomingMessageId]: !(current[incomingMessageId] ?? false),
+      [incomingMessageKey]: !(current[incomingMessageKey] ?? false),
     }));
-  }, [incomingMessageId]);
+  }, [incomingMessageKey]);
 
   useIncomingCallLifecycle({
     incomingInvite,
@@ -67,7 +85,7 @@ export const JitsiCallShell: React.FC = () => {
       return (
         <IncomingCallCompact
           inviteTitle={inviteTitle}
-          inviteAvatarSrc={inviteAvatarSrc}
+          inviteAvatarUrn={inviteAvatarUrn}
           inviteAvatarLetter={inviteAvatarLetter}
           onAccept={handleAcceptIncomingInvite}
           onDecline={handleDeclineIncomingInvite}
@@ -78,7 +96,7 @@ export const JitsiCallShell: React.FC = () => {
     return (
       <IncomingCallLarge
         inviteTitle={inviteTitle}
-        inviteAvatarSrc={inviteAvatarSrc}
+        inviteAvatarUrn={inviteAvatarUrn}
         inviteAvatarLetter={inviteAvatarLetter}
         videoEnabled={videoEnabled}
         onToggleVideo={handleToggleVideo}
@@ -90,7 +108,7 @@ export const JitsiCallShell: React.FC = () => {
     incomingInvite,
     isCompactIncomingVariant,
     inviteTitle,
-    inviteAvatarSrc,
+    inviteAvatarUrn,
     inviteAvatarLetter,
     videoEnabled,
     handleToggleVideo,
@@ -98,19 +116,14 @@ export const JitsiCallShell: React.FC = () => {
     handleDeclineIncomingInvite,
   ]);
 
+  return incomingInviteView;
+};
+
+export const JitsiCallShell: React.FC = () => {
   return (
     <>
-      {incomingInviteView}
-
-      {activeCall != null && (
-        <JitsiCallModal
-          open={true}
-          meetingUrl={activeCall.meetingUrl}
-          locationName={activeCall.locationName}
-          startWithVideoMuted={activeCall.startWithVideoMuted}
-          onClose={closeCall}
-        />
-      )}
+      <JitsiIncomingInviteHost />
+      <JitsiActiveCallHost />
     </>
   );
 };

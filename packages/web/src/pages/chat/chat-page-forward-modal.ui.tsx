@@ -1,33 +1,62 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import React, { useMemo, useState } from "react";
-import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
-import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
+import { selectUserDisplayName } from "~/entities/user/user-selectors.lib";
 import { useUsersStore } from "~/entities/user/user.model";
+import type { User } from "~/entities/user/user.types";
 import { t } from "~/i18n/i18n";
 import { resolveTopicDisplayInfo } from "~/shared/lib/topic-display.lib";
+import { DialogPrimaryButton } from "~/shared/ui/app-dialog.ui";
 import { Icon } from "~/shared/ui/icon";
-import { toggleForwardRecipient } from "./chat-forward.lib";
 import type { ForwardMessageModalBodyProps } from "./chat-page.types";
 
+function isForwardRecipientUser(user: User | undefined): user is User {
+  return user != null;
+}
+
 export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
-  function ForwardMessageModalBody({ streams, onForward, onClose }) {
+  function ForwardMessageModalBody({
+    streamOptions,
+    topicOptions,
+    currentUserUuid,
+    isForwarding = false,
+    onForward,
+    onClose,
+  }) {
     const [tab, setTab] = useState<"channel" | "dm">("channel");
     const [selectedStream, setSelectedStream] = useState<string>("");
-    const [topic, setTopic] = useState("");
-    const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
+    const [selectedTopic, setSelectedTopic] = useState<string>("");
+    const [selectedUserUuid, setSelectedUserUuid] = useState<string>("");
     const [dmSearch, setDmSearch] = useState("");
-    const stream = streams.find((s) => s.name === selectedStream);
-    const topics = stream?.topics ?? [];
-    const allUsers = useUsersStore((s) => s.users);
+    const usersById = useUsersStore((state) => state.usersById);
+    const userIds = useUsersStore((state) => state.userIds);
+    const topics = useMemo(
+      () => topicOptions.filter((topicOption) => topicOption.streamUuid === selectedStream),
+      [selectedStream, topicOptions],
+    );
     const userList = useMemo(() => {
-      const list = Array.from(allUsers.values());
-      if (!dmSearch.trim()) return list;
-      const q = dmSearch.trim().toLowerCase();
-      return list.filter(
-        (u) =>
-          u.full_name.toLowerCase().includes(q) || (u.email?.toLowerCase().includes(q) ?? false),
-      );
-    }, [allUsers, dmSearch]);
+      const normalizedSearch = dmSearch.trim().toLowerCase();
+      return userIds
+        .map((userUuid) => usersById[userUuid])
+        .filter(isForwardRecipientUser)
+        .filter((user) => user.uuid !== currentUserUuid)
+        .map((user) => {
+          const displayName = selectUserDisplayName(user, user.uuid);
+          return {
+            userUuid: user.uuid,
+            displayName,
+            username: user.username,
+            email: user.email ?? "",
+          };
+        })
+        .filter((user) => {
+          if (normalizedSearch.length === 0) {
+            return true;
+          }
+          return [user.displayName, user.username, user.email].some((value) =>
+            value.toLowerCase().includes(normalizedSearch),
+          );
+        });
+    }, [currentUserUuid, dmSearch, userIds, usersById]);
 
     return (
       <>
@@ -35,10 +64,14 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
           <Dialog.Title className="text-sm font-semibold text-text-primary">
             {tab === "channel" ? t("message.forwardToChannel") : t("message.forwardToDm")}
           </Dialog.Title>
+          <Dialog.Description className="sr-only">
+            {tab === "channel" ? t("message.forwardToChannel") : t("message.forwardToDm")}
+          </Dialog.Description>
           <Dialog.Close asChild>
             <button
               type="button"
               onClick={onClose}
+              disabled={isForwarding}
               className="hover:bg-bg/50 rounded p-1 text-text-muted"
               aria-label={t("common.close")}
             >
@@ -54,6 +87,7 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
                 ? "border-b-2 border-accent text-accent"
                 : "text-text-muted hover:text-text-primary"
             }`}
+            disabled={isForwarding}
             onClick={() => setTab("channel")}
           >
             {t("message.channel")}
@@ -65,6 +99,7 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
                 ? "border-b-2 border-accent text-accent"
                 : "text-text-muted hover:text-text-primary"
             }`}
+            disabled={isForwarding}
             onClick={() => setTab("dm")}
           >
             {t("message.directMessage")}
@@ -78,42 +113,37 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
                 value={selectedStream}
                 onChange={(e) => {
                   setSelectedStream(e.target.value);
-                  setTopic("");
+                  setSelectedTopic("");
                 }}
+                aria-label={t("channel.name")}
                 className="w-full rounded-lg border border-border-subtle bg-bg px-3 py-2 text-sm text-text-primary outline-none"
+                disabled={isForwarding}
               >
                 <option value="">{t("channel.selectChannel")}</option>
-                {streams.map((s) => (
-                  <option key={s.stream_id} value={s.name}>
-                    #{s.name}
+                {streamOptions.map((streamOption) => (
+                  <option key={streamOption.streamUuid} value={streamOption.streamUuid}>
+                    #{streamOption.name}
                   </option>
                 ))}
               </select>
               <label className="text-sm text-text-muted">{t("channel.topicName")}</label>
-              <input
-                type="text"
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                list="forward-topics"
+              <select
+                value={selectedTopic}
+                onChange={(e) => setSelectedTopic(e.target.value)}
+                aria-label={t("channel.topicName")}
                 className="w-full rounded-lg border border-border-subtle bg-bg px-3 py-2 text-sm text-text-primary outline-none placeholder:text-text-muted"
-                placeholder={t("channel.newTopic")}
-              />
-              {topics.length > 0 && (
-                <datalist id="forward-topics">
-                  {topics.map((topicOption) => {
-                    const topicDisplay = resolveTopicDisplayInfo(topicOption.subject);
-                    return (
-                      <option
-                        key={`${topicOption.subject.length}:${topicOption.subject}`}
-                        value={topicOption.subject}
-                        label={topicDisplay.label}
-                      >
-                        {topicDisplay.label}
-                      </option>
-                    );
-                  })}
-                </datalist>
-              )}
+                disabled={selectedStream.length === 0 || isForwarding}
+              >
+                <option value="">{t("chat.selectTopic")}</option>
+                {topics.map((topicOption) => {
+                  const topicDisplay = resolveTopicDisplayInfo(topicOption.name);
+                  return (
+                    <option key={topicOption.topicUuid} value={topicOption.topicUuid}>
+                      {topicDisplay.label}
+                    </option>
+                  );
+                })}
+              </select>
             </>
           ) : (
             <>
@@ -123,6 +153,7 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
                 onChange={(e) => setDmSearch(e.target.value)}
                 className="w-full rounded-lg border border-border-subtle bg-bg px-3 py-2 text-sm text-text-primary outline-none placeholder:text-text-muted"
                 placeholder={t("message.searchUsers")}
+                disabled={isForwarding}
               />
               <div className="max-h-48 overflow-y-auto rounded-lg border border-border-subtle">
                 {userList.length === 0 ? (
@@ -131,35 +162,28 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
                   </p>
                 ) : (
                   userList.map((u) => {
-                    const statusLabel = formatUserStatusLabel(u.status);
-                    const shouldRenderRichStatus = u.status?.reactionType === "realm_emoji";
                     return (
                       <button
                         type="button"
-                        key={u.user_id}
+                        key={u.userUuid}
+                        aria-label={u.displayName}
+                        disabled={isForwarding}
                         className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                          selectedUserIds.includes(u.user_id)
+                          selectedUserUuid === u.userUuid
                             ? "bg-accent/20 text-text-primary"
                             : "text-text-primary hover:bg-bg-elevated"
                         }`}
-                        onClick={() =>
-                          setSelectedUserIds((prev) => toggleForwardRecipient(prev, u.user_id))
-                        }
+                        onClick={() => setSelectedUserUuid(u.userUuid)}
                       >
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate font-medium">{u.full_name}</span>
-                          {shouldRenderRichStatus ? (
-                            <UserStatusLabel
-                              status={u.status}
-                              className="max-w-full text-[11px] text-text-secondary"
-                            />
-                          ) : (statusLabel != null && statusLabel.length > 0) || u.email ? (
+                          <span className="block truncate font-medium">{u.displayName}</span>
+                          {u.email ? (
                             <span className="block truncate text-[11px] text-text-secondary">
-                              {statusLabel ?? u.email ?? ""}
+                              {u.email}
                             </span>
                           ) : null}
                         </span>
-                        {selectedUserIds.includes(u.user_id) ? (
+                        {selectedUserUuid === u.userUuid ? (
                           <Icon name="check" size={14} className="ml-auto text-accent" />
                         ) : null}
                       </button>
@@ -174,25 +198,35 @@ export const ForwardMessageModalBody = React.memo<ForwardMessageModalBodyProps>(
               <button
                 type="button"
                 onClick={onClose}
+                disabled={isForwarding}
                 className="hover:bg-bg/50 rounded-lg px-3 py-1.5 text-sm text-text-muted"
               >
                 {t("common.cancel")}
               </button>
             </Dialog.Close>
-            <button
-              type="button"
-              disabled={tab === "channel" ? !selectedStream : selectedUserIds.length === 0}
+            <DialogPrimaryButton
+              disabled={
+                tab === "channel"
+                  ? selectedStream.length === 0 || selectedTopic.length === 0
+                  : selectedUserUuid.length === 0
+              }
+              isSubmitting={isForwarding}
               onClick={() => {
-                if (tab === "dm" && selectedUserIds.length > 0) {
-                  onForward("", "", selectedUserIds);
+                if (isForwarding) return;
+                if (tab === "dm" && selectedUserUuid.length > 0) {
+                  onForward({ kind: "direct", userUuid: selectedUserUuid });
                 } else {
-                  onForward(selectedStream, topic);
+                  onForward({
+                    kind: "topic",
+                    streamUuid: selectedStream,
+                    topicUuid: selectedTopic,
+                  });
                 }
               }}
-              className="rounded-lg bg-accent px-3 py-1.5 text-sm text-bg hover:opacity-90 disabled:opacity-50"
+              className="px-3 py-1.5"
             >
               {t("message.forwardTo")}
-            </button>
+            </DialogPrimaryButton>
           </div>
         </div>
       </>

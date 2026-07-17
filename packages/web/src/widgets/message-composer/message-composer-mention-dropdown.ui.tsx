@@ -1,25 +1,20 @@
 import React from "react";
-import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
-import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
-import { useUsersStore } from "~/entities/user/user.model";
+import { resolveUserPresenceVisual } from "~/entities/user/user-selectors.lib";
+import { WorkspaceAvatar } from "~/features/workspace-avatar/workspace-avatar.ui";
 import { t } from "~/i18n/i18n";
-import { getRealmBaseUrl } from "~/shared/api/zulip-client.internal";
-import { resolveAvatarUrl } from "~/shared/lib/avatar";
-import { getPresenceState } from "~/shared/lib/format";
-import { Avatar } from "~/shared/ui/avatar";
 import { PresenceIndicator } from "~/shared/ui/presence-indicator";
+import { getWorkspaceComposerReferenceLabel } from "./message-composer-reference.lib";
 import type { ComposerMentionDropdownProps } from "./message-composer-mention-dropdown.types";
 
 export const ComposerMentionDropdown = React.memo(function ComposerMentionDropdown({
   suggestions,
   activeIndex,
+  listboxId,
   onSelect,
   onHoverIndex,
 }: ComposerMentionDropdownProps) {
-  const getUser = useUsersStore((s) => s.getUser);
   const containerRef = React.useRef<HTMLDivElement>(null);
   const itemRefs = React.useRef<(HTMLButtonElement | null)[]>([]);
-  const realmBaseUrl = getRealmBaseUrl();
 
   React.useEffect(() => {
     if (suggestions.length === 0) return;
@@ -33,20 +28,60 @@ export const ComposerMentionDropdown = React.memo(function ComposerMentionDropdo
   return (
     <div
       ref={containerRef}
+      id={listboxId}
+      role="listbox"
       className="absolute bottom-full left-0 z-dropdown mb-1 max-h-48 w-80 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border border-border-subtle bg-bg-elevated shadow-xl"
     >
       {suggestions.length > 0 ? (
-        suggestions.map((user, index) => {
-          const u = getUser(user.userId);
-          const presenceState =
-            u?.presence != null ? getPresenceState(u.presence.timestamp, u.presence.status) : null;
-          const statusLabel = formatUserStatusLabel(u?.status);
-          const shouldRenderRichStatus = u?.status?.reactionType === "realm_emoji";
-          const avatarSrc = resolveAvatarUrl(user.avatarUrl, realmBaseUrl);
+        suggestions.map((suggestion, index) => {
+          if ("kind" in suggestion) {
+            const label = getWorkspaceComposerReferenceLabel(suggestion);
+            const secondaryText = suggestion.kind === "topic" ? suggestion.topicName : "";
+            return (
+              <button
+                type="button"
+                id={`${listboxId}-option-${index}`}
+                role="option"
+                aria-selected={activeIndex === index}
+                key={`${suggestion.kind}:${suggestion.kind === "stream" ? suggestion.streamUuid : suggestion.topicUuid}`}
+                ref={(node) => {
+                  itemRefs.current[index] = node;
+                }}
+                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-text-primary transition-colors hover:bg-bg ${
+                  activeIndex === index ? "bg-bg" : ""
+                }`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onSelect(suggestion);
+                }}
+                onMouseEnter={() => onHoverIndex(index)}
+              >
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-bg text-xs text-text-secondary">
+                  {suggestion.kind === "stream" ? "#" : "›"}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{label}</span>
+                  {secondaryText ? (
+                    <span className="block truncate text-[11px] text-text-secondary">
+                      {secondaryText}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          }
+
+          const user = suggestion;
+          const initials = user.displayName.slice(0, 1) || user.username.slice(0, 1) || "?";
+          const secondaryText = user.username ? `@${user.username}` : user.email;
+          const presence = resolveUserPresenceVisual(user.status);
           return (
             <button
               type="button"
-              key={user.userId}
+              id={`${listboxId}-option-${index}`}
+              role="option"
+              aria-selected={activeIndex === index}
+              key={user.userUuid}
               ref={(node) => {
                 itemRefs.current[index] = node;
               }}
@@ -59,28 +94,27 @@ export const ComposerMentionDropdown = React.memo(function ComposerMentionDropdo
               }}
               onMouseEnter={() => onHoverIndex(index)}
             >
-              <Avatar size="sm" src={avatarSrc} className="bg-bg text-text-primary">
-                {user.fullName.slice(0, 1)}
-              </Avatar>
+              <span className="relative flex shrink-0">
+                <WorkspaceAvatar
+                  size="sm"
+                  avatarUrn={user.avatarUrl}
+                  className="bg-bg text-text-primary"
+                >
+                  {initials}
+                </WorkspaceAvatar>
+                <PresenceIndicator
+                  status={presence}
+                  size="sm"
+                  className="absolute -bottom-0.5 -right-0.5"
+                />
+              </span>
               <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 items-center justify-between gap-2">
-                  <span className="truncate font-medium">{user.fullName}</span>
-                  <PresenceIndicator
-                    status={presenceState}
-                    size="sm"
-                    tone="header"
-                    pulse={false}
-                    withBorder={false}
-                  />
+                  <span className="truncate font-medium">{user.displayName}</span>
                 </span>
-                {shouldRenderRichStatus ? (
-                  <UserStatusLabel
-                    status={u?.status}
-                    className="max-w-full text-[11px] text-text-secondary"
-                  />
-                ) : (statusLabel ?? user.email) ? (
+                {secondaryText ? (
                   <span className="block truncate text-[11px] text-text-secondary">
-                    {statusLabel ?? user.email}
+                    {secondaryText}
                   </span>
                 ) : null}
               </span>

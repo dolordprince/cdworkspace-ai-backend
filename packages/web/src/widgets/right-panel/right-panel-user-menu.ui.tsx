@@ -1,15 +1,13 @@
 import { Theme, type EmojiClickData } from "emoji-picker-react";
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { useInstancesStore } from "~/entities/instance/instance.model";
 import { useThemeStore } from "~/entities/theme/theme.model";
-import { applyUserStatusSnapshot } from "~/entities/user/api/user-status-write.lib";
-import { updateOwnStatus } from "~/entities/user/api/user.api";
-import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
-import { useUserStatus } from "~/entities/user/user-status.hooks";
-import { formatUserStatusLabel, getUserStatusEmojiDisplay } from "~/entities/user/user-status.lib";
-import { useUsersStore, type UserStatusReactionType } from "~/entities/user/user.model";
+import { selectUserStatusLabel } from "~/entities/user/user-selectors.lib";
+import { updateWorkspaceOwnStatus } from "~/entities/user/user-workspace-status-actions.lib";
+import { useUsersStore } from "~/entities/user/user.model";
+import { removeWorkspaceSession } from "~/entities/workspace-auth/workspace-auth.lib";
+import { useWorkspaceAuthStore } from "~/entities/workspace-auth/workspace-auth.model";
+import { resolveWorkspacePostLogoutRoute } from "~/entities/workspace-auth/workspace-post-logout-route.lib";
 import { AUTH_IDLE_TIMEOUT_PRESETS } from "~/features/settings/auth-idle-timeout.lib";
 import { useSettingsStore } from "~/features/settings/settings.model";
 import type { AuthIdleTimeout, NotificationSound } from "~/features/settings/settings.types";
@@ -25,14 +23,14 @@ import { performApplicationColdStart } from "~/shared/lib/local-reset";
 import { createLogger } from "~/shared/lib/logger";
 import { playNotificationSound } from "~/shared/lib/notification-sound";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
-import { resolveOrganizationLogoUrl } from "~/shared/lib/organization-branding";
-import { ensureRealmEmojisLoaded, getCachedRealmEmojis } from "~/shared/lib/realm-emojis-cache";
 import { toast } from "~/shared/lib/toast/toast";
-import { ensureZulipEmojiCatalogLoaded } from "~/shared/lib/zulip-emoji-catalog.lib";
-import { zulipEmojiPayloadFromPickerData } from "~/shared/lib/zulip-emoji-payload.lib";
 import { Icon } from "~/shared/ui/icon";
 import { ScrollArea } from "~/shared/ui/scroll-area";
 import { SectionLabel } from "~/shared/ui/section-label.ui";
+import {
+  RightPanelConnectExternalAccountDialog,
+  RightPanelExternalAccountsList,
+} from "./right-panel-external-account.integration";
 import {
   RightPanelUserMenuMenuButton,
   RightPanelUserMenuOptionButton,
@@ -51,6 +49,7 @@ import {
   THEME_MODES,
 } from "./right-panel-user-menu-constants.lib";
 import { RightPanelUserMenuStatusDialog } from "./right-panel-user-menu-status-dialog.ui";
+import type { UserStatusEmojiDisplay } from "./right-panel-user-menu-status-dialog.ui";
 import type { RightPanelUserMenuProps } from "./right-panel-user-menu.types";
 
 const log = createLogger("right-panel-user-menu");
@@ -62,14 +61,19 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
 }) => {
   const navigate = useNavigate();
   const rightDrawer = useRightDrawer();
-  const { t, locale: currentLocale, setLocale, supportedLocales: locales } = useTranslation();
-  const currentUserId = useChatListStore((s) => s.currentUserId);
-  const currentUser = useUsersStore((s) =>
-    currentUserId != null ? s.getUser(currentUserId) : null,
+  const { t, locale: currentLocale, supportedLocales: locales } = useTranslation();
+  const currentWorkspaceSession = useWorkspaceAuthStore((s) => {
+    const accountId = s.currentAccountId;
+    return accountId != null
+      ? s.sessions.find((session) => session.accountId === accountId)
+      : undefined;
+  });
+  const getCurrentWorkspaceSession = useWorkspaceAuthStore((s) => s.getCurrentSession);
+  const currentWorkspaceUser = useUsersStore((s) =>
+    currentWorkspaceSession?.userUuid != null
+      ? s.usersById[currentWorkspaceSession.userUuid]
+      : undefined,
   );
-  const instances = useInstancesStore((s) => s.instances);
-  const currentInstanceId = useInstancesStore((s) => s.currentInstanceId);
-  const removeInstance = useInstancesStore((s) => s.removeInstance);
   // const prioritizePersonalUnread = useSettingsStore((s) => s.prioritizePersonalUnread);
   // const prioritizeUnmutedUnreadChannels = useSettingsStore(
   //   (s) => s.prioritizeUnmutedUnreadChannels,
@@ -97,90 +101,67 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
   const [folderLayoutOpen, setFolderLayoutOpen] = useState(false);
   const [chatListDensityOpen, setChatListDensityOpen] = useState(false);
   const [authIdleTimeoutOpen, setAuthIdleTimeoutOpen] = useState(false);
+  const [externalAccountsOpen, setExternalAccountsOpen] = useState(false);
   const [statusDialogOpen, setStatusDialogOpen] = useState(false);
   const [statusTextDraft, setStatusTextDraft] = useState("");
   const [statusAwayDraft, setStatusAwayDraft] = useState(false);
-  const [statusEmojiNameDraft, setStatusEmojiNameDraft] = useState<string>("");
-  const [statusEmojiCodeDraft, setStatusEmojiCodeDraft] = useState<string>("");
-  const [statusEmojiReactionTypeDraft, setStatusEmojiReactionTypeDraft] = useState<
-    UserStatusReactionType | undefined
-  >(undefined);
+  const [statusEmojiDraft, setStatusEmojiDraft] = useState<string>("");
   const [statusEmojiPickerOpen, setStatusEmojiPickerOpen] = useState(false);
   const [statusSubmitting, setStatusSubmitting] = useState(false);
-  const [customEmojis, setCustomEmojis] = useState(() => getCachedRealmEmojis());
+  const [externalAccountDialogOpen, setExternalAccountDialogOpen] = useState(false);
   const panelHeading = heading?.trim() ?? "";
   const currentLocaleName =
     locales.find((supportedLocale) => supportedLocale.id === currentLocale)?.nativeLabel ??
     currentLocale;
-  const currentInstance = useMemo(
-    () => instances.find((instance) => instance.id === currentInstanceId) ?? null,
-    [instances, currentInstanceId],
-  );
   const currentServerLabel = useMemo(
-    () => (currentInstance ? getInstanceLabel(currentInstance.realm, currentInstance.email) : ""),
-    [currentInstance],
-  );
-  const currentServerIconUrl = useMemo(
-    () => resolveOrganizationLogoUrl(currentInstance?.realmIcon, currentInstance?.realm),
-    [currentInstance?.realmIcon, currentInstance?.realm],
-  );
-  const currentStatus = useUserStatus(currentUserId);
-  const currentStatusLabel = useMemo(
-    () => currentStatus.statusLabel ?? formatUserStatusLabel(currentUser?.status),
-    [currentStatus.statusLabel, currentUser?.status],
-  );
-  const shouldRenderRichCurrentStatus = currentUser?.status?.reactionType === "realm_emoji";
-  const currentStatusSubtitle = shouldRenderRichCurrentStatus ? (
-    <UserStatusLabel status={currentUser?.status} />
-  ) : (
-    (currentStatusLabel ?? t("settings.statusPlaceholder"))
-  );
-  const selectedStatusEmojiDisplay = useMemo(
     () =>
-      getUserStatusEmojiDisplay(
-        {
-          text: "",
-          emojiName: statusEmojiNameDraft || undefined,
-          emojiCode: statusEmojiCodeDraft || undefined,
-          reactionType: statusEmojiReactionTypeDraft,
-          away: false,
-        },
-        customEmojis,
-      ),
-    [customEmojis, statusEmojiCodeDraft, statusEmojiNameDraft, statusEmojiReactionTypeDraft],
+      currentWorkspaceSession != null
+        ? getInstanceLabel(
+            currentWorkspaceSession.organizationOrigin,
+            currentWorkspaceSession.login,
+          )
+        : "",
+    [currentWorkspaceSession],
+  );
+  const currentServerAccountLabel = currentWorkspaceSession?.login ?? "";
+  const currentServerIconUrl = null;
+  const currentStatusSubtitle =
+    selectUserStatusLabel(currentWorkspaceUser) ??
+    (currentWorkspaceUser?.status === "active"
+      ? t("presence.online")
+      : currentWorkspaceUser?.status === "idle" || currentWorkspaceUser?.status === "do_not_disturb"
+        ? t("presence.away")
+        : currentWorkspaceUser?.status === "offline"
+          ? t("presence.offline")
+          : t("settings.statusPlaceholder"));
+  const selectedStatusEmojiDisplay = useMemo<UserStatusEmojiDisplay | null>(
+    () => (statusEmojiDraft ? { kind: "text", text: statusEmojiDraft } : null),
+    [statusEmojiDraft],
   );
   const statusEmojiPickerTheme = useMemo(
     () => (currentThemeMode === "light" ? Theme.LIGHT : Theme.DARK),
     [currentThemeMode],
   );
 
-  const ensureCustomEmojisLoaded = useCallback(() => {
-    void ensureZulipEmojiCatalogLoaded();
-    void ensureRealmEmojisLoaded()
-      .then((list) => {
-        setCustomEmojis(list);
-      })
-      .catch(() => {
-        log.warn("Failed to load realm custom emojis for status picker");
-      });
-  }, []);
-
   const closeDrawer = useCallback(() => {
     rightDrawer?.setOpen(false);
   }, [rightDrawer]);
 
   const openStatusDialog = useCallback(() => {
-    const status = currentUser?.status;
-    setStatusTextDraft(status?.text ?? "");
-    setStatusAwayDraft(status?.away ?? false);
-    setStatusEmojiNameDraft(status?.emojiName ?? "");
-    setStatusEmojiCodeDraft(status?.emojiCode ?? "");
-    setStatusEmojiReactionTypeDraft(
-      status?.reactionType ?? (status?.emojiCode ? "unicode_emoji" : undefined),
+    if (currentWorkspaceSession == null) return;
+    setStatusTextDraft(currentWorkspaceUser?.statusText?.trim() ?? "");
+    setStatusAwayDraft(
+      currentWorkspaceUser?.status === "idle" || currentWorkspaceUser?.status === "do_not_disturb",
     );
+    setStatusEmojiDraft(currentWorkspaceUser?.statusEmoji?.trim() ?? "");
     setStatusEmojiPickerOpen(false);
     setStatusDialogOpen(true);
-  }, [currentUser?.status]);
+  }, [
+    currentWorkspaceSession,
+    currentWorkspaceUser?.status,
+    currentWorkspaceUser?.statusEmoji,
+    currentWorkspaceUser?.statusText,
+  ]);
 
   const closeStatusDialog = useCallback(() => {
     if (statusSubmitting) {
@@ -193,79 +174,40 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
   const clearStatusDraft = useCallback(() => {
     setStatusTextDraft("");
     setStatusAwayDraft(false);
-    setStatusEmojiNameDraft("");
-    setStatusEmojiCodeDraft("");
-    setStatusEmojiReactionTypeDraft(undefined);
+    setStatusEmojiDraft("");
     setStatusEmojiPickerOpen(false);
   }, []);
 
   const toggleStatusEmojiPicker = useCallback(() => {
-    setStatusEmojiPickerOpen((prevOpen) => {
-      const nextOpen = !prevOpen;
-      if (nextOpen) {
-        ensureCustomEmojisLoaded();
-      }
-      return nextOpen;
-    });
-  }, [ensureCustomEmojisLoaded]);
+    setStatusEmojiPickerOpen((prevOpen) => !prevOpen);
+  }, []);
 
   const handleSaveStatus = useCallback(async () => {
-    const trimmedEmojiName = statusEmojiNameDraft.trim();
-    const trimmedEmojiCode = statusEmojiCodeDraft.trim();
-    const emojiMetadata =
-      trimmedEmojiName.length > 0
-        ? {
-            emojiName: trimmedEmojiName,
-            ...(trimmedEmojiCode.length > 0
-              ? {
-                  emojiCode: trimmedEmojiCode,
-                  reactionType: statusEmojiReactionTypeDraft ?? "unicode_emoji",
-                }
-              : {}),
-          }
-        : {};
+    if (currentWorkspaceSession == null) {
+      toast.error(t("settings.statusUpdateError"));
+      return;
+    }
     setStatusSubmitting(true);
     try {
-      const result = await updateOwnStatus({
-        text: statusTextDraft,
+      const result = await updateWorkspaceOwnStatus({
+        runtimeContext: currentWorkspaceSession,
+        statusText: statusTextDraft,
+        statusEmoji: statusEmojiDraft,
         away: statusAwayDraft,
-        ...emojiMetadata,
       });
       if (!result.ok) {
-        log.warn("Status update failed", {
-          kind: result.kind,
-          status: result.status,
-          hasText: statusTextDraft.trim().length > 0,
-          hasEmoji: trimmedEmojiName.length > 0,
-          away: statusAwayDraft,
-        });
-        toast.error(result.kind === "invalid" ? result.message : t("settings.statusUpdateError"));
+        toast.error(t("settings.statusUpdateError"));
         return;
-      }
-      if (currentUserId != null) {
-        applyUserStatusSnapshot(currentUserId, result.status, Date.now());
       }
       setStatusDialogOpen(false);
     } finally {
       setStatusSubmitting(false);
     }
-  }, [
-    currentUserId,
-    statusAwayDraft,
-    statusEmojiCodeDraft,
-    statusEmojiNameDraft,
-    statusEmojiReactionTypeDraft,
-    statusTextDraft,
-    t,
-  ]);
+  }, [currentWorkspaceSession, statusAwayDraft, statusEmojiDraft, statusTextDraft, t]);
 
   const openPersonalInfo = useCallback(() => {
-    if (currentUserId != null && rightDrawer?.openUserProfile != null) {
-      rightDrawer.openUserProfile(currentUserId);
-      return;
-    }
     void navigate(withCurrentOrgRoute("/settings/personal-info"));
-  }, [currentUserId, navigate, rightDrawer]);
+  }, [navigate]);
 
   const openDiagnostics = useCallback(() => {
     void navigate(withCurrentOrgRoute("/settings/logs"));
@@ -285,10 +227,9 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
 
   const handleSelectLanguage = useCallback(
     (nextLocale: (typeof locales)[number]["id"]) => {
-      setLocale(nextLocale);
       setLanguage(nextLocale);
     },
-    [setLanguage, setLocale],
+    [setLanguage],
   );
 
   const handleSelectNotificationSound = useCallback(
@@ -363,25 +304,31 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
     window.location.reload();
   }, [t]);
 
-  const handleLogoutFromCurrentOrg = useCallback(() => {
-    if (currentInstance == null) return;
+  const handleLogoutFromCurrentOrg = useCallback(async () => {
+    if (currentWorkspaceSession == null) return;
     const confirmed = window.confirm(
       t("auth.logoutFromOrgConfirm", { server: currentServerLabel }),
     );
     if (!confirmed) return;
-    removeInstance(currentInstance.id);
+    await removeWorkspaceSession(currentWorkspaceSession.accountId);
+    void navigate(resolveWorkspacePostLogoutRoute(getCurrentWorkspaceSession()), { replace: true });
     closeDrawer();
-  }, [closeDrawer, currentInstance, currentServerLabel, removeInstance, t]);
+  }, [
+    closeDrawer,
+    currentServerLabel,
+    currentWorkspaceSession,
+    getCurrentWorkspaceSession,
+    navigate,
+    t,
+  ]);
 
   const handleStatusEmojiPick = useCallback((data: EmojiClickData) => {
-    const payload = zulipEmojiPayloadFromPickerData(data, { mode: "strict" });
-    if (payload == null) {
-      log.warn("Status emoji picker could not resolve selected emoji via Zulip catalog");
+    const emoji = data.emoji.trim();
+    if (emoji.length === 0) {
+      log.warn("Status emoji picker returned an empty emoji");
       return;
     }
-    setStatusEmojiNameDraft(payload.emojiName);
-    setStatusEmojiCodeDraft(payload.emojiCode);
-    setStatusEmojiReactionTypeDraft(payload.reactionType);
+    setStatusEmojiDraft(emoji.slice(0, 64));
     setStatusEmojiPickerOpen(false);
   }, []);
 
@@ -400,7 +347,7 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
               {t("nav.profile")}
             </SectionLabel>
             <div className="divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle bg-card-bg">
-              {currentInstance != null && (
+              {currentWorkspaceSession != null && (
                 <div
                   data-testid="user-menu-current-server-item"
                   className="flex items-center justify-between gap-3 px-2.5 py-2.5"
@@ -425,7 +372,7 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
                         {currentServerLabel}
                       </span>
                       <span className="truncate text-[11px] text-text-muted">
-                        {currentInstance.email}
+                        {currentServerAccountLabel}
                       </span>
                     </span>
                   </span>
@@ -440,6 +387,47 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
                   </button>
                 </div>
               )}
+              {currentWorkspaceSession != null && (
+                <>
+                  <RightPanelUserMenuMenuButton
+                    label={t("connectExternalAccount.connectedAccounts")}
+                    icon="links"
+                    onClick={() => setExternalAccountsOpen((open) => !open)}
+                    right={
+                      <Icon
+                        name={externalAccountsOpen ? "chevron-up" : "chevron-right"}
+                        size={16}
+                        className="text-text-muted"
+                      />
+                    }
+                  />
+                  {externalAccountsOpen && (
+                    <div
+                      className="mx-2 mb-2 rounded-md border border-border-subtle bg-bg-elevated px-2 py-2"
+                      data-testid="user-menu-external-accounts"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setExternalAccountDialogOpen(true)}
+                        className="border-accent/40 bg-accent/5 hover:bg-accent/10 mb-2 flex w-full items-center justify-between gap-3 rounded-lg border border-dashed px-2.5 py-2 text-left transition-colors"
+                        aria-label={t("connectExternalAccount.connect")}
+                        data-testid="connect-external-account-trigger"
+                      >
+                        <span className="min-w-0">
+                          <span className="block text-xs font-medium text-text-primary">
+                            {t("connectExternalAccount.connect")}
+                          </span>
+                          <span className="mt-0.5 block truncate text-[10px] text-text-muted">
+                            {t("connectExternalAccount.connectHint")}
+                          </span>
+                        </span>
+                        <Icon name="chevron-right" size={14} className="shrink-0 text-accent" />
+                      </button>
+                      <RightPanelExternalAccountsList />
+                    </div>
+                  )}
+                </>
+              )}
               <RightPanelUserMenuMenuButton
                 label={t("settings.personalInfo")}
                 icon="accountCircle"
@@ -451,7 +439,12 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
                 icon="mood"
                 subtitle={currentStatusSubtitle}
                 onClick={openStatusDialog}
-                right={<Icon name="chevron-right" size={16} className="text-text-muted" />}
+                disabled={currentWorkspaceSession == null}
+                right={
+                  currentWorkspaceSession == null ? null : (
+                    <Icon name="chevron-right" size={16} className="text-text-muted" />
+                  )
+                }
               />
             </div>
           </section>
@@ -734,11 +727,8 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
         statusEmojiPickerOpen={statusEmojiPickerOpen}
         onStatusEmojiPickerToggle={toggleStatusEmojiPicker}
         setStatusEmojiPickerOpen={setStatusEmojiPickerOpen}
-        statusEmojiNameDraft={statusEmojiNameDraft}
-        setStatusEmojiNameDraft={setStatusEmojiNameDraft}
-        statusEmojiCodeDraft={statusEmojiCodeDraft}
-        setStatusEmojiCodeDraft={setStatusEmojiCodeDraft}
-        setStatusEmojiReactionTypeDraft={setStatusEmojiReactionTypeDraft}
+        statusEmojiDraft={statusEmojiDraft}
+        setStatusEmojiDraft={setStatusEmojiDraft}
         statusTextDraft={statusTextDraft}
         setStatusTextDraft={setStatusTextDraft}
         statusAwayDraft={statusAwayDraft}
@@ -746,11 +736,14 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
         statusSubmitting={statusSubmitting}
         selectedStatusEmojiDisplay={selectedStatusEmojiDisplay}
         statusEmojiPickerTheme={statusEmojiPickerTheme}
-        customEmojis={customEmojis}
         t={t}
         handleStatusEmojiPick={handleStatusEmojiPick}
         clearStatusDraft={clearStatusDraft}
         handleSaveStatus={handleSaveStatus}
+      />
+      <RightPanelConnectExternalAccountDialog
+        open={externalAccountDialogOpen}
+        onOpenChange={setExternalAccountDialogOpen}
       />
     </div>
   );

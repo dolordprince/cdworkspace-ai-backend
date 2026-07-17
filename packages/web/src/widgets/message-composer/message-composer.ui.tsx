@@ -1,10 +1,17 @@
-import React, { useState, useRef, useMemo, useCallback, useLayoutEffect } from "react";
+import React, {
+  useState,
+  useRef,
+  useMemo,
+  useCallback,
+  useLayoutEffect,
+  useEffect,
+  useId,
+} from "react";
+import { useMessengerStore } from "~/entities/messenger/messenger.model";
 import { AiComposerButton } from "~/features/ai-reply/ai-reply.ui";
 import type { MentionSuggestion } from "~/features/mention-suggest/mention-suggest.types";
 import { t } from "~/i18n/i18n";
-import type { SavedSnippet } from "~/shared/api/zulip.types";
 import { COMPOSER_FORMATTING_TOOLBAR_ALWAYS_VISIBLE } from "~/shared/config/constants";
-import { ensureRealmEmojisLoaded, getCachedRealmEmojis } from "~/shared/lib/realm-emojis-cache";
 import { useViewportKeyboard } from "~/shared/lib/touch";
 import { isWebView } from "~/shared/lib/webview";
 import { Icon } from "~/shared/ui/icon";
@@ -15,6 +22,7 @@ import {
 } from "./message-composer-ai-surfaces.ui";
 import {
   buildOutgoingMessageBody,
+  insertWorkspaceMention,
   isLikelyImageAttachment,
   normalizeImageAttachmentFile,
   resolveTomorrowMorningTimestamp,
@@ -40,12 +48,19 @@ import { resolveComposerKeyboardInsetPx } from "./message-composer-keyboard-inse
 import { MessageComposerMediaPickerPopover } from "./message-composer-media-picker-popover.ui";
 import { useComposerMentions } from "./message-composer-mentions.hook";
 import { ComposerModeTabs } from "./message-composer-mode-tabs.ui";
-import { MessageComposerPreface } from "./message-composer-preface.ui";
+import { MessageComposerEditNotice, MessageComposerPreface } from "./message-composer-preface.ui";
 import { MessageComposerPreviewBody } from "./message-composer-preview-body.ui";
 import { useMessageComposerPreview } from "./message-composer-preview.hook";
+import {
+  getWorkspaceComposerReferenceSuggestions,
+  insertWorkspaceComposerReference,
+  replaceWorkspaceComposerLinks,
+  type WorkspaceComposerReference,
+} from "./message-composer-reference.lib";
 import { MessageComposerSavedSnippetsDialog } from "./message-composer-saved-snippets-dialog.ui";
 import { useComposerSavedSnippetsStore } from "./message-composer-saved-snippets.model";
 import { MessageComposerSchedulePopover } from "./message-composer-schedule-popover.ui";
+import { buildScheduledComposerMessage } from "./message-composer-schedule.lib";
 import { wrapSelection } from "./message-composer-selection.lib";
 import {
   TOOLBAR_AI_ICON_SIZE,
@@ -57,22 +72,206 @@ import { FormattingToolbar } from "./message-composer-toolbar.ui";
 import { useMessageComposerUpload } from "./message-composer-upload.hook";
 import { MessageComposerWriteBody } from "./message-composer-write-body.ui";
 import type { ComposerSendNewlineMode } from "./message-composer-input-commands.lib";
+import type { ComposerSuggestion } from "./message-composer-mention-dropdown.types";
+import type { SavedSnippet } from "./message-composer-saved-snippets.types";
 import type { ScheduleMenuOption } from "./message-composer-schedule-popover.types";
 import type {
+  MessageComposerActionCapability,
   ComposerMode,
   MediaPickerTab,
   MessageComposerProps,
+  MessageComposerSendResult,
   ScheduledComposerMessage,
 } from "./message-composer.types";
 import type { EmojiClickData } from "emoji-picker-react";
 
 export type { ReplyQuote } from "./message-composer.types";
 
-// TODO: Re-enable after scheduled send uses Zulip's server API and persists the target chat.
+// TODO: Re-enable after scheduled send uses a backend API and persists the target chat.
 const ENABLE_SCHEDULED_SEND_UI = false;
+
+const DEFAULT_ACTION_CAPABILITY: MessageComposerActionCapability = { mode: "enabled" };
+
+function resolveActionCapability(
+  capability: MessageComposerActionCapability | undefined,
+): MessageComposerActionCapability {
+  return capability ?? DEFAULT_ACTION_CAPABILITY;
+}
+
+function isActionSupported(capability: MessageComposerActionCapability): boolean {
+  return capability.mode === "enabled";
+}
+
+function resolveToolbarActionLabel(
+  supported: boolean,
+  capability: MessageComposerActionCapability,
+  supportedLabel: string,
+): string {
+  return supported
+    ? supportedLabel
+    : (capability.unsupportedText ?? t("composer.actionUnsupported"));
+}
+
+interface MessageComposerToolbarRowProps {
+  isToolbarVisible: boolean;
+  mode: ComposerMode;
+  onModeChange: (nextMode: ComposerMode) => void;
+  showPreviewTab: boolean;
+  isEditing: boolean;
+  disabled: boolean;
+  uploadSupported: boolean;
+  uploadCapability: MessageComposerActionCapability;
+  scheduledSendSupported: boolean;
+  scheduledSendCapability: MessageComposerActionCapability;
+  savedSnippetsSupported: boolean;
+  onCreateCallLink: (() => string | null | undefined) | undefined;
+  onAttachClick: () => void;
+  onCreateCallLinkClick: () => void;
+  onToggleScheduleMenu: () => void;
+  onToggleSavedSnippetsMenu: () => void;
+  onToggleAiUnavailablePopover: () => void;
+  onValueChange: (value: string) => void;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  scheduleButtonRef: React.RefObject<HTMLButtonElement | null>;
+  savedSnippetsButtonRef: React.RefObject<HTMLButtonElement | null>;
+  aiButtonAnchorRef: React.RefObject<HTMLSpanElement | null>;
+  aiMenuOpen: boolean;
+}
+
+const MessageComposerToolbarRow = React.memo<MessageComposerToolbarRowProps>(
+  function MessageComposerToolbarRow({
+    isToolbarVisible,
+    mode,
+    onModeChange,
+    showPreviewTab,
+    isEditing,
+    disabled,
+    uploadSupported,
+    uploadCapability,
+    scheduledSendSupported,
+    scheduledSendCapability,
+    savedSnippetsSupported,
+    onCreateCallLink,
+    onAttachClick,
+    onCreateCallLinkClick,
+    onToggleScheduleMenu,
+    onToggleSavedSnippetsMenu,
+    onToggleAiUnavailablePopover,
+    onValueChange,
+    textareaRef,
+    scheduleButtonRef,
+    savedSnippetsButtonRef,
+    aiButtonAnchorRef,
+    aiMenuOpen,
+  }) {
+    const attachLabel = resolveToolbarActionLabel(
+      uploadSupported,
+      uploadCapability,
+      t("a11y.attachFile"),
+    );
+    const scheduleLabel = resolveToolbarActionLabel(
+      scheduledSendSupported,
+      scheduledSendCapability,
+      t("a11y.messageMenu"),
+    );
+    const fileTrigger = !isEditing ? (
+      <button
+        type="button"
+        className={TOOLBAR_BTN}
+        onClick={onAttachClick}
+        disabled={disabled}
+        aria-label={attachLabel}
+        title={attachLabel}
+      >
+        <Icon name="attach" size={TOOLBAR_ICON_SIZE} className={TOOLBAR_ICON_EMPHASIS_CLASS} />
+      </button>
+    ) : undefined;
+    const callLinkTrigger =
+      !isEditing && onCreateCallLink != null ? (
+        <button
+          type="button"
+          className={TOOLBAR_BTN}
+          onClick={onCreateCallLinkClick}
+          disabled={disabled}
+          aria-label={t("call.createCallLink")}
+          title={t("call.createCallLink")}
+        >
+          <Icon name="phone" size={TOOLBAR_ICON_SIZE} className={TOOLBAR_ICON_EMPHASIS_CLASS} />
+        </button>
+      ) : undefined;
+    const scheduleTrigger =
+      !isEditing && ENABLE_SCHEDULED_SEND_UI ? (
+        <button
+          ref={scheduleButtonRef}
+          type="button"
+          className={TOOLBAR_BTN}
+          onClick={onToggleScheduleMenu}
+          disabled={disabled}
+          aria-label={scheduleLabel}
+          title={scheduleLabel}
+        >
+          <Icon name="calendar" size={TOOLBAR_ICON_SIZE} />
+        </button>
+      ) : undefined;
+    const snippetsTrigger =
+      !isEditing && savedSnippetsSupported ? (
+        <button
+          ref={savedSnippetsButtonRef}
+          type="button"
+          className={TOOLBAR_BTN}
+          onClick={onToggleSavedSnippetsMenu}
+          disabled={disabled}
+          aria-label={t("composer.savedSnippets")}
+          title={t("composer.savedSnippets")}
+        >
+          <Icon name="chat_bubble_outline" size={TOOLBAR_ICON_SIZE} />
+        </button>
+      ) : undefined;
+    const aiTrigger = !isEditing ? (
+      <span ref={aiButtonAnchorRef}>
+        <AiComposerButton
+          onClick={onToggleAiUnavailablePopover}
+          active={aiMenuOpen}
+          iconSize={TOOLBAR_AI_ICON_SIZE}
+        />
+      </span>
+    ) : undefined;
+
+    return (
+      <div
+        data-testid="composer-toolbar-row"
+        aria-hidden={!isToolbarVisible}
+        className={`overflow-hidden px-3 transition-[max-height,opacity,transform,padding] duration-200 ease-out ${
+          isToolbarVisible
+            ? "max-h-12 translate-y-0 pb-1 pt-2 opacity-100"
+            : "pointer-events-none max-h-0 -translate-y-1 pb-0 pt-0 opacity-0"
+        }`}
+      >
+        {isToolbarVisible && (
+          <div className="flex items-center gap-2">
+            <ComposerModeTabs mode={mode} onChange={onModeChange} showPreviewTab={showPreviewTab} />
+
+            {mode === "write" && (
+              <FormattingToolbar
+                textareaRef={textareaRef}
+                onValueChange={onValueChange}
+                fileTrigger={fileTrigger}
+                callLinkTrigger={callLinkTrigger}
+                scheduleTrigger={scheduleTrigger}
+                snippetsTrigger={snippetsTrigger}
+                aiTrigger={aiTrigger}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    );
+  },
+);
 
 export const MessageComposerInner: React.FC<MessageComposerProps> = ({
   onSend,
+  optimisticClearOnSend = false,
   onSubmitEdit,
   onCancelEdit,
   onCreateCallLink,
@@ -83,13 +282,22 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
   activeTopic,
   replyQuote,
   onClearReply,
+  leadingContent,
+  outgoingBodyOverride,
+  allowEmptyActiveValueSend = false,
+  focusKey,
   initialValue,
+  draftSessionKey,
   onValueChange,
   onEditLastMessage,
   editSession,
+  capabilities,
+  resolveMention,
+  onLoadWorkspaceFilePreview,
   aiMessagesContext,
   aiChatContext,
 }) => {
+  // Capabilities preserve the composer layout while deciding whether an action can hit the backend.
   const sendNewlineMode: ComposerSendNewlineMode = "enter-sends";
   const [mode, setMode] = useState<ComposerMode>("write");
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
@@ -105,6 +313,20 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
   const [savedSnippetTitle, setSavedSnippetTitle] = useState("");
   const [savedSnippetContent, setSavedSnippetContent] = useState("");
   const [savedSnippetSaving, setSavedSnippetSaving] = useState(false);
+  const [sendInFlight, setSendInFlight] = useState(false);
+  const [unsupportedActionText, setUnsupportedActionText] = useState<string | null>(null);
+  const [aiMenuNotificationText, setAiMenuNotificationText] = useState<string | null>(null);
+  const uploadCapability = resolveActionCapability(capabilities?.upload);
+  const savedSnippetsCapability = resolveActionCapability(capabilities?.savedSnippets);
+  const previewCapability = resolveActionCapability(capabilities?.preview);
+  const mentionsCapability = resolveActionCapability(capabilities?.mentions);
+  const scheduledSendCapability = resolveActionCapability(capabilities?.scheduledSend);
+  const uploadSupported = isActionSupported(uploadCapability);
+  const savedSnippetsSupported = isActionSupported(savedSnippetsCapability);
+  const previewSupported = isActionSupported(previewCapability);
+  const mentionsSupported = isActionSupported(mentionsCapability);
+  const scheduledSendSupported = isActionSupported(scheduledSendCapability);
+  // Saved snippets are intentionally local-only until Workspace exposes this contract.
   const savedSnippets = useComposerSavedSnippetsStore((s) => s.snippets);
   const savedSnippetsLoading = useComposerSavedSnippetsStore((s) => s.loadingInitial);
   const savedSnippetsErrorCode = useComposerSavedSnippetsStore((s) => s.error);
@@ -115,9 +337,9 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
   const clearSavedSnippetsError = useComposerSavedSnippetsStore((s) => s.clearSavedSnippetsError);
   const [scheduledMessages, setScheduledMessages] = useState<ScheduledComposerMessage[]>([]);
   const [aiMenuOpen, setAiMenuOpen] = useState(false);
-  const [customEmojis, setCustomEmojis] = useState(() => getCachedRealmEmojis());
   const { value, setValue, isEditing } = useComposerDraft({
     initialValue,
+    draftSessionKey,
     editSession,
     onValueChange,
     setAiMenuOpen,
@@ -136,11 +358,55 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
     setActiveMentionIndex,
     mentionStartPos,
     setMentionStartPos,
-  } = useComposerMentions();
-  const effectiveReplyQuote = isEditing ? null : replyQuote;
+  } = useComposerMentions({ enabled: mentionsSupported });
+  const messengerOwnerKey = useMessengerStore((state) => state.ownerKey);
+  const workspaceReferencesEnabled =
+    capabilities?.mentions?.mode === "enabled" && messengerOwnerKey != null;
+  const streamIds = useMessengerStore((state) => state.streamIds);
+  const streamsById = useMessengerStore((state) => state.streamsById);
+  const topicIds = useMessengerStore((state) => state.topicIds);
+  const topicsById = useMessengerStore((state) => state.topicsById);
+  const [showWorkspaceReferences, setShowWorkspaceReferences] = useState(false);
+  const [workspaceReferenceQuery, setWorkspaceReferenceQuery] = useState("");
+  const [activeWorkspaceReferenceIndex, setActiveWorkspaceReferenceIndex] = useState(0);
+  const [workspaceReferenceStartPos, setWorkspaceReferenceStartPos] = useState(0);
+  const resetWorkspaceReferenceState = useCallback(() => {
+    setShowWorkspaceReferences(false);
+    setWorkspaceReferenceQuery("");
+    setActiveWorkspaceReferenceIndex(0);
+    setWorkspaceReferenceStartPos(0);
+  }, []);
+  const workspaceReferenceSuggestions = useMemo(() => {
+    if (!workspaceReferencesEnabled) return [];
+    return getWorkspaceComposerReferenceSuggestions({
+      streamIds,
+      streamsById,
+      topicIds,
+      topicsById,
+      query: workspaceReferenceQuery,
+    });
+  }, [
+    streamIds,
+    streamsById,
+    topicIds,
+    topicsById,
+    workspaceReferenceQuery,
+    workspaceReferencesEnabled,
+  ]);
+  const composerSuggestions = showWorkspaceReferences
+    ? workspaceReferenceSuggestions
+    : mentionSuggestions;
+  const showComposerSuggestions = showMentions || showWorkspaceReferences;
+  const activeComposerSuggestionIndex = showWorkspaceReferences
+    ? activeWorkspaceReferenceIndex
+    : activeMentionIndex;
+  const preservesWorkspaceReplyContext = editSession?.preserveWorkspaceReplyContext === true;
+  const effectiveReplyQuote = isEditing && !preservesWorkspaceReplyContext ? null : replyQuote;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaId = useId();
   const prevDisabledRef = useRef(disabled);
-  const prevReplyQuoteIdRef = useRef<number | null>(null);
+  const prevReplyQuoteIdRef = useRef<number | string | null>(null);
+  const prevFocusKeyRef = useRef(focusKey);
   useLayoutEffect(() => {
     if (prevDisabledRef.current && !disabled && mode === "write") {
       textareaRef.current?.focus();
@@ -155,6 +421,19 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
       textareaRef.current?.focus();
     }
   }, [effectiveReplyQuote, disabled, mode]);
+  useLayoutEffect(() => {
+    const previousFocusKey = prevFocusKeyRef.current;
+    prevFocusKeyRef.current = focusKey;
+    if (
+      focusKey != null &&
+      focusKey !== previousFocusKey &&
+      !disabled &&
+      !isEditing &&
+      mode === "write"
+    ) {
+      textareaRef.current?.focus();
+    }
+  }, [disabled, focusKey, isEditing, mode]);
   const emojiButtonRef = useRef<HTMLButtonElement>(null);
   const scheduleButtonRef = useRef<HTMLButtonElement>(null);
   const savedSnippetsButtonRef = useRef<HTMLButtonElement>(null);
@@ -185,13 +464,37 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
     removeFileByIndex: removeFile,
     uploadProgressPercent,
     isUploadInProgress,
-  } = useMessageComposerUpload({ disabled: disabled || isEditing, uploadProgress });
+  } = useMessageComposerUpload({
+    disabled: disabled || sendInFlight || isEditing || !uploadSupported,
+    uploadProgress,
+  });
+  const latestValueRef = useRef(value);
+  const latestFilesRef = useRef(files);
+  useEffect(() => {
+    latestValueRef.current = value;
+  }, [value]);
+  useEffect(() => {
+    latestFilesRef.current = files;
+  }, [files]);
   const [isComposerFocusWithin, setIsComposerFocusWithin] = useState(false);
   const outgoingBody = useMemo(
-    () => buildOutgoingMessageBody(value, effectiveReplyQuote),
-    [value, effectiveReplyQuote],
+    () =>
+      (!isEditing || preservesWorkspaceReplyContext) && outgoingBodyOverride != null
+        ? outgoingBodyOverride
+        : buildOutgoingMessageBody(value, effectiveReplyQuote),
+    [effectiveReplyQuote, isEditing, outgoingBodyOverride, preservesWorkspaceReplyContext, value],
   );
-  const preview = useMessageComposerPreview({ mode, outgoingBody });
+  const canSendWithEmptyActiveValue =
+    allowEmptyActiveValueSend &&
+    outgoingBodyOverride != null &&
+    outgoingBodyOverride.trim().length > 0;
+  const preview = useMessageComposerPreview({
+    mode,
+    outgoingBody,
+    enabled: previewSupported,
+    unsupportedText: previewCapability.unsupportedText,
+    resolveMention,
+  });
   const scheduleOptions = useMemo<ScheduleMenuOption[]>(
     () => [
       {
@@ -244,16 +547,21 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
     if (savedSnippetsErrorCode === "create_failed") {
       return t("composer.savedSnippetsCreateError");
     }
+    if (savedSnippetsErrorCode === "unsupported") {
+      return t("composer.savedSnippetsUnsupported");
+    }
     return null;
   }, [savedSnippetsErrorCode]);
-  const ensureCustomEmojisLoaded = useCallback(() => {
-    void ensureRealmEmojisLoaded()
-      .then((list) => {
-        setCustomEmojis(list);
-      })
-      .catch(() => {
-        // Custom emoji load failure is non-fatal; picker still uses Unicode.
-      });
+  const showUnsupportedAction = useCallback((capability: MessageComposerActionCapability) => {
+    setUnsupportedActionText(capability.unsupportedText ?? t("composer.actionUnsupported"));
+  }, []);
+  const showAiMenuNotice = useCallback((capability: MessageComposerActionCapability) => {
+    setAiMenuNotificationText(capability.unsupportedText ?? t("composer.actionUnsupported"));
+    setAiMenuOpen(false);
+    setMediaPickerOpen(false);
+    setScheduleMenuOpen(false);
+    setSavedSnippetsMenuOpen(false);
+    setAiMenuOpen(true);
   }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const applyFormattingShortcut = useCallback(
@@ -268,41 +576,121 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
   const previewHtml = preview.html;
   const previewLoading = preview.loading;
   const previewError = preview.error;
+  const resetMentionState = useCallback(() => {
+    hideMentionDropdown();
+    setMentionQuery("");
+    setMentionStartPos(0);
+    setActiveMentionIndex(0);
+  }, [hideMentionDropdown, setActiveMentionIndex, setMentionQuery, setMentionStartPos]);
+
+  useEffect(() => {
+    if (!workspaceReferencesEnabled) {
+      resetWorkspaceReferenceState();
+    }
+  }, [resetWorkspaceReferenceState, workspaceReferencesEnabled]);
 
   const detectMention = useCallback(
     (text: string, cursorPos: number) => {
       const before = text.slice(0, cursorPos);
-      const match = /(?:^|[\s([{,.:;!?])@(\S*)$/.exec(before);
-      if (match) {
-        const query = match[1] ?? "";
+      const match = /(?:^|[\s([{,.:;!?])([@#])(\S*)$/.exec(before);
+      if (match == null) {
+        resetMentionState();
+        resetWorkspaceReferenceState();
+        return;
+      }
+
+      const trigger = match[1];
+      const query = match[2] ?? "";
+      const startPos = cursorPos - query.length - 1;
+      if (trigger === "@") {
+        resetWorkspaceReferenceState();
+        if (!mentionsSupported) {
+          resetMentionState();
+          return;
+        }
         setMentionQuery(query);
-        setMentionStartPos(cursorPos - query.length - 1);
+        setMentionStartPos(startPos);
         showMentionDropdown();
         setActiveMentionIndex(0);
-      } else {
-        hideMentionDropdown();
+        return;
       }
+
+      resetMentionState();
+      if (!workspaceReferencesEnabled) {
+        resetWorkspaceReferenceState();
+        return;
+      }
+      setWorkspaceReferenceQuery(query);
+      setWorkspaceReferenceStartPos(startPos);
+      setShowWorkspaceReferences(true);
+      setActiveWorkspaceReferenceIndex(0);
     },
-    [hideMentionDropdown, setMentionQuery, showMentionDropdown],
+    [
+      mentionsSupported,
+      resetMentionState,
+      resetWorkspaceReferenceState,
+      setMentionQuery,
+      setMentionStartPos,
+      showMentionDropdown,
+      workspaceReferencesEnabled,
+    ],
   );
 
   const handleMentionSelect = useCallback(
     (user: MentionSuggestion) => {
-      const before = value.slice(0, mentionStartPos);
-      const after = value.slice(textareaRef.current?.selectionStart ?? value.length);
-      const mention = `@**${user.fullName}** `;
-      const next = before + mention + after;
-      setValue(next);
-      hideMentionDropdown();
-      setActiveMentionIndex(0);
-      const newCursorPos = before.length + mention.length;
+      const insertion = insertWorkspaceMention(
+        value,
+        mentionStartPos,
+        textareaRef.current?.selectionStart ?? value.length,
+        user.displayName,
+        user.userUuid,
+      );
+      setValue(insertion.value);
+      resetMentionState();
+      resetWorkspaceReferenceState();
       requestAnimationFrame(() => {
         textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(newCursorPos, newCursorPos);
+        textareaRef.current?.setSelectionRange(insertion.cursorPosition, insertion.cursorPosition);
       });
     },
-    [value, mentionStartPos, hideMentionDropdown, setValue],
+    [mentionStartPos, resetMentionState, resetWorkspaceReferenceState, setValue, value],
   );
+
+  const handleWorkspaceReferenceSelect = useCallback(
+    (reference: WorkspaceComposerReference) => {
+      const insertion = insertWorkspaceComposerReference(
+        value,
+        workspaceReferenceStartPos,
+        textareaRef.current?.selectionStart ?? value.length,
+        reference,
+      );
+      if (insertion == null) return;
+      setValue(insertion.value);
+      resetMentionState();
+      resetWorkspaceReferenceState();
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(insertion.cursorPosition, insertion.cursorPosition);
+      });
+    },
+    [resetMentionState, resetWorkspaceReferenceState, setValue, value, workspaceReferenceStartPos],
+  );
+
+  const handleComposerSuggestionSelect = useCallback(
+    (suggestion: ComposerSuggestion) => {
+      if ("kind" in suggestion) {
+        handleWorkspaceReferenceSelect(suggestion);
+        return;
+      }
+      handleMentionSelect(suggestion);
+    },
+    [handleMentionSelect, handleWorkspaceReferenceSelect],
+  );
+
+  const handleHideComposerSuggestions = useCallback(() => {
+    resetMentionState();
+    resetWorkspaceReferenceState();
+  }, [resetMentionState, resetWorkspaceReferenceState]);
 
   const clearComposerInput = useCallback(() => {
     if (effectiveReplyQuote) {
@@ -314,24 +702,41 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
 
   const scheduleMessage = useCallback(
     (sendAt: number) => {
-      const hasText = value.trim().length > 0;
-      const hasFiles = files.length > 0;
-      if ((!hasText && !hasFiles) || disabled || onSend == null) return;
+      if (!scheduledSendSupported) {
+        showUnsupportedAction(scheduledSendCapability);
+        return;
+      }
+      if (disabled || onSend == null) return;
 
       const subject = activeTopic ?? "";
-      const scheduledMessage: ScheduledComposerMessage = {
+      const scheduledMessage = buildScheduledComposerMessage({
         id: crypto.randomUUID(),
         content: outgoingBody,
         subject,
-        files: hasFiles ? [...files] : [],
+        value,
+        files,
+        canSendWithEmptyActiveValue,
         sendAt,
-      };
+      });
+      if (scheduledMessage == null) return;
 
       setScheduledMessages((prev) => [...prev, scheduledMessage]);
       setScheduleMenuOpen(false);
       clearComposerInput();
     },
-    [activeTopic, clearComposerInput, disabled, files, onSend, outgoingBody, value],
+    [
+      activeTopic,
+      clearComposerInput,
+      disabled,
+      files,
+      onSend,
+      outgoingBody,
+      scheduledSendCapability,
+      scheduledSendSupported,
+      showUnsupportedAction,
+      canSendWithEmptyActiveValue,
+      value,
+    ],
   );
 
   const cancelScheduledMessage = useCallback((id: string) => {
@@ -374,11 +779,12 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
 
   const handleSend = async () => {
     if (isEditing) {
-      if (disabled || editSession == null || onSubmitEdit == null) return;
+      if (disabled || sendInFlight || editSession == null || onSubmitEdit == null) return;
       const trimmed = value.trim();
-      if (trimmed.length === 0) return;
+      const content = preservesWorkspaceReplyContext ? outgoingBody : trimmed;
+      if (content.length === 0) return;
       try {
-        await onSubmitEdit(editSession.messageId, trimmed);
+        await onSubmitEdit(editSession.messageId, content);
       } catch {
         return;
       }
@@ -387,29 +793,81 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
 
     const hasText = value.trim().length > 0;
     const hasFiles = files.length > 0;
-    if ((!hasText && !hasFiles) || disabled) return;
+    const hasSendableExternalBody = canSendWithEmptyActiveValue;
+    if ((!hasText && !hasSendableExternalBody && !hasFiles) || disabled || sendInFlight) return;
     const subject = activeTopic ?? "";
     const bodyToSend = outgoingBody;
+    const valueToSend = value;
+    const filesSnapshot = files;
     const filesToSend = hasFiles ? [...files] : undefined;
-    setValue("");
-    setFiles([]);
 
-    // Restore focus/caret after optimistic clear so typing can continue before network.
+    setSendInFlight(true);
+
+    let sendResult: MessageComposerSendResult | void | Promise<void | MessageComposerSendResult>;
+    try {
+      sendResult = onSend?.(bodyToSend, subject, filesToSend);
+    } catch {
+      setSendInFlight(false);
+      return;
+    }
+
+    if (optimisticClearOnSend) {
+      setSendInFlight(false);
+      resetMentionState();
+      resetWorkspaceReferenceState();
+      if (latestValueRef.current === valueToSend) {
+        setValue("");
+      }
+      if (latestFilesRef.current === filesSnapshot) {
+        setFiles([]);
+      }
+      setMode("write");
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea || disabled) {
+          return;
+        }
+        textarea.focus();
+        textarea.setSelectionRange(0, 0);
+      });
+      if (effectiveReplyQuote) {
+        onClearReply?.();
+      }
+      setAiMenuOpen(false);
+      setScheduleMenuOpen(false);
+      setSavedSnippetsMenuOpen(false);
+      setMediaPickerOpen(false);
+      void Promise.resolve(sendResult).catch(() => undefined);
+      return;
+    }
+
+    let completedSendResult: MessageComposerSendResult | void;
+    try {
+      completedSendResult = await sendResult;
+    } catch {
+      return;
+    } finally {
+      setSendInFlight(false);
+    }
+    resetMentionState();
+    resetWorkspaceReferenceState();
+    const shouldClearComposer = completedSendResult?.shouldClearComposer !== false;
+    if (shouldClearComposer && latestValueRef.current === valueToSend) {
+      setValue("");
+    }
+    if (latestFilesRef.current === filesSnapshot) {
+      setFiles([]);
+    }
+    setMode("write");
     requestAnimationFrame(() => {
       const textarea = textareaRef.current;
-      if (!textarea || disabled || mode !== "write") {
+      if (!textarea || disabled) {
         return;
       }
       textarea.focus();
       textarea.setSelectionRange(0, 0);
     });
-
-    try {
-      await onSend?.(bodyToSend, subject, filesToSend);
-    } catch {
-      return;
-    }
-    if (effectiveReplyQuote) {
+    if (shouldClearComposer && effectiveReplyQuote) {
       onClearReply?.();
     }
     setAiMenuOpen(false);
@@ -419,11 +877,7 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
   };
 
   const handleEmojiClick = (data: EmojiClickData) => {
-    const customEmojiName = data.names?.[0]?.trim() ?? "";
-    let emoji = data.emoji ?? "";
-    if (data.isCustom) {
-      emoji = customEmojiName ? `:${customEmojiName}:` : "";
-    }
+    const emoji = data.emoji.trim();
     if (emoji.length === 0) return;
     setValue((prev) => prev + emoji);
     const textarea = textareaRef.current;
@@ -437,15 +891,14 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
     (e: React.ClipboardEvent) => {
       if (isEditing) return;
       const items = e.clipboardData?.items;
-      if (!items) return;
 
       const imageFiles: File[] = [];
-      for (const item of Array.from(items)) {
+      for (const item of Array.from(items ?? [])) {
         if (item.kind !== "file") continue;
         const file = item.getAsFile();
         if (file == null) continue;
         const normalized = normalizeImageAttachmentFile(file, item.type);
-        if (isLikelyImageAttachment(normalized)) {
+        if (uploadSupported && isLikelyImageAttachment(normalized)) {
           imageFiles.push(normalized);
         }
       }
@@ -453,13 +906,41 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
       if (imageFiles.length > 0) {
         e.preventDefault();
         setFiles((prev) => [...prev, ...imageFiles]);
+        return;
       }
+
+      const pastedText = e.clipboardData?.getData("text/plain") ?? "";
+      if (pastedText.length === 0) return;
+      const convertedText = replaceWorkspaceComposerLinks(
+        pastedText,
+        { streamsById, topicsById },
+        typeof window === "undefined" ? null : window.location.origin,
+      );
+      if (convertedText === pastedText) return;
+
+      e.preventDefault();
+      const textarea = textareaRef.current;
+      const selectionStart = textarea?.selectionStart ?? value.length;
+      const selectionEnd = textarea?.selectionEnd ?? value.length;
+      const nextValue = value.slice(0, selectionStart) + convertedText + value.slice(selectionEnd);
+      const nextCursor = selectionStart + convertedText.length;
+      setValue(nextValue);
+      detectMention(nextValue, nextCursor);
+      requestAnimationFrame(() => {
+        textarea?.focus();
+        textarea?.setSelectionRange(nextCursor, nextCursor);
+      });
     },
-    [isEditing, setFiles],
+    [detectMention, isEditing, setFiles, setValue, streamsById, topicsById, uploadSupported, value],
   );
 
   const handleAttachClick = () => {
     if (disabled || isEditing) return;
+    // Upload UI остаётся на месте, но без Workspace upload contract не открываем системный выбор файла.
+    if (!uploadSupported) {
+      showAiMenuNotice(uploadCapability);
+      return;
+    }
     const fileInput = fileInputRef.current;
     if (fileInput == null) return;
     beginFileSelectionSession();
@@ -477,9 +958,13 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
 
   const handleFileInputEvent = useCallback(
     (event: React.ChangeEvent<HTMLInputElement> | React.FormEvent<HTMLInputElement>) => {
+      if (!uploadSupported) {
+        showAiMenuNotice(uploadCapability);
+        return;
+      }
       handleFileChangeFromHook(event as React.ChangeEvent<HTMLInputElement>);
     },
-    [handleFileChangeFromHook],
+    [handleFileChangeFromHook, showAiMenuNotice, uploadCapability, uploadSupported],
   );
 
   const handleCreateCallLink = useCallback(() => {
@@ -553,12 +1038,9 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
       setScheduleMenuOpen(false);
       setSavedSnippetsMenuOpen(false);
       setMediaPickerOpen(true);
-      if (tab === "emoji") {
-        ensureCustomEmojisLoaded();
-      }
       updateMediaPickerPosition(tab);
     },
-    [ensureCustomEmojisLoaded, mediaPickerOpen, mediaPickerTab, updateMediaPickerPosition],
+    [mediaPickerOpen, mediaPickerTab, updateMediaPickerPosition],
   );
 
   const updateScheduleMenuPosition = useCallback(() => {
@@ -580,6 +1062,11 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
   }, [scheduleMenuOpen, updateScheduleMenuPosition]);
 
   const toggleScheduleMenu = useCallback(() => {
+    // Scheduled send ещё не имеет Workspace endpoint, значит не создаём локальную отложенную отправку.
+    if (!scheduledSendSupported) {
+      showUnsupportedAction(scheduledSendCapability);
+      return;
+    }
     setScheduleMenuOpen((prevOpen) => {
       const nextOpen = !prevOpen;
       if (nextOpen) {
@@ -590,7 +1077,12 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
       }
       return nextOpen;
     });
-  }, [updateScheduleMenuPosition]);
+  }, [
+    scheduledSendCapability,
+    scheduledSendSupported,
+    showUnsupportedAction,
+    updateScheduleMenuPosition,
+  ]);
 
   const insertSavedSnippet = useCallback(
     (snippet: SavedSnippet) => {
@@ -662,10 +1154,17 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
     };
   }, [aiMenuOpen, updateAiMenuPosition]);
 
+  React.useEffect(() => {
+    if (!aiMenuOpen) {
+      setAiMenuNotificationText(null);
+    }
+  }, [aiMenuOpen]);
+
   const toggleAiUnavailablePopover = useCallback(() => {
     setMediaPickerOpen(false);
     setScheduleMenuOpen(false);
     setSavedSnippetsMenuOpen(false);
+    setAiMenuNotificationText(null);
     setAiMenuOpen((prevOpen) => {
       const nextOpen = !prevOpen;
       if (nextOpen) {
@@ -676,6 +1175,12 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
   }, [updateAiMenuPosition]);
 
   const toggleSavedSnippetsMenu = useCallback(() => {
+    // Workspace routes show a controlled placeholder instead of legacy requests.
+    if (!savedSnippetsSupported) {
+      showAiMenuNotice(savedSnippetsCapability);
+      setSavedSnippetsMenuOpen(false);
+      return;
+    }
     setSavedSnippetsMenuOpen((prevOpen) => {
       const nextOpen = !prevOpen;
       if (nextOpen) {
@@ -690,7 +1195,14 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
       }
       return nextOpen;
     });
-  }, [clearSavedSnippetsError, openSavedSnippets, updateSavedSnippetsMenuPosition]);
+  }, [
+    clearSavedSnippetsError,
+    openSavedSnippets,
+    savedSnippetsCapability,
+    savedSnippetsSupported,
+    showAiMenuNotice,
+    updateSavedSnippetsMenuPosition,
+  ]);
 
   const startCreateSavedSnippet = useCallback(() => {
     setSavedSnippetCreateMode(true);
@@ -757,6 +1269,24 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
     setIsComposerFocusWithin(false);
   }, []);
 
+  const handleModeChange = useCallback(
+    (nextMode: ComposerMode) => {
+      if (nextMode === "preview" && !previewSupported) {
+        showAiMenuNotice(previewCapability);
+        setMode("write");
+        return;
+      }
+      setMode(nextMode);
+    },
+    [previewCapability, previewSupported, showAiMenuNotice],
+  );
+
+  React.useEffect(() => {
+    if (mode !== "preview" || previewSupported) return;
+    setMode("write");
+    showAiMenuNotice(previewCapability);
+  }, [mode, previewCapability, previewSupported, showAiMenuNotice]);
+
   return (
     <div
       className={`flex-shrink-0 rounded-xl bg-composer-outer ${isEditing ? "" : "border-t border-border-subtle"} ${isDragOver ? "ring-2 ring-inset ring-accent" : ""}`}
@@ -772,11 +1302,16 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
       onFocusCapture={handleComposerFocusCapture}
       onBlurCapture={handleComposerBlurCapture}
     >
+      {isEditing && preservesWorkspaceReplyContext ? (
+        <MessageComposerEditNotice onCancelEdit={onCancelEdit} />
+      ) : null}
+      {!isEditing || preservesWorkspaceReplyContext ? leadingContent : null}
       <MessageComposerPreface
         uploadProgress={uploadProgress}
         uploadProgressPercent={uploadProgressPercent}
         files={files}
         filePreviewUrls={filePreviewUrls}
+        showFiles={mode === "write"}
         isUploadInProgress={isUploadInProgress}
         onCancelUpload={onCancelUpload}
         removeFile={removeFile}
@@ -785,120 +1320,53 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
         replyQuote={effectiveReplyQuote}
         onClearReply={onClearReply}
         isEditing={isEditing}
+        showReplyWhileEditing={preservesWorkspaceReplyContext}
+        hideEditNotice={preservesWorkspaceReplyContext}
         onCancelEdit={onCancelEdit}
       />
 
       {!isEditing && <MessageComposerSmartReplyStrip onAccept={setValue} />}
 
-      <div
-        data-testid="composer-toolbar-row"
-        aria-hidden={!isToolbarVisible}
-        className={`overflow-hidden px-3 transition-[max-height,opacity,transform,padding] duration-200 ease-out ${
-          isToolbarVisible
-            ? "max-h-12 translate-y-0 pb-1 pt-2 opacity-100"
-            : "pointer-events-none max-h-0 -translate-y-1 pb-0 pt-0 opacity-0"
-        }`}
-      >
-        {isToolbarVisible && (
-          <div className="flex items-center gap-2">
-            <ComposerModeTabs mode={mode} onChange={setMode} />
-
-            {/* Formatting toolbar */}
-            {mode === "write" && (
-              <FormattingToolbar
-                textareaRef={textareaRef}
-                onValueChange={setValue}
-                fileTrigger={
-                  !isEditing ? (
-                    <button
-                      type="button"
-                      className={TOOLBAR_BTN}
-                      onClick={handleAttachClick}
-                      disabled={disabled}
-                      aria-label={t("a11y.attachFile")}
-                      title={t("a11y.attachFile")}
-                    >
-                      <Icon
-                        name="attach"
-                        size={TOOLBAR_ICON_SIZE}
-                        className={TOOLBAR_ICON_EMPHASIS_CLASS}
-                      />
-                    </button>
-                  ) : undefined
-                }
-                callLinkTrigger={
-                  !isEditing && onCreateCallLink != null ? (
-                    <button
-                      type="button"
-                      className={TOOLBAR_BTN}
-                      onClick={handleCreateCallLink}
-                      disabled={disabled}
-                      aria-label={t("call.createCallLink")}
-                      title={t("call.createCallLink")}
-                    >
-                      <Icon
-                        name="phone"
-                        size={TOOLBAR_ICON_SIZE}
-                        className={TOOLBAR_ICON_EMPHASIS_CLASS}
-                      />
-                    </button>
-                  ) : undefined
-                }
-                scheduleTrigger={
-                  !isEditing && ENABLE_SCHEDULED_SEND_UI ? (
-                    <button
-                      ref={scheduleButtonRef}
-                      type="button"
-                      className={TOOLBAR_BTN}
-                      onClick={toggleScheduleMenu}
-                      disabled={disabled || onSend == null}
-                      aria-label={t("a11y.messageMenu")}
-                      title={t("a11y.messageMenu")}
-                    >
-                      <Icon name="calendar" size={TOOLBAR_ICON_SIZE} />
-                    </button>
-                  ) : undefined
-                }
-                snippetsTrigger={
-                  !isEditing ? (
-                    <button
-                      ref={savedSnippetsButtonRef}
-                      type="button"
-                      className={TOOLBAR_BTN}
-                      onClick={toggleSavedSnippetsMenu}
-                      disabled={disabled}
-                      aria-label={t("composer.savedSnippets")}
-                      title={t("composer.savedSnippets")}
-                    >
-                      <Icon name="chat_bubble_outline" size={TOOLBAR_ICON_SIZE} />
-                    </button>
-                  ) : undefined
-                }
-                aiTrigger={
-                  !isEditing ? (
-                    <span ref={aiButtonAnchorRef}>
-                      <AiComposerButton
-                        onClick={toggleAiUnavailablePopover}
-                        active={aiMenuOpen}
-                        iconSize={TOOLBAR_AI_ICON_SIZE}
-                      />
-                    </span>
-                  ) : undefined
-                }
-              />
-            )}
-          </div>
-        )}
-      </div>
+      <MessageComposerToolbarRow
+        isToolbarVisible={isToolbarVisible}
+        mode={mode}
+        onModeChange={handleModeChange}
+        showPreviewTab={previewSupported}
+        isEditing={isEditing}
+        disabled={disabled}
+        uploadSupported={uploadSupported}
+        uploadCapability={uploadCapability}
+        scheduledSendSupported={scheduledSendSupported}
+        scheduledSendCapability={scheduledSendCapability}
+        savedSnippetsSupported={savedSnippetsSupported}
+        onCreateCallLink={onCreateCallLink}
+        onAttachClick={handleAttachClick}
+        onCreateCallLinkClick={handleCreateCallLink}
+        onToggleScheduleMenu={toggleScheduleMenu}
+        onToggleSavedSnippetsMenu={toggleSavedSnippetsMenu}
+        onToggleAiUnavailablePopover={toggleAiUnavailablePopover}
+        onValueChange={setValue}
+        textareaRef={textareaRef}
+        scheduleButtonRef={scheduleButtonRef}
+        savedSnippetsButtonRef={savedSnippetsButtonRef}
+        aiButtonAnchorRef={aiButtonAnchorRef}
+        aiMenuOpen={aiMenuOpen}
+      />
 
       {/* Input row */}
       <div className="relative p-3">
+        {unsupportedActionText != null && (
+          <div className="mb-2 px-1 text-xs text-notice-base" role="status">
+            {unsupportedActionText}
+          </div>
+        )}
         {!isEditing && (
           <MessageComposerAiActionMenuLayer
             open={aiMenuOpen}
             draft={value}
             onInsert={setValue}
             onOpenChange={setAiMenuOpen}
+            notificationMessage={aiMenuNotificationText ?? undefined}
             messagesContext={aiMessagesContext ?? []}
             chatContext={aiChatContext}
             popoverStyle={aiMenuStyle}
@@ -974,13 +1442,9 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
                 onClose={() => setMediaPickerOpen(false)}
                 onTabChange={(tab) => {
                   setMediaPickerTab(tab);
-                  if (tab === "emoji") {
-                    ensureCustomEmojisLoaded();
-                  }
                   updateMediaPickerPosition(tab);
                 }}
                 onEmojiClick={handleEmojiClick}
-                customEmojis={customEmojis}
                 onStickerSelect={(markdown) => {
                   setValue((prev) => prev + markdown);
                   setMediaPickerOpen(false);
@@ -993,14 +1457,21 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
                 <MessageComposerWriteBody
                   value={value}
                   placeholder={placeholder}
-                  disabled={disabled}
+                  disabled={disabled || sendInFlight}
                   textareaRef={textareaRef}
-                  showMentions={showMentions}
-                  mentionSuggestions={mentionSuggestions}
-                  activeMentionIndex={activeMentionIndex}
-                  onActiveMentionIndexChange={setActiveMentionIndex}
-                  onMentionSelect={handleMentionSelect}
-                  onHideMentionDropdown={hideMentionDropdown}
+                  textareaId={textareaId}
+                  showMentions={showComposerSuggestions}
+                  mentionSuggestions={composerSuggestions}
+                  activeMentionIndex={activeComposerSuggestionIndex}
+                  onActiveMentionIndexChange={(nextIndex) => {
+                    if (showWorkspaceReferences) {
+                      setActiveWorkspaceReferenceIndex(nextIndex);
+                    } else {
+                      setActiveMentionIndex(nextIndex);
+                    }
+                  }}
+                  onMentionSelect={handleComposerSuggestionSelect}
+                  onHideMentionDropdown={handleHideComposerSuggestions}
                   onValueChange={setValue}
                   onDetectMention={detectMention}
                   applyFormattingShortcut={applyFormattingShortcut}
@@ -1017,6 +1488,12 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
                   previewLoading={previewLoading}
                   previewError={previewError}
                   previewHtml={previewHtml}
+                  previewMetadata={preview.metadata}
+                  fileReferences={preview.fileReferences}
+                  onLoadWorkspaceFilePreview={onLoadWorkspaceFilePreview}
+                  files={!isEditing ? files : []}
+                  filePreviewUrls={!isEditing ? filePreviewUrls : []}
+                  removeFile={!isEditing ? removeFile : undefined}
                 />
               )}
             </div>
@@ -1027,7 +1504,7 @@ export const MessageComposerInner: React.FC<MessageComposerProps> = ({
             onClick={() => {
               void handleSend();
             }}
-            disabled={disabled || (isEditing && value.trim().length === 0)}
+            disabled={disabled || sendInFlight || (isEditing && value.trim().length === 0)}
             className="flex h-9 w-9 flex-shrink-0 items-center justify-center gap-0 self-center rounded-l-xl rounded-r-xl bg-composer-send text-on-accent transition-opacity hover:opacity-90 disabled:opacity-50"
             aria-label={isEditing ? t("common.save") : t("chat.sendPlaceholder")}
           >

@@ -1,20 +1,16 @@
 import React, { useCallback } from "react";
-import { UserStatusLabel } from "~/entities/user/user-status-label.ui";
+import { WorkspaceAvatar } from "~/features/workspace-avatar/workspace-avatar.ui";
 import { t } from "~/i18n/i18n";
-import { getRealmBaseUrl } from "~/shared/api/zulip-client.internal";
-import { resolveAvatarUrl } from "~/shared/lib/avatar";
 import { Avatar } from "~/shared/ui/avatar";
 import { Icon } from "~/shared/ui/icon";
 import { PresenceIndicator } from "~/shared/ui/presence-indicator";
 import { resolveDmStatusText } from "./chat-header.lib";
 import type { ChatHeaderProps } from "./chat-header.types";
 
-function resolveAvatarSrc(url: string | undefined | null): string | undefined {
-  return resolveAvatarUrl(url, getRealmBaseUrl());
-}
-
 const TITLE_ACTION_BUTTON_CLASS =
   "absolute inset-0 rounded-lg bg-transparent text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft";
+const AVATAR_ACTION_BUTTON_CLASS =
+  "relative shrink-0 rounded-full bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft";
 
 export const ChatHeader: React.FC<ChatHeaderProps> = ({
   channelName,
@@ -34,13 +30,9 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
   dmGroup,
   onDmPartnerClick,
 }) => {
-  const infoLabel = rightPanelLabel ?? t("info.channelInfo");
-  const avatarSrc = dmPartner ? resolveAvatarSrc(dmPartner.avatarUrl) : undefined;
+  const infoLabel =
+    rightPanelLabel ?? (dmPartner != null ? t("info.partnerInfo") : t("info.channelInfo"));
   const statusText = dmPartner ? resolveDmStatusText(dmPartner) : "";
-  const shouldRenderRichDmStatus =
-    dmPartner?.isAccountDeactivated !== true &&
-    dmPartner?.isTyping !== true &&
-    dmPartner?.status?.reactionType === "realm_emoji";
   const canOpenDmPartner = onDmPartnerClick != null;
   const canOpenRightPanelFromHeader = onOpenRightPanel != null || onToggleRightPanel != null;
 
@@ -62,42 +54,60 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
     if (dmPartner) {
       return (
         <div className="relative flex min-w-0 items-center gap-3 rounded-lg text-left">
-          <span className="relative shrink-0">
-            <Avatar
-              size="md"
-              className="border border-border-subtle bg-bg-elevated text-text-muted"
-              src={avatarSrc}
-            >
-              {dmPartner.name.slice(0, 1).toUpperCase()}
-            </Avatar>
-            <PresenceIndicator
-              status={dmPartner.presenceState}
-              size="md"
-              tone="header"
-              pulse={false}
-              deactivated={dmPartner.isAccountDeactivated === true}
-              className="absolute bottom-0 right-0 ring-border-subtle"
-            />
-          </span>
-          <span className="flex min-w-0 flex-1 flex-col">
-            <h1 className="truncate text-sm font-semibold text-text-primary">{dmPartner.name}</h1>
-            {shouldRenderRichDmStatus ? (
-              <UserStatusLabel
-                status={dmPartner.status}
-                className="max-w-full text-xs text-text-muted"
-              />
-            ) : (
-              <span className="truncate text-xs text-text-muted">{statusText}</span>
-            )}
-          </span>
-          {canOpenDmPartner && (
+          {canOpenDmPartner ? (
             <button
               type="button"
               onClick={handleDmPartnerAvatarClick}
-              className={TITLE_ACTION_BUTTON_CLASS}
+              className={AVATAR_ACTION_BUTTON_CLASS}
               aria-label={t("a11y.openUserProfile", { name: dmPartner.name })}
-            />
+            >
+              <WorkspaceAvatar
+                size="md"
+                className="border border-border-subtle bg-bg-elevated text-text-muted"
+                avatarUrn={dmPartner.avatarUrl}
+              >
+                {dmPartner.name.slice(0, 1).toUpperCase()}
+              </WorkspaceAvatar>
+              <PresenceIndicator
+                status={dmPartner.presenceState}
+                size="md"
+                tone="header"
+                pulse={false}
+                deactivated={dmPartner.isAccountDeactivated === true}
+                className="absolute bottom-0 right-0 ring-border-subtle"
+              />
+            </button>
+          ) : (
+            <span className="relative shrink-0">
+              <WorkspaceAvatar
+                size="md"
+                className="border border-border-subtle bg-bg-elevated text-text-muted"
+                avatarUrn={dmPartner.avatarUrl}
+              >
+                {dmPartner.name.slice(0, 1).toUpperCase()}
+              </WorkspaceAvatar>
+              <PresenceIndicator
+                status={dmPartner.presenceState}
+                size="md"
+                tone="header"
+                pulse={false}
+                deactivated={dmPartner.isAccountDeactivated === true}
+                className="absolute bottom-0 right-0 ring-border-subtle"
+              />
+            </span>
           )}
+          <span className="relative flex min-w-0 flex-1 flex-col">
+            <h1 className="truncate text-sm font-semibold text-text-primary">{dmPartner.name}</h1>
+            <span className="truncate text-xs text-text-muted">{statusText}</span>
+            {canOpenRightPanelFromHeader && (
+              <button
+                type="button"
+                onClick={handleOpenRightPanelFromHeaderBlock}
+                className={TITLE_ACTION_BUTTON_CLASS}
+                aria-label={infoLabel}
+              />
+            )}
+          </span>
         </div>
       );
     }

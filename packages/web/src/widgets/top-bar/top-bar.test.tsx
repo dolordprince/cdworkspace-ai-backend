@@ -1,26 +1,100 @@
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useChatListStore } from "~/entities/chat-list/chat-list.model";
 import { useDownloadStore } from "~/entities/download/download.model";
+import { useMessengerStore } from "~/entities/messenger/messenger.model";
+import type { MessengerStream } from "~/entities/messenger/messenger.types";
 import { useUsersStore } from "~/entities/user/user.model";
+import {
+  useWorkspaceAuthStore,
+  type WorkspaceAuthSession,
+} from "~/entities/workspace-auth/workspace-auth.model";
+import { t } from "~/i18n/i18n";
 import { ELECTRON_MAC_TITLEBAR_STRIP_CLASS } from "~/shared/lib/electron-title-bar.lib";
+import { setCurrentOrgRouteIdResolver } from "~/shared/lib/org-route";
+import { createUser } from "~/test/factories";
 import { renderWithProviders } from "~/test/render";
 import { useRightDrawerStore } from "~/widgets/right-panel/right-drawer.model";
 import { useSearchModalStore } from "~/widgets/search-modal/search-modal.model";
 import { TOP_BAR_PROFILE_STATUS_MAX_CH } from "./top-bar.lib";
 import { TopBar } from "./top-bar.ui";
 
+const CURRENT_USER_UUID = "a225223c-637c-4afa-918f-5f2798b9305f";
+
 function LocationProbe() {
   return <span data-testid="location-path">{useLocation().pathname}</span>;
 }
 
 function resetTopBarRelatedStores(): void {
-  useChatListStore.setState({ currentUserId: null });
+  useMessengerStore.getState().clear();
   useUsersStore.getState().clear();
   useDownloadStore.setState({ entries: [], duplicateRequestTick: 0 });
+  useWorkspaceAuthStore.setState({ sessions: [], currentAccountId: null, runtimeGeneration: 0 });
+  setCurrentOrgRouteIdResolver(null);
   useSearchModalStore.getState().closeModal();
   useRightDrawerStore.setState({ open: false, mode: "info", userIdOverride: null });
+}
+
+function createWorkspaceSession(
+  overrides: Partial<WorkspaceAuthSession> = {},
+): WorkspaceAuthSession {
+  const userUuid = overrides.userUuid ?? CURRENT_USER_UUID;
+  return {
+    accountId: "account-a",
+    instanceId: "instance-a",
+    organizationId: "workspace.example.com",
+    organizationOrigin: "https://workspace.example.com",
+    projectId: "project-a",
+    userUuid,
+    login: "alice@example.com",
+    accessToken: "access-token",
+    runtimeGeneration: 1,
+    profile: {
+      uuid: userUuid,
+      username: "alice",
+      firstName: "Alice",
+      lastName: "Workspace",
+      email: "alice@example.com",
+      status: "active",
+    },
+    ...overrides,
+  };
+}
+
+function seedWorkspaceSession(userUuid = CURRENT_USER_UUID): void {
+  const session = createWorkspaceSession({ userUuid });
+  useWorkspaceAuthStore.setState({
+    currentAccountId: session.accountId,
+    runtimeGeneration: 1,
+    sessions: [session],
+  });
+}
+
+function createDirectWorkspaceStream(overrides: Partial<MessengerStream> = {}): MessengerStream {
+  const now = "2026-07-02T10:00:00Z";
+  return {
+    uuid: "75309057-419c-4b12-a7c1-3932429ec4a6",
+    projectId: "project-a",
+    ownerUuid: "owner-a",
+    userUuid: "current-user",
+    role: "member",
+    notificationMode: "all_messages",
+    name: "Alice Workspace",
+    description: "",
+    unreadCount: 0,
+    sourceName: "native",
+    source: { kind: "native" },
+    audience: "private",
+    isPrivate: true,
+    inviteOnly: false,
+    announce: false,
+    isArchived: false,
+    directUserUuid: "a225223c-637c-4afa-918f-5f2798b9305f",
+    lastMessageUuid: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
 }
 
 describe("TopBar", () => {
@@ -55,7 +129,7 @@ describe("TopBar", () => {
     expect(screen.queryByRole("button", { name: /^services$/i })).not.toBeInTheDocument();
   });
 
-  it("navigates to home when chat is selected from another section", () => {
+  it("navigates to the app root when chat is selected without Workspace project", () => {
     renderWithProviders(
       <>
         <LocationProbe />
@@ -66,6 +140,24 @@ describe("TopBar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /chats\s*&\s*channels/i }));
     expect(screen.getByTestId("location-path")).toHaveTextContent("/");
+  });
+
+  it("navigates to Workspace messenger root when chat is selected with Workspace project", () => {
+    seedWorkspaceSession();
+    setCurrentOrgRouteIdResolver(() => "workspace.example.com");
+
+    renderWithProviders(
+      <>
+        <LocationProbe />
+        <TopBar />
+      </>,
+      { route: "/calendar" },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /chats\s*&\s*channels/i }));
+    expect(screen.getByTestId("location-path")).toHaveTextContent(
+      "/org/workspace.example.com/project/project-a/messenger",
+    );
   });
 
   it("sets aria-current on the section that matches the URL", () => {
@@ -92,6 +184,60 @@ describe("TopBar", () => {
       fireEvent.click(searchButton);
     });
     expect(useSearchModalStore.getState().open).toBe(true);
+  });
+
+  it("opens Workspace people search without legacy message filters", () => {
+    renderWithProviders(<TopBar />, {
+      route: "/org/workspace.example.com/project/project-a/messenger",
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /search/i }));
+    });
+
+    expect(screen.getByPlaceholderText(t("search.search"))).not.toBeDisabled();
+    expect(screen.queryByPlaceholderText(t("search.filterStream"))).not.toBeInTheDocument();
+  });
+
+  it("opens selected Workspace user from top-bar search through direct-private stream route", () => {
+    useUsersStore.getState().upsertUser(
+      createUser({
+        uuid: "a225223c-637c-4afa-918f-5f2798b9305f",
+        username: "alice.workspace",
+        displayName: "Alice Workspace",
+        email: "alice.workspace@example.com",
+        status: "active",
+      }),
+    );
+    useMessengerStore.getState().startBootstrap("owner:top-bar");
+    useMessengerStore.getState().replaceBootstrapState("owner:top-bar", {
+      streams: [createDirectWorkspaceStream()],
+      streamBindings: [],
+      topics: [],
+      conversations: [],
+      folders: [],
+    });
+
+    renderWithProviders(
+      <>
+        <LocationProbe />
+        <TopBar />
+      </>,
+      { route: "/org/workspace.example.com/project/project-a/messenger" },
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /search/i }));
+    });
+    fireEvent.change(screen.getByPlaceholderText(t("search.search")), {
+      target: { value: "alice.workspace" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Alice Workspace/i }));
+
+    expect(screen.getByTestId("location-path")).toHaveTextContent(
+      "/org/workspace.example.com/project/project-a/stream/75309057-419c-4b12-a7c1-3932429ec4a6",
+    );
+    expect(useSearchModalStore.getState().open).toBe(false);
   });
 
   it("opens user menu in right drawer when profile trigger is clicked", () => {
@@ -179,30 +325,40 @@ describe("TopBar", () => {
   });
 
   it("uses semantic token classes for presence indicators", () => {
-    useChatListStore.setState({ currentUserId: 7 });
-    useUsersStore.getState().mergeUser({
-      user_id: 7,
-      full_name: "Alice",
-      presence: { status: "active", timestamp: Date.now() },
-    });
+    seedWorkspaceSession();
+    useUsersStore.getState().upsertUser(
+      createUser({
+        uuid: CURRENT_USER_UUID,
+        full_name: "Alice",
+        presence: { status: "active", timestamp: Date.now() },
+      }),
+    );
 
     renderWithProviders(<TopBar />);
     expect(screen.getByLabelText(/online/i)).toHaveClass("bg-indicator-green");
 
     act(() => {
-      useUsersStore.getState().setPresence(7, { status: "idle", timestamp: Date.now() });
+      useUsersStore.getState().upsertUser(
+        createUser({
+          uuid: CURRENT_USER_UUID,
+          full_name: "Alice",
+          presence: { status: "idle", timestamp: Date.now() },
+        }),
+      );
     });
     expect(screen.getByLabelText(/away/i)).toHaveClass("bg-indicator-orange");
   });
 
   it("updates profile trigger avatar src when users store avatar changes", () => {
-    useChatListStore.setState({ currentUserId: 7 });
-    useUsersStore.getState().mergeUser({
-      user_id: 7,
-      full_name: "Alice",
-      email: "alice@example.com",
-      avatar_url: "https://cdn.example.com/avatar/old.png",
-    });
+    seedWorkspaceSession();
+    useUsersStore.getState().upsertUser(
+      createUser({
+        uuid: CURRENT_USER_UUID,
+        full_name: "Alice",
+        email: "alice@example.com",
+        avatar_url: "urn:url:https://cdn.example.com/avatar/old.png",
+      }),
+    );
 
     renderWithProviders(<TopBar />);
     const profileButton = screen.getByRole("button", { name: /profile/i });
@@ -210,10 +366,12 @@ describe("TopBar", () => {
     expect(profileAvatarBefore?.getAttribute("src")).toContain("cdn.example.com/avatar/old.png");
 
     act(() => {
-      useUsersStore.getState().mergeUser({
-        user_id: 7,
-        avatar_url: "https://cdn.example.com/avatar/new.png",
-      });
+      useUsersStore.getState().upsertUser(
+        createUser({
+          uuid: CURRENT_USER_UUID,
+          avatar_url: "urn:url:https://cdn.example.com/avatar/new.png",
+        }),
+      );
     });
 
     const profileAvatarAfter = profileButton.querySelector("img");
@@ -221,12 +379,14 @@ describe("TopBar", () => {
   });
 
   it("shows current user email under display name in profile trigger", () => {
-    useChatListStore.setState({ currentUserId: 11 });
-    useUsersStore.getState().mergeUser({
-      user_id: 11,
-      full_name: "Dmitrii Korobkin",
-      email: "dmitrii@example.com",
-    });
+    seedWorkspaceSession();
+    useUsersStore.getState().upsertUser(
+      createUser({
+        uuid: CURRENT_USER_UUID,
+        full_name: "Dmitrii Korobkin",
+        email: "dmitrii@example.com",
+      }),
+    );
 
     renderWithProviders(<TopBar />);
 
@@ -241,13 +401,77 @@ describe("TopBar", () => {
     expect(email).not.toHaveClass("truncate");
   });
 
-  it("shows short profile status without a hover title", () => {
-    useChatListStore.setState({ currentUserId: 11 });
-    useUsersStore.getState().mergeUser({
-      user_id: 11,
-      full_name: "Dmitrii Korobkin",
-      status: { text: "In a meeting", away: false },
+  it("shows Workspace auth profile when legacy user store is empty", () => {
+    seedWorkspaceSession();
+
+    renderWithProviders(<TopBar />);
+
+    const profileButton = screen.getByRole("button", { name: /profile/i });
+    const profileScope = within(profileButton);
+    expect(profileScope.getByText("Alice Workspace")).toBeInTheDocument();
+    expect(profileScope.getByText("alice@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText(/online/i)).toBeInTheDocument();
+  });
+
+  it("navigates to the next Workspace inbox after logging out from the current account", async () => {
+    const firstSession = createWorkspaceSession();
+    const secondSession = createWorkspaceSession({
+      accountId: "account-b",
+      instanceId: "instance-b",
+      organizationId: "next.example.com",
+      organizationOrigin: "https://next.example.com",
+      projectId: "project-b",
+      userUuid: "b225223c-637c-4afa-918f-5f2798b9305f",
+      login: "bob@example.com",
+      runtimeGeneration: 1,
+      profile: {
+        uuid: "b225223c-637c-4afa-918f-5f2798b9305f",
+        username: "bob",
+        firstName: "Bob",
+        lastName: "Workspace",
+        email: "bob@example.com",
+        status: "active",
+      },
     });
+    useWorkspaceAuthStore.setState({
+      currentAccountId: firstSession.accountId,
+      runtimeGeneration: 1,
+      sessions: [firstSession, secondSession],
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderWithProviders(
+      <>
+        <LocationProbe />
+        <TopBar />
+      </>,
+      { route: "/org/workspace.example.com/project/project-a/stream/old-stream" },
+    );
+
+    const accountMenuTrigger = screen
+      .getAllByRole("button", { name: t("auth.selectServer") })
+      .find((button) => button.getAttribute("aria-haspopup") === "menu");
+    expect(accountMenuTrigger).toBeDefined();
+    fireEvent.pointerDown(accountMenuTrigger!, { button: 0, ctrlKey: false });
+    fireEvent.click((await screen.findAllByRole("button", { name: t("auth.logoutFromOrg") }))[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location-path")).toHaveTextContent(
+        "/org/next.example.com/project/project-b/inbox",
+      );
+      expect(useWorkspaceAuthStore.getState().currentAccountId).toBe(secondSession.accountId);
+    });
+  });
+
+  it("shows short profile status without a hover title", () => {
+    seedWorkspaceSession();
+    useUsersStore.getState().upsertUser(
+      createUser({
+        uuid: CURRENT_USER_UUID,
+        full_name: "Dmitrii Korobkin",
+        status: { text: "In a meeting", away: false },
+      }),
+    );
 
     renderWithProviders(<TopBar />);
 
@@ -258,14 +482,33 @@ describe("TopBar", () => {
     expect(status).not.toHaveAttribute("title");
   });
 
+  it("shows profile status emoji with status text in profile trigger", () => {
+    seedWorkspaceSession();
+    useUsersStore.getState().upsertUser(
+      createUser({
+        uuid: CURRENT_USER_UUID,
+        full_name: "Dmitrii Korobkin",
+        statusEmoji: "☕",
+        statusText: "Focus",
+      }),
+    );
+
+    renderWithProviders(<TopBar />);
+
+    const profileButton = screen.getByRole("button", { name: /profile/i });
+    expect(within(profileButton).getByText("☕ Focus")).toBeInTheDocument();
+  });
+
   it("shows full profile status on hover when truncated", () => {
     const longStatus = "a".repeat(TOP_BAR_PROFILE_STATUS_MAX_CH + 5);
-    useChatListStore.setState({ currentUserId: 11 });
-    useUsersStore.getState().mergeUser({
-      user_id: 11,
-      full_name: "Dmitrii Korobkin",
-      status: { text: longStatus, away: false },
-    });
+    seedWorkspaceSession();
+    useUsersStore.getState().upsertUser(
+      createUser({
+        uuid: CURRENT_USER_UUID,
+        full_name: "Dmitrii Korobkin",
+        status: { text: longStatus, away: false },
+      }),
+    );
 
     renderWithProviders(<TopBar />);
 

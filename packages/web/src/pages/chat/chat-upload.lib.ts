@@ -1,10 +1,18 @@
-import { detectImageMime, sanitizeFilename, validateFileUpload } from "~/shared/lib/validation";
+import type { WorkspaceFileMetadata } from "~/shared/api/messenger-files.api";
+import { detectImageMime, validateFileUpload } from "~/shared/lib/validation";
+import {
+  buildWorkspaceFileMetadata,
+  buildWorkspaceFileUrnMarkdownLink,
+} from "./chat-workspace-file-urn.lib";
 
 export interface UploadFileRequestOptions {
   signal?: AbortSignal;
 }
 
-export type UploadFileFn = (file: File, options?: UploadFileRequestOptions) => Promise<string>;
+export type UploadWorkspaceComposerFileFn = (
+  file: File,
+  options?: UploadFileRequestOptions,
+) => Promise<Pick<WorkspaceFileMetadata, "uuid" | "content_type">>;
 export interface ComposerUploadProgressState {
   completed: number;
   total: number;
@@ -43,6 +51,13 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
+export function appendComposerMarkdownLinks(content: string, links: readonly string[]): string {
+  const cleanContent = content.trim();
+  if (links.length === 0) return cleanContent;
+  if (cleanContent.length === 0) return links.join("\n");
+  return `${cleanContent}\n${links.join("\n")}`;
+}
+
 async function validateComposerFile(file: File): Promise<void> {
   const validation = validateFileUpload(file);
   if (!validation.valid) {
@@ -61,9 +76,9 @@ async function validateComposerFile(file: File): Promise<void> {
   }
 }
 
-export async function uploadComposerFiles(
+export async function uploadWorkspaceComposerFiles(
   files: File[],
-  uploadFile: UploadFileFn,
+  uploadWorkspaceFile: UploadWorkspaceComposerFileFn,
   options: UploadComposerFilesOptions = {},
 ): Promise<string[]> {
   throwIfAborted(options.signal);
@@ -85,12 +100,14 @@ export async function uploadComposerFiles(
   for (let i = 0; i < files.length; i += 1) {
     throwIfAborted(options.signal);
     const file = files[i]!;
-    const uri =
+    const uploadedFile =
       options.signal != null
-        ? await uploadFile(file, { signal: options.signal })
-        : await uploadFile(file);
-    const safeName = sanitizeFilename(file.name) || "file";
-    links.push(`[${safeName}](${uri})`);
+        ? await uploadWorkspaceFile(file, { signal: options.signal })
+        : await uploadWorkspaceFile(file);
+    const metadata = await buildWorkspaceFileMetadata(file, uploadedFile, {
+      signal: options.signal,
+    });
+    links.push(buildWorkspaceFileUrnMarkdownLink(metadata));
 
     const nextFileName = i + 1 < files.length ? files[i + 1]!.name : null;
     options.onProgress?.({

@@ -1,5 +1,3 @@
-import type { UserStatus } from "~/entities/user/user.model";
-
 /** DM partner data for the chat header: avatar, name, online status */
 export interface ChatHeaderDmPartner {
   avatarUrl?: string | null;
@@ -10,8 +8,8 @@ export interface ChatHeaderDmPartner {
   lastSeen?: string;
   /** Custom Zulip status (emoji + text). */
   customStatus?: string;
-  /** Raw custom Zulip status for rich custom emoji rendering. */
-  status?: UserStatus | null;
+  /** Raw custom status text or emoji from the active user source. */
+  status?: string | null;
   /** When true, Zulip directory reports the partner account as deactivated (`is_active === false`). */
   isAccountDeactivated?: boolean;
   /** Shows transient typing status in DM header when true. */
@@ -32,7 +30,7 @@ export interface ChatHeaderProps {
   onlineCount?: number;
   onOpenSearch?: () => void;
   onToggleRightPanel?: () => void;
-  /** Opens right info panel from header content clicks (channel/group title area). */
+  /** Opens right info panel from header content clicks (channel/group title or DM name block). */
   onOpenRightPanel?: () => void;
   rightPanelOpen?: boolean;
   /** Button label for the panel (e.g. "Contact info" in a DM) */

@@ -1,4 +1,6 @@
-import { instanceChatKey } from "~/shared/lib/message-cache-keys.lib";
+function instanceScopedKey(instanceId: string, baseKey: string): string {
+  return `${instanceId}::${baseKey}`;
+}
 
 function normalizeNotificationInstanceId(instanceId: string | null | undefined): string | null {
   const trimmed = instanceId?.trim() ?? "";
@@ -13,26 +15,30 @@ export function buildScopedNotificationKey(
   if (normalizedInstanceId == null) {
     return baseKey;
   }
-  return instanceChatKey(normalizedInstanceId, baseKey);
+  return instanceScopedKey(normalizedInstanceId, baseKey);
 }
 
 export function buildNotificationAggregateTag(
   bucketKey: string,
-  instanceId: string | null | undefined,
+  instanceId: string | null | undefined = null,
 ): string {
   return `bucket:${buildScopedNotificationKey(bucketKey, instanceId)}`;
 }
 
-export function buildNotificationFallbackTag(
-  messageId: number,
-  instanceId: string | null | undefined,
+export function buildWorkspaceNotificationFallbackTag(
+  ownerKey: string,
+  messageUuid: string,
 ): string {
-  return `msg:${buildScopedNotificationKey(String(messageId), instanceId)}`;
+  return `msg:${buildScopedNotificationKey(messageUuid, ownerKey)}`;
 }
 
-export function buildNotificationMessageScopeKey(
-  messageId: number,
-  instanceId: string | null | undefined,
+export function buildWorkspaceNotificationMessageScopeKey(
+  ownerKey: string,
+  messageUuid: string,
 ): string {
-  return buildScopedNotificationKey(`message:${messageId}`, instanceId);
+  return buildScopedNotificationKey(`message:${messageUuid}`, ownerKey);
+}
+
+export function buildWorkspaceNotificationBucketKey(ownerKey: string, bucketKey: string): string {
+  return buildScopedNotificationKey(bucketKey, ownerKey);
 }

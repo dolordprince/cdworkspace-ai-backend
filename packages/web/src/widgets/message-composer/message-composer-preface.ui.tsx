@@ -1,7 +1,7 @@
 import React, { useMemo } from "react";
 import { t } from "~/i18n/i18n";
 import { chatBottomNoticeBarClassName } from "~/shared/lib/chat-bottom-notice-bar.lib";
-import { plainTextPreviewFromMessageBody } from "~/shared/lib/message-markdown-display.lib";
+import { summarizeWorkspaceMessageMarkdown } from "~/shared/lib/workspace-message-render/workspace-message-summary.lib";
 import { Icon } from "~/shared/ui/icon";
 import {
   formatAttachmentSize,
@@ -11,12 +11,36 @@ import {
 import { QUOTE_PREVIEW_MAX } from "./message-composer-constants.lib";
 import type { MessageComposerPrefaceProps } from "./message-composer.types";
 
+interface MessageComposerEditNoticeProps {
+  onCancelEdit?: () => void;
+}
+
+export const MessageComposerEditNotice: React.FC<MessageComposerEditNoticeProps> = React.memo(
+  ({ onCancelEdit }) => (
+    <div
+      className={chatBottomNoticeBarClassName({ gap: "3", round: "top" })}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="min-w-0 flex-1 text-sm text-text-primary">{t("message.edit")}</span>
+      <button
+        type="button"
+        onClick={() => onCancelEdit?.()}
+        className="rounded-lg px-3 py-1 text-sm text-text-muted hover:text-text-primary"
+      >
+        {t("common.cancel")}
+      </button>
+    </div>
+  ),
+);
+
 export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = React.memo(
   ({
     uploadProgress,
     uploadProgressPercent,
     files,
     filePreviewUrls,
+    showFiles = true,
     isUploadInProgress,
     onCancelUpload,
     removeFile,
@@ -25,32 +49,23 @@ export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = Rea
     replyQuote,
     onClearReply,
     isEditing = false,
+    showReplyWhileEditing = false,
+    hideEditNotice = false,
     onCancelEdit,
   }) => {
     const replyQuotePreview = useMemo(() => {
       if (replyQuote == null) return "";
-      const plain = plainTextPreviewFromMessageBody(replyQuote.content).trim();
-      return plain.length <= QUOTE_PREVIEW_MAX ? plain : plain.slice(0, QUOTE_PREVIEW_MAX) + "…";
+      return summarizeWorkspaceMessageMarkdown(replyQuote.content, {
+        maxLength: QUOTE_PREVIEW_MAX,
+        includeMediaLabel: true,
+        includeAttachmentLabel: true,
+        includeQuotePrefix: false,
+      }).text.trim();
     }, [replyQuote]);
 
     return (
       <>
-        {isEditing && (
-          <div
-            className={chatBottomNoticeBarClassName({ gap: "3", round: "top" })}
-            role="status"
-            aria-live="polite"
-          >
-            <span className="min-w-0 flex-1 text-sm text-text-primary">{t("message.edit")}</span>
-            <button
-              type="button"
-              onClick={() => onCancelEdit?.()}
-              className="rounded-lg px-3 py-1 text-sm text-text-muted hover:text-text-primary"
-            >
-              {t("common.cancel")}
-            </button>
-          </div>
-        )}
+        {isEditing && !hideEditNotice && <MessageComposerEditNotice onCancelEdit={onCancelEdit} />}
 
         {!isEditing && uploadProgress != null && uploadProgress.total > 0 && (
           <div className="px-4 pb-1 pt-2">
@@ -84,7 +99,7 @@ export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = Rea
           </div>
         )}
 
-        {!isEditing && files.length > 0 && (
+        {!isEditing && showFiles && files.length > 0 && (
           <div className="flex flex-wrap items-center gap-2 px-4 py-2">
             {files.map((file, i) => {
               const previewUrl = filePreviewUrls[i] ?? null;
@@ -171,7 +186,7 @@ export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = Rea
           </div>
         )}
 
-        {!isEditing && replyQuote && (
+        {(!isEditing || showReplyWhileEditing) && replyQuote && (
           <div className="bg-bg/50 flex items-start gap-2 border-b border-border-subtle px-4 py-2">
             <div className="min-w-0 flex-1">
               <p className="text-[11px] text-text-muted">

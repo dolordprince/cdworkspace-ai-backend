@@ -1,94 +1,44 @@
-import { render, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 import { Avatar } from "~/shared/ui/avatar";
 
-const persistAvatarBlobsToIndexedDb = vi.hoisted(() => vi.fn(() => true));
-const getAvatarBlobCacheRow = vi.hoisted(() => vi.fn());
-const putAvatarBlobCacheRow = vi.hoisted(() => vi.fn());
-const fetchAvatarBlob = vi.hoisted(() => vi.fn());
-const shouldNetworkFetchAvatarBlob = vi.hoisted(() => vi.fn(() => true));
+describe("Avatar", () => {
+  it("renders the supplied image URL directly", () => {
+    const { container } = render(<Avatar src="https://example.test/avatar.png">A</Avatar>);
 
-vi.mock("~/shared/lib/avatar-blob-cache-persist.lib", () => ({
-  persistAvatarBlobsToIndexedDb,
-}));
-
-vi.mock("~/shared/lib/avatar-blob-cache-db", () => ({
-  getAvatarBlobCacheRow,
-  putAvatarBlobCacheRow,
-  touchAvatarBlobCacheRow: vi.fn(),
-  clearAvatarBlobCacheForInstance: vi.fn(),
-}));
-
-vi.mock("~/shared/lib/avatar-blob-fetch.lib", () => ({
-  fetchAvatarBlob,
-  shouldNetworkFetchAvatarBlob,
-}));
-
-vi.mock("~/entities/instance/instance.model", () => ({
-  useInstancesStore: (selector: (s: { currentInstanceId: string | null }) => unknown) =>
-    selector({ currentInstanceId: "inst-1" }),
-}));
-
-vi.mock("~/shared/lib/avatar", () => ({
-  getAvatarVersion: () => 1,
-  bumpAvatarVersion: vi.fn(),
-}));
-
-describe("Avatar IndexedDB cache", () => {
-  afterEach(() => {
-    vi.clearAllMocks();
-    persistAvatarBlobsToIndexedDb.mockReturnValue(true);
-    shouldNetworkFetchAvatarBlob.mockReturnValue(true);
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(
+      "https://example.test/avatar.png",
+    );
   });
 
-  it("uses cached blob without fetch on hit", async () => {
-    const blob = new Blob(["cached"], { type: "image/png" });
-    getAvatarBlobCacheRow.mockResolvedValue({
-      id: "inst-1:/avatar/1.png",
-      instanceId: "inst-1",
-      cacheKey: "/avatar/1.png",
-      blob,
-      mimeType: "image/png",
-      byteSize: blob.size,
-      fetchedAt: 1,
-      lastAccessedAt: 1,
-      avatarVersion: 1,
-    });
+  it("renders fallback content without an image", () => {
+    const { container } = render(<Avatar>A</Avatar>);
 
-    const { container } = render(<Avatar src="https://z.example.com/avatar/1.png?_av=1">A</Avatar>);
-
-    await waitFor(() => {
-      const imgSrc = container.querySelector("img")?.getAttribute("src");
-      expect(imgSrc).toMatch(/^blob:/);
-    });
-    expect(fetchAvatarBlob).not.toHaveBeenCalled();
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("A");
   });
 
-  it("fetches and stores blob on cache miss", async () => {
-    getAvatarBlobCacheRow.mockResolvedValue(null);
-    const blob = new Blob(["fresh"], { type: "image/png" });
-    fetchAvatarBlob.mockResolvedValue(blob);
+  it("renders fallback content when the image fails to load", () => {
+    const { container } = render(<Avatar src="https://example.test/unavailable.png">A</Avatar>);
+    const image = container.querySelector("img");
 
-    render(<Avatar src="https://z.example.com/avatar/2.png?_av=1">B</Avatar>);
+    expect(image).not.toBeNull();
+    fireEvent.error(image!);
 
-    await waitFor(() => {
-      expect(fetchAvatarBlob).toHaveBeenCalledWith("https://z.example.com/avatar/2.png?_av=1");
-      expect(putAvatarBlobCacheRow).toHaveBeenCalled();
-    });
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.textContent).toContain("A");
   });
 
-  it("skips cache when persist flag is off", async () => {
-    persistAvatarBlobsToIndexedDb.mockReturnValue(false);
-    getAvatarBlobCacheRow.mockResolvedValue(null);
+  it("retries with a new source after the previous image failed", () => {
+    const { container, rerender } = render(
+      <Avatar src="https://example.test/unavailable.png">A</Avatar>,
+    );
+    fireEvent.error(container.querySelector("img")!);
 
-    const { container } = render(<Avatar src="https://z.example.com/avatar/3.png">C</Avatar>);
+    rerender(<Avatar src="https://example.test/available.png">A</Avatar>);
 
-    await waitFor(() => {
-      expect(container.querySelector("img")?.getAttribute("src")).toBe(
-        "https://z.example.com/avatar/3.png",
-      );
-    });
-    expect(getAvatarBlobCacheRow).not.toHaveBeenCalled();
-    expect(fetchAvatarBlob).not.toHaveBeenCalled();
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(
+      "https://example.test/available.png",
+    );
   });
 });

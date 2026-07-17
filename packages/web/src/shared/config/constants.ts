@@ -11,7 +11,7 @@
 import { env } from "~/shared/lib/env";
 
 export const SCROLL_AREA_CLASS =
-  "scrollbar scrollbar-thin scrollbar-thumb-border-subtle scrollbar-track-bg scrollbar-thumb-rounded-md";
+  "scrollbar scrollbar-thin scrollbar-thumb-border-subtle scrollbar-track-transparent scrollbar-thumb-rounded-md";
 
 export const JITSI_MEET_DOMAIN = env.JITSI_MEET_DOMAIN;
 export const JITSI_MEET_BASE_URL = env.JITSI_MEET_BASE_URL;
@@ -34,7 +34,7 @@ export { SEARCH_INPUT_DEBOUNCE_MS as MULTI_ORG_UNREAD_REFRESH_DEBOUNCE_MS };
 /** Jitsi Meet API: poll interval for participant list display in the call UI. */
 export const JITSI_PARTICIPANTS_POLL_MS = 5000;
 
-/** Background Workspace folder rail + selective folder-items refresh (see folder-sync). */
+/** Background Workspace folder rail + selective folder/items refresh. */
 export const FOLDER_SYNC_POLL_INTERVAL_MS = 5 * 60_000;
 
 /**

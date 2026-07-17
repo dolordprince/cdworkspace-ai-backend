@@ -1,40 +1,26 @@
-const CREATE_CHAT_TABS = ["dm", "group", "channels", "channel", "archived"] as const;
+export const CREATE_CHAT_TABS = ["dm", "channels", "channel", "topic", "archived"] as const;
 export type CreateChatTab = (typeof CREATE_CHAT_TABS)[number];
-
-export function slugifyUserNameForDm(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "");
-}
-
-export function buildDmSlug(userId: number, fullName: string): string {
-  return `${userId}-${slugifyUserNameForDm(fullName)}`;
-}
 
 export function resolveNextTabFromKey(options: {
   key: string;
   currentTab: CreateChatTab;
+  tabs?: readonly CreateChatTab[];
 }): CreateChatTab | null {
-  const { key, currentTab } = options;
-  const currentTabIndex = CREATE_CHAT_TABS.indexOf(currentTab);
+  const { key, currentTab, tabs = CREATE_CHAT_TABS } = options;
+  const currentTabIndex = tabs.indexOf(currentTab);
   if (currentTabIndex < 0) return null;
 
   if (key === "ArrowRight") {
-    return CREATE_CHAT_TABS[(currentTabIndex + 1) % CREATE_CHAT_TABS.length] ?? null;
+    return tabs[(currentTabIndex + 1) % tabs.length] ?? null;
   }
   if (key === "ArrowLeft") {
-    return (
-      CREATE_CHAT_TABS[(currentTabIndex - 1 + CREATE_CHAT_TABS.length) % CREATE_CHAT_TABS.length] ??
-      null
-    );
+    return tabs[(currentTabIndex - 1 + tabs.length) % tabs.length] ?? null;
   }
   if (key === "Home") {
-    return CREATE_CHAT_TABS[0] ?? null;
+    return tabs[0] ?? null;
   }
   if (key === "End") {
-    return CREATE_CHAT_TABS[CREATE_CHAT_TABS.length - 1] ?? null;
+    return tabs[tabs.length - 1] ?? null;
   }
   return null;
 }

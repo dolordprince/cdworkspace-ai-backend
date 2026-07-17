@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   devWorkspaceBrowserMountPath,
+  isDevWorkspaceApiPathname,
   isAllowedDevWorkspaceProxyTargetOrigin,
   workspaceDevProxyUpstreamPathname,
 } from "./dev-workspace-org-proxy";
@@ -16,6 +17,15 @@ describe("devWorkspaceBrowserMountPath", () => {
 
   it("does not duplicate /workspace when REST path is already /workspace (prod gateway layout)", () => {
     expect(devWorkspaceBrowserMountPath("/workspace")).toBe("/workspace");
+  });
+});
+
+describe("isDevWorkspaceApiPathname", () => {
+  it("matches only the Workspace API mount", () => {
+    expect(isDevWorkspaceApiPathname("/api/workspace")).toBe(true);
+    expect(isDevWorkspaceApiPathname("/api/workspace/v1/messenger/streams/")).toBe(true);
+    expect(isDevWorkspaceApiPathname("/api/v1/users/me")).toBe(false);
+    expect(isDevWorkspaceApiPathname("/api/workspaceish/v1")).toBe(false);
   });
 });
 

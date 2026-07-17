@@ -3,24 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "~/test/render";
 import { ChatHeader } from "./chat-header.ui";
 
-vi.mock("~/shared/lib/realm-emojis-cache", () => ({
-  getCachedRealmEmojis: () => [
-    {
-      id: "42",
-      names: ["scam"],
-      imgUrl: "https://chat.example.test/user_avatars/realm/42.png",
-    },
-  ],
-  ensureRealmEmojisLoaded: () =>
-    Promise.resolve([
-      {
-        id: "42",
-        names: ["scam"],
-        imgUrl: "https://chat.example.test/user_avatars/realm/42.png",
-      },
-    ]),
-}));
-
 describe("ChatHeader", () => {
   it("shows typing status for DM partner when typing flag is set", () => {
     const dmPartner = {
@@ -59,24 +41,14 @@ describe("ChatHeader", () => {
           name: "Alice",
           avatarUrl: null,
           presenceState: "active",
-          status: {
-            text: "",
-            away: false,
-            emojiName: "scam",
-            emojiCode: "42",
-            reactionType: "realm_emoji",
-          },
+          customStatus: ":scam:",
         }}
         hideParticipants
         hideTopic
       />,
     );
 
-    expect(screen.getByRole("img", { name: ":scam:" })).toHaveAttribute(
-      "src",
-      "https://chat.example.test/user_avatars/realm/42.png",
-    );
-    expect(screen.queryByText(":scam:")).not.toBeInTheDocument();
+    expect(screen.getByText(":scam:")).toBeInTheDocument();
     expect(screen.queryByText(/online|в сети/i)).not.toBeInTheDocument();
   });
 
@@ -115,6 +87,27 @@ describe("ChatHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: /open profile: alice/i }));
 
     expect(onDmPartnerClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens right panel from DM name block click", () => {
+    const onOpenRightPanel = vi.fn();
+    const onDmPartnerClick = vi.fn();
+
+    renderWithProviders(
+      <ChatHeader
+        channelName="unused"
+        dmPartner={{ name: "Alice", avatarUrl: null, presenceState: "active" }}
+        hideParticipants
+        hideTopic
+        onOpenRightPanel={onOpenRightPanel}
+        onDmPartnerClick={onDmPartnerClick}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /partner info|информация о собеседнике/i }));
+
+    expect(onOpenRightPanel).toHaveBeenCalledTimes(1);
+    expect(onDmPartnerClick).not.toHaveBeenCalled();
   });
 
   it("does not expose DM partner title as a button without profile handler", () => {

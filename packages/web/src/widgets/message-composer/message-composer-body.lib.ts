@@ -3,13 +3,55 @@
  */
 import { t } from "~/i18n/i18n";
 import { buildZulipQuoteBlock } from "~/shared/lib/message-zulip-quote.lib";
+import {
+  buildWorkspaceQuoteBlock,
+  buildWorkspaceQuoteHeader,
+  buildWorkspaceUserMention,
+} from "~/shared/lib/workspace-message-quote.lib";
 import { buildZulipQuoteHeader } from "~/shared/lib/zulip-quote-header.lib";
 import type { ReplyQuote } from "./message-composer.types";
 
-/** Zulip-style reply: silent user mention, optional “wrote” permalink link, and fenced `quote` block. */
+export interface WorkspaceMentionInsertion {
+  value: string;
+  cursorPosition: number;
+}
+
+/** Replaces the active @query with a canonical Workspace user link. */
+export function insertWorkspaceMention(
+  value: string,
+  mentionStartPos: number,
+  cursorPos: number,
+  displayName: string,
+  userUuid: string,
+): WorkspaceMentionInsertion {
+  const before = value.slice(0, mentionStartPos);
+  const after = value.slice(cursorPos);
+  const mention = `${buildWorkspaceUserMention(displayName, userUuid)} `;
+  const nextValue = before + mention + after;
+  return {
+    value: nextValue,
+    cursorPosition: before.length + mention.length,
+  };
+}
+
+/** Builds a reply quote prefix before the outgoing draft body. */
 export function buildOutgoingMessageBody(value: string, replyQuote?: ReplyQuote | null): string {
   let body = value.trim();
   if (replyQuote) {
+    if (replyQuote.quoteFormat === "workspace") {
+      const header = buildWorkspaceQuoteHeader({
+        senderName: replyQuote.sender_full_name,
+        senderUuid: replyQuote.sender_uuid,
+        wroteLabel: t("message.replyQuoteWrote"),
+        messageUuid: replyQuote.id,
+      });
+      return buildWorkspaceQuoteBlock(header, replyQuote.content) + body;
+    }
+
+    if (replyQuote.sender_id == null) {
+      return body;
+    }
+
     const header = buildZulipQuoteHeader({
       senderName: replyQuote.sender_full_name,
       senderId: replyQuote.sender_id,

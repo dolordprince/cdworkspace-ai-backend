@@ -7,11 +7,10 @@
  * state and receive real-time events without direct store access.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { useChatListStore } from "../entities/chat-list/chat-list.model";
-import { useInstancesStore } from "../entities/instance/instance.model";
-import { useCurrentChatMessagesStore } from "../entities/message/message.model";
+import { useMessengerStore } from "../entities/messenger/messenger.model";
 import { useThemeStore } from "../entities/theme/theme.model";
 import { useUsersStore } from "../entities/user/user.model";
+import { useWorkspaceAuthStore } from "../entities/workspace-auth/workspace-auth.model";
 import {
   installAiContext,
   notifyAiNewMessage,
@@ -19,17 +18,22 @@ import {
   type AiContextBridge,
 } from "./ai-context";
 
-vi.mock("../entities/chat-list/chat-list.model", () => ({
-  useChatListStore: { getState: vi.fn() },
+vi.mock("../entities/messenger/messenger-sidebar.lib", () => ({
+  selectMessengerSidebarActivityCounts: vi.fn((state: { inboxCount?: number }) => ({
+    inboxCount: state.inboxCount ?? 0,
+    mentionsCount: 0,
+    reactionsCount: 0,
+    starredCount: 0,
+  })),
 }));
-vi.mock("../entities/message/message.model", () => ({
-  useCurrentChatMessagesStore: { getState: vi.fn() },
+vi.mock("../entities/messenger/messenger.model", () => ({
+  useMessengerStore: { getState: vi.fn() },
 }));
 vi.mock("../entities/user/user.model", () => ({
   useUsersStore: { getState: vi.fn() },
 }));
-vi.mock("../entities/instance/instance.model", () => ({
-  useInstancesStore: { getState: vi.fn() },
+vi.mock("../entities/workspace-auth/workspace-auth.model", () => ({
+  useWorkspaceAuthStore: { getState: vi.fn() },
 }));
 vi.mock("../entities/theme/theme.model", () => ({
   useThemeStore: { getState: vi.fn() },
@@ -51,20 +55,12 @@ function getAi(): AiContextBridge {
 }
 
 function setupDefaultStoreMocks() {
-  vi.mocked(useCurrentChatMessagesStore.getState).mockReturnValue({
-    context: null,
-    messages: [],
-  } as never);
-  vi.mocked(useChatListStore.getState).mockReturnValue({
-    currentUserId: null,
-    streams: () => [],
-    dms: () => [],
-  } as never);
+  vi.mocked(useMessengerStore.getState).mockReturnValue({ inboxCount: 0 } as never);
   vi.mocked(useUsersStore.getState).mockReturnValue({
     getUser: vi.fn(() => undefined),
   } as never);
-  vi.mocked(useInstancesStore.getState).mockReturnValue({
-    getCurrentInstance: vi.fn(() => null),
+  vi.mocked(useWorkspaceAuthStore.getState).mockReturnValue({
+    getCurrentSession: vi.fn(() => null),
   } as never);
   vi.mocked(useThemeStore.getState).mockReturnValue({
     paletteId: "orange-warm",
@@ -143,54 +139,6 @@ describe("ai-context", () => {
       const result = getAi().context.getCurrentChat();
       expect(result).toEqual({ type: null, messageCount: 0 });
     });
-
-    // AI needs stream name, topic, and message count to provide relevant suggestions
-    it("returns stream context with message count and last timestamp", () => {
-      vi.mocked(useCurrentChatMessagesStore.getState).mockReturnValue({
-        context: { type: "stream", streamName: "general", topic: "greetings" },
-        messages: [
-          { id: 1, timestamp: 1000 },
-          { id: 2, timestamp: 2000 },
-          { id: 3, timestamp: 3000 },
-        ],
-      } as never);
-
-      installAiContext();
-      const result = getAi().context.getCurrentChat();
-      expect(result.type).toBe("stream");
-      expect(result.streamName).toBe("general");
-      expect(result.topic).toBe("greetings");
-      expect(result.messageCount).toBe(3);
-      expect(result.lastMessageTimestamp).toBe(3000);
-    });
-
-    // DM context includes partner IDs parsed from the comma-separated key
-    it("returns dm context with parsed partner IDs", () => {
-      vi.mocked(useCurrentChatMessagesStore.getState).mockReturnValue({
-        context: { type: "dm", dmKey: "10,20,30" },
-        messages: [{ id: 1, timestamp: 500 }],
-      } as never);
-
-      installAiContext();
-      const result = getAi().context.getCurrentChat();
-      expect(result.type).toBe("dm");
-      expect(result.dmPartnerIds).toEqual([10, 20, 30]);
-      expect(result.messageCount).toBe(1);
-      expect(result.lastMessageTimestamp).toBe(500);
-    });
-
-    // Empty chat should not produce a bogus timestamp
-    it("returns undefined lastMessageTimestamp when no messages", () => {
-      vi.mocked(useCurrentChatMessagesStore.getState).mockReturnValue({
-        context: { type: "stream", streamName: "dev", topic: "bugs" },
-        messages: [],
-      } as never);
-
-      installAiContext();
-      const result = getAi().context.getCurrentChat();
-      expect(result.messageCount).toBe(0);
-      expect(result.lastMessageTimestamp).toBeUndefined();
-    });
   });
 
   // ---------------------------------------------------------------------------
@@ -209,52 +157,57 @@ describe("ai-context", () => {
     });
 
     // AI uses user info for personalized responses and context
-    it("returns user info from stores when logged in", () => {
-      vi.mocked(useChatListStore.getState).mockReturnValue({
-        currentUserId: 42,
-        streams: () => [],
-        dms: () => [],
-      } as never);
+    it("returns user info from workspace stores when logged in", () => {
       vi.mocked(useUsersStore.getState).mockReturnValue({
-        getUser: vi.fn((id: number) => (id === 42 ? { full_name: "Alice Test" } : undefined)),
+        getUser: vi.fn((id: string) =>
+          id === "user-uuid"
+            ? { displayName: "Alice Test", email: "alice@example.com" }
+            : undefined,
+        ),
       } as never);
-      vi.mocked(useInstancesStore.getState).mockReturnValue({
-        getCurrentInstance: vi.fn(() => ({
-          email: "alice@example.com",
-          realm: "https://zulip.example.com",
+      vi.mocked(useWorkspaceAuthStore.getState).mockReturnValue({
+        getCurrentSession: vi.fn(() => ({
+          userUuid: "user-uuid",
+          profile: {
+            email: "profile@example.com",
+            username: "alice",
+            firstName: "Alice",
+            lastName: "Test",
+          },
         })),
       } as never);
 
       installAiContext();
       const result = getAi().context.getCurrentUser();
-      expect(result.userId).toBe(42);
+      expect(result.userId).toBeNull();
+      expect(result.userUuid).toBe("user-uuid");
       expect(result.email).toBe("alice@example.com");
       expect(result.fullName).toBe("Alice Test");
-      expect(result.realm).toBe("https://zulip.example.com");
     });
 
     // Profile may load async — AI should still get available data
     it("returns partial info when user profile is not loaded yet", () => {
-      vi.mocked(useChatListStore.getState).mockReturnValue({
-        currentUserId: 99,
-        streams: () => [],
-        dms: () => [],
-      } as never);
       vi.mocked(useUsersStore.getState).mockReturnValue({
         getUser: vi.fn(() => undefined),
       } as never);
-      vi.mocked(useInstancesStore.getState).mockReturnValue({
-        getCurrentInstance: vi.fn(() => ({
-          email: "user@example.com",
-          realm: "https://zulip.example.com",
+      vi.mocked(useWorkspaceAuthStore.getState).mockReturnValue({
+        getCurrentSession: vi.fn(() => ({
+          userUuid: "user-uuid",
+          profile: {
+            email: "user@example.com",
+            username: "fallback-user",
+            firstName: null,
+            lastName: null,
+          },
         })),
       } as never);
 
       installAiContext();
       const result = getAi().context.getCurrentUser();
-      expect(result.userId).toBe(99);
+      expect(result.userId).toBeNull();
+      expect(result.userUuid).toBe("user-uuid");
       expect(result.email).toBe("user@example.com");
-      expect(result.fullName).toBeUndefined();
+      expect(result.fullName).toBe("fallback-user");
     });
   });
 
@@ -275,12 +228,8 @@ describe("ai-context", () => {
     });
 
     // Unread count helps AI prioritize which conversations to suggest
-    it("computes unreadCount from streams and dms badges", () => {
-      vi.mocked(useChatListStore.getState).mockReturnValue({
-        currentUserId: null,
-        streams: () => [{ badge: 5 }, { badge: 3 }, { badge: 0 }],
-        dms: () => [{ badge: 2 }, { badge: undefined }],
-      } as never);
+    it("computes unreadCount from messenger sidebar counts", () => {
+      vi.mocked(useMessengerStore.getState).mockReturnValue({ inboxCount: 10 } as never);
 
       installAiContext();
       const result = getAi().context.getAppState();
@@ -307,53 +256,6 @@ describe("ai-context", () => {
 
   // Verifies message history retrieval with limit and field mapping
   describe("context.getRecentMessages", () => {
-    const mockMessages = Array.from({ length: 30 }, (_, i) => ({
-      id: i + 1,
-      content: `message-${i + 1}`,
-      sender_full_name: `User ${i}`,
-      timestamp: 1000 + i,
-    }));
-
-    // Default limit of 20 keeps the context window manageable for AI
-    it("returns last 20 messages by default", () => {
-      vi.mocked(useCurrentChatMessagesStore.getState).mockReturnValue({
-        context: null,
-        messages: mockMessages,
-      } as never);
-
-      installAiContext();
-      const result = getAi().context.getRecentMessages();
-      expect(result).toHaveLength(20);
-      expect(result[0]!.id).toBe(11);
-      expect(result[19]!.id).toBe(30);
-    });
-
-    // AI callers can request fewer messages to reduce token usage
-    it("respects custom limit", () => {
-      vi.mocked(useCurrentChatMessagesStore.getState).mockReturnValue({
-        context: null,
-        messages: mockMessages,
-      } as never);
-
-      installAiContext();
-      const result = getAi().context.getRecentMessages(5);
-      expect(result).toHaveLength(5);
-      expect(result[0]!.id).toBe(26);
-    });
-
-    // Internal field names (sender_full_name) are mapped to clean API names (sender)
-    it("maps message fields correctly", () => {
-      vi.mocked(useCurrentChatMessagesStore.getState).mockReturnValue({
-        context: null,
-        messages: [{ id: 42, content: "<p>Hello</p>", sender_full_name: "Bob", timestamp: 9999 }],
-      } as never);
-
-      installAiContext();
-      const result = getAi().context.getRecentMessages();
-      expect(result).toEqual([{ id: 42, content: "<p>Hello</p>", sender: "Bob", timestamp: 9999 }]);
-    });
-
-    // Empty chat returns empty array, not null or undefined
     it("returns empty array when no messages", () => {
       installAiContext();
       const result = getAi().context.getRecentMessages();

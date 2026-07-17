@@ -13,11 +13,6 @@ import {
   ipcMain,
 } from "electron";
 import { autoUpdater } from "electron-updater";
-import {
-  DesktopAuthExchangeError,
-  exchangeDesktopFlowToken as exchangeDesktopFlowTokenInMain,
-  getSessionCsrfTokenForRealm,
-} from "./desktop-auth";
 import { isSafeDeeplinkRoute, resolveNotificationClickRoute } from "./deeplink-route.lib";
 import { getShellContentSecurityPolicy } from "./security-policy.lib";
 import { createUnreadDotOverlaySvg } from "./unread-indicator.lib";
@@ -58,6 +53,7 @@ const LOG_FILE_NAME = "workspace.log";
 const LOG_ROTATED_FILE_NAME = "workspace.log.1";
 const MAX_LOG_FILE_BYTES = 1024 * 1024;
 const MAX_LOG_LINE_LENGTH = 32768;
+const NOTIFICATION_SHOW_RESULT_TIMEOUT_MS = 3000;
 
 /**
  * Fallback timeout for {@link focusMainWindow} when no `focus`/`closed` event
@@ -629,6 +625,50 @@ function setProgressBar(progress: number): void {
   }
 }
 
+function waitForNotificationShowResult(
+  notification: InstanceType<typeof Notification>,
+  tag: string | undefined,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let cleanup = (): void => {};
+    const finish = (shown: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      cleanup();
+      resolve(shown);
+    };
+
+    const timeoutId = setTimeout(() => {
+      appendLogsLine(`[notifications] show timeout tag=${tag ?? "none"}`);
+      finish(false);
+    }, NOTIFICATION_SHOW_RESULT_TIMEOUT_MS);
+
+    const onShow = (): void => {
+      appendLogsLine(`[notifications] shown tag=${tag ?? "none"}`);
+      finish(true);
+    };
+    const onFailed = (_event: Electron.Event, error: string): void => {
+      appendLogsLine(`[notifications] failed tag=${tag ?? "none"} error=${String(error)}`);
+      finish(false);
+    };
+    const onClose = (): void => {
+      appendLogsLine(`[notifications] closed tag=${tag ?? "none"}`);
+      finish(false);
+    };
+    cleanup = () => {
+      notification.off("show", onShow);
+      notification.off("failed", onFailed);
+      notification.off("close", onClose);
+    };
+
+    notification.once("show", onShow);
+    notification.once("failed", onFailed);
+    notification.once("close", onClose);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Flash Frame (attention request)
 // ---------------------------------------------------------------------------
@@ -905,12 +945,7 @@ function registerIpcHandlers(): void {
           activeNotificationsByTag.get(tag)?.close();
         }
         const notification = new Notification({ title: t, body: b, silent });
-        notification.on("show", () => {
-          appendLogsLine(`[notifications] shown tag=${tag ?? "none"}`);
-        });
-        notification.on("failed", (_event, error) => {
-          appendLogsLine(`[notifications] failed tag=${tag ?? "none"} error=${String(error)}`);
-        });
+        const showResult = waitForNotificationShowResult(notification, tag);
         if (tag != null) {
           activeNotificationsByTag.set(tag, notification);
           notification.on("close", () => {
@@ -920,6 +955,9 @@ function registerIpcHandlers(): void {
           });
         }
         notification.on("click", () => {
+          if (tag != null) {
+            mainWindow?.webContents.send("notifications:click", tag);
+          }
           if (clickRoute != null) {
             dispatchInternalNavigation(clickRoute);
             return;
@@ -927,7 +965,7 @@ function registerIpcHandlers(): void {
           showMainWindow();
         });
         notification.show();
-        return true;
+        return await showResult;
       } catch (err) {
         appendLogsLine(
           `[notifications] show error tag=${tag ?? "none"} error=${
@@ -1076,57 +1114,6 @@ function registerIpcHandlers(): void {
   ipcMain.on("updater:install", () => {
     if (IS_DEV || IS_AUTO_UPDATE_DISABLED) return;
     autoUpdater.quitAndInstall(false, true);
-  });
-
-  ipcMain.handle("auth:exchangeDesktopFlowToken", async (_event, payload: unknown) => {
-    // The renderer can send anything, so first check the payload shape.
-    if (typeof payload !== "object" || payload == null) {
-      return { ok: false as const, reason: "INVALID_DESKTOP_FLOW_TOKEN" as const };
-    }
-    const record = payload as Record<string, unknown>;
-    // Clean realm and token in the main process, even if the renderer already checked them.
-    const realm = typeof record.realm === "string" ? record.realm.trim() : "";
-    const token = typeof record.token === "string" ? record.token.trim() : "";
-    if (realm.length === 0 || token.length === 0) {
-      return { ok: false as const, reason: "INVALID_DESKTOP_FLOW_TOKEN" as const };
-    }
-    try {
-      // The exchange runs in the main process so the Chromium session jar stores cookies.
-      const data = await exchangeDesktopFlowTokenInMain(realm, token);
-      return { ok: true as const, data };
-    } catch (error) {
-      if (error instanceof DesktopAuthExchangeError) {
-        // Return known errors as data, without parsing text in the renderer.
-        return {
-          ok: false as const,
-          reason: error.reason,
-          ...(error.status != null ? { status: error.status } : {}),
-          ...(error.details != null ? { details: error.details } : {}),
-        };
-      }
-      // Convert unknown failures to a safe response too, so IPC does not fail with an exception.
-      return {
-        ok: false as const,
-        reason: "DESKTOP_FLOW_EXCHANGE_NETWORK_ERROR" as const,
-        details: error instanceof Error ? error.message : String(error),
-      };
-    }
-  });
-
-  ipcMain.handle("auth:getCsrfToken", async (_event, payload: unknown) => {
-    if (typeof payload !== "object" || payload == null) {
-      return null;
-    }
-    const record = payload as Record<string, unknown>;
-    const realm = typeof record.realm === "string" ? record.realm.trim() : "";
-    if (realm.length === 0) {
-      return null;
-    }
-    try {
-      return await getSessionCsrfTokenForRealm(realm);
-    } catch {
-      return null;
-    }
   });
 }
 

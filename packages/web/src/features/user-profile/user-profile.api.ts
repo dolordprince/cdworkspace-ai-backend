@@ -1,119 +1,57 @@
 /**
- * User profile API — fetches detailed profile data from Zulip.
+ * User profile API facade.
  *
- * Zulip API: GET /users/{user_id}
+ * The old Zulip user/status endpoints are intentionally not called during the
+ * uuid-based user store cutover.
  */
 
-import {
-  fetchOwnStatus as fetchOwnStatusFromUsersApi,
-  updateOwnStatus as updateOwnStatusFromUsersApi,
-} from "~/entities/user/api/user.api";
-import type { OwnStatusMutationResult } from "~/entities/user/api/user.api.types";
-import { zulipApi } from "~/shared/api/client";
-import {
-  getOwnAvatarCapabilities as getOwnAvatarCapabilitiesFromApi,
-  removeOwnAvatar as removeOwnAvatarFromApi,
-  uploadOwnAvatar as uploadOwnAvatarFromApi,
-} from "~/shared/api/zulip-avatar-settings";
-import { updateOwnProfileSettings } from "~/shared/api/zulip-profile-settings";
-import { fetchRealmProfileFieldDefinitionsWithSignal } from "~/shared/api/zulip-realm-profile-fields";
 import { guard } from "~/shared/lib/guards";
 import { createLogger } from "~/shared/lib/logger";
-import { mapZulipProfileDataToSemanticFields } from "~/shared/lib/zulip-profile-fields-map.lib";
+import type { RealmProfileFieldDefinition } from "~/shared/lib/zulip-profile-fields-map.lib";
 import type {
   OwnAvatarCapabilities,
   OwnAvatarMutationResult,
   OwnProfileUpdateResult,
   OwnStatusData,
+  OwnStatusMutationResult,
   UserProfileData,
 } from "./user-profile.types";
 
 const log = createLogger("user-profile:api");
+const UNSUPPORTED_PROFILE_MESSAGE =
+  "Profile updates are read-only until Workspace profile write API is available";
+const UNSUPPORTED_AVATAR_MESSAGE =
+  "Avatar changes are read-only until Workspace avatar API is available";
+const FALLBACK_MAX_AVATAR_FILE_SIZE_MIB = 25;
 
-export {
-  clearRealmProfileFieldsCache,
-  fetchRealmProfileFieldDefinitionsWithSignal as fetchRealmProfileFieldDefinitions,
-} from "~/shared/api/zulip-realm-profile-fields";
-
-interface ZulipUserResponse {
-  user: {
-    user_id: number;
-    full_name: string;
-    email: string;
-    avatar_url: string;
-    role: number;
-    is_bot?: boolean;
-    is_active?: boolean; // Zulip JSON
-    date_joined?: string;
-    timezone?: string;
-    profile_data?: Record<string, { value?: string; rendered_value?: string }>;
-  };
+export function clearRealmProfileFieldsCache(): void {
+  // Kept as a no-op for callers that clear all profile-side caches after logout.
 }
 
-function isAbortError(error: unknown): boolean {
-  return (
-    (error instanceof DOMException && error.name === "AbortError") ||
-    (error instanceof Error && error.name === "AbortError")
-  );
+export function fetchRealmProfileFieldDefinitions(
+  signal?: AbortSignal,
+): Promise<RealmProfileFieldDefinition[] | null> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException("Aborted", "AbortError"));
+  }
+  log.info("Realm profile fields are unsupported in Workspace profile API");
+  return Promise.resolve(null);
 }
 
-export async function fetchUserProfile(
+export function fetchUserProfile(
   userId: number,
   options?: { signal?: AbortSignal },
 ): Promise<UserProfileData | null> {
   guard.userId(userId, "fetchUserProfile");
-
-  try {
-    const [res, realmFields] = await Promise.all([
-      zulipApi.get(`/users/${userId}`, {
-        client_gravatar: "false",
-        include_custom_profile_fields: "true",
-      }, options?.signal),
-      fetchRealmProfileFieldDefinitionsWithSignal(options?.signal),
-    ]);
-
-    if (!res.ok) {
-      log.warn("Failed to fetch user profile", { userId, status: res.status });
-      return null;
-    }
-
-    const data = res.data as ZulipUserResponse;
-    const user = data.user;
-    const profile = user.profile_data;
-
-    const custom = mapZulipProfileDataToSemanticFields(profile, realmFields, {
-      useLegacyFixedFieldIds: realmFields == null,
-    });
-
-    return {
-      userId: user.user_id,
-      fullName: user.full_name,
-      email: user.email,
-      avatarUrl: user.avatar_url,
-      role: user.role,
-      isBot: typeof user.is_bot === "boolean" ? user.is_bot : undefined,
-      isActive: typeof user.is_active === "boolean" ? user.is_active : undefined,
-      dateJoined:
-        typeof user.date_joined === "string" && user.date_joined.trim().length > 0
-          ? user.date_joined
-          : undefined,
-      timezone: user.timezone,
-      jobTitle: custom.jobTitle,
-      phone: custom.phone,
-      manager: custom.manager,
-      birthday: custom.birthday,
-    };
-  } catch (err) {
-    if (isAbortError(err) || options?.signal?.aborted) {
-      throw err;
-    }
-    log.error("Error fetching user profile", { userId, error: String(err) });
-    return null;
+  if (options?.signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
   }
+  log.info("User profile fetch skipped during user store cutover", { userId });
+  return Promise.resolve(null);
 }
 
-export async function fetchOwnStatus(): Promise<OwnStatusData | null> {
-  return fetchOwnStatusFromUsersApi();
+export function fetchOwnStatus(): Promise<OwnStatusData | null> {
+  return Promise.resolve(null);
 }
 
 export interface UpdateOwnProfileParams {
@@ -121,26 +59,17 @@ export interface UpdateOwnProfileParams {
   timezone: string;
 }
 
-export async function updateOwnProfile(
-  params: UpdateOwnProfileParams,
-): Promise<OwnProfileUpdateResult> {
+export function updateOwnProfile(params: UpdateOwnProfileParams): Promise<OwnProfileUpdateResult> {
   const fullName = params.fullName.trim();
   const timezone = params.timezone.trim();
   guard.nonEmpty(fullName, "updateOwnProfile.fullName");
   guard.nonEmpty(timezone, "updateOwnProfile.timezone");
 
-  const result = await updateOwnProfileSettings({
-    fullName,
-    timezone,
-  });
-  if (result.ok) {
-    return { ok: true };
-  }
-  return {
+  return Promise.resolve({
     ok: false,
-    kind: result.kind,
-    message: result.message,
-  };
+    kind: "unsupported",
+    message: UNSUPPORTED_PROFILE_MESSAGE,
+  });
 }
 
 export interface UpdateOwnStatusParams {
@@ -148,43 +77,33 @@ export interface UpdateOwnStatusParams {
   away: boolean;
 }
 
-export async function updateOwnStatus(
-  params: UpdateOwnStatusParams,
-): Promise<OwnStatusMutationResult> {
-  return updateOwnStatusFromUsersApi({
-    text: params.statusText,
-    away: params.away,
+export function updateOwnStatus(_params: UpdateOwnStatusParams): Promise<OwnStatusMutationResult> {
+  return Promise.resolve({
+    ok: false,
+    kind: "unsupported",
+    message: "status updates are not supported during user store cutover",
   });
 }
 
 export function getOwnAvatarCapabilities(): OwnAvatarCapabilities {
-  const capabilities = getOwnAvatarCapabilitiesFromApi();
   return {
-    maxAvatarFileSizeMib: capabilities.maxAvatarFileSizeMib,
-    avatarChangesDisabled: capabilities.avatarChangesDisabled,
+    maxAvatarFileSizeMib: FALLBACK_MAX_AVATAR_FILE_SIZE_MIB,
+    avatarChangesDisabled: true,
   };
 }
 
-export async function uploadOwnAvatar(file: File): Promise<OwnAvatarMutationResult> {
-  const result = await uploadOwnAvatarFromApi(file);
-  if (result.ok) {
-    return result;
-  }
-  return {
+export function uploadOwnAvatar(_file: File): Promise<OwnAvatarMutationResult> {
+  return Promise.resolve({
     ok: false,
-    kind: result.kind,
-    message: result.message,
-  };
+    kind: "unsupported",
+    message: UNSUPPORTED_AVATAR_MESSAGE,
+  });
 }
 
-export async function removeOwnAvatar(): Promise<OwnAvatarMutationResult> {
-  const result = await removeOwnAvatarFromApi();
-  if (result.ok) {
-    return result;
-  }
-  return {
+export function removeOwnAvatar(): Promise<OwnAvatarMutationResult> {
+  return Promise.resolve({
     ok: false,
-    kind: result.kind,
-    message: result.message,
-  };
+    kind: "unsupported",
+    message: UNSUPPORTED_AVATAR_MESSAGE,
+  });
 }

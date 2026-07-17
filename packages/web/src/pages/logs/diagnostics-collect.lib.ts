@@ -15,21 +15,11 @@ import { env } from "~/shared/lib/env";
 import type { LogEntry } from "~/shared/lib/logger";
 import { isOnline } from "~/shared/lib/network";
 import { getIdleTimeMs, getLocalPresenceStatus } from "~/shared/lib/presence";
-import type { PushState } from "~/shared/lib/push/types";
 import { getRuntime, isPwa } from "~/shared/lib/pwa";
 import { isTabVisible } from "~/shared/lib/visibility";
 import { getWebViewPlatform, isWebView } from "~/shared/lib/webview";
-import { getZulipEventQueueIdForCurrentInstance } from "~/shared/lib/zulip-event-queue-registry.lib";
 
 export type DiagnosticsOverallStatus = "healthy" | "degraded" | "offline";
-
-export interface DiagnosticsPushSnapshot {
-  permission: PushState["permission"];
-  registered: boolean;
-  provider: string | null;
-  registrationError: string | null;
-  tokenPrefix: string | null;
-}
 
 export interface DiagnosticsPageSnapshot {
   collectedAt: string;
@@ -37,7 +27,6 @@ export interface DiagnosticsPageSnapshot {
   connection: ConnectionHealthSnapshot;
   rateLimitBlockedUntil: number | null;
   realtime: {
-    eventQueueId: string | null;
     online: boolean;
     tabVisible: boolean;
     stats: DiagnosticRealtimeStats;
@@ -79,7 +68,7 @@ export interface DiagnosticsPageSnapshot {
     cdnUrl: string;
   };
   session: {
-    currentUserId: number | null;
+    currentUserUuid: string | null;
     locale: string;
     themeMode: string;
     themePalette: string;
@@ -92,18 +81,21 @@ export interface DiagnosticsPageSnapshot {
   };
   stores: {
     streamsCount: number;
-    dmsCount: number;
+    conversationsCount: number;
+    foldersCount: number;
     usersCount: number;
     currentChatMessagesCount: number;
   };
-  instances: {
+  workspaceSession: {
     count: number;
-    currentInstanceId: string | null;
-    currentRealm: string | null;
-    currentEmail: string | null;
-    unreadCountsByInstance: Record<string, number>;
+    accountId: string | null;
+    instanceId: string | null;
+    organizationOrigin: string | null;
+    projectId: string | null;
+    userUuid: string | null;
+    login: string | null;
+    ownerKey: string | null;
   };
-  push: DiagnosticsPushSnapshot;
   notifications: {
     permission: NotificationPermission | "unsupported";
   };
@@ -130,22 +122,25 @@ export interface DiagnosticsCollectInput {
   connection: ConnectionHealthSnapshot;
   rateLimitBlockedUntil: number | null;
   memorySnapshot: DiagnosticsMemorySnapshot | null;
-  pushState: PushState;
   vitals: readonly DiagnosticVitalEntry[];
   cache: DiagnosticIdbSnapshot | null;
   realtimeStats: DiagnosticRealtimeStats;
   sessionRemainingMs: number | null;
   authIdleTimeoutMs: number | null;
-  currentUserId: number | null;
+  currentUserUuid: string | null;
   streamsCount: number;
-  dmsCount: number;
+  conversationsCount: number;
+  foldersCount: number;
   usersCount: number;
   currentChatMessagesCount: number;
-  currentInstanceId: string | null;
-  currentRealm: string | null;
-  currentEmail: string | null;
-  instancesCount: number;
-  unreadCountsByInstance: Record<string, number>;
+  workspaceSessionsCount: number;
+  workspaceAccountId: string | null;
+  workspaceInstanceId: string | null;
+  workspaceOrganizationOrigin: string | null;
+  workspaceProjectId: string | null;
+  workspaceUserUuid: string | null;
+  workspaceLogin: string | null;
+  workspaceOwnerKey: string | null;
   settingsLanguage: string;
   themeMode: string;
   themePalette: string;
@@ -177,20 +172,6 @@ export function resolveDiagnosticsOverallStatus(
     return "degraded";
   }
   return "healthy";
-}
-
-function sanitizePushState(pushState: PushState): DiagnosticsPushSnapshot {
-  const tokenPrefix =
-    pushState.token != null && pushState.token.length > 0
-      ? `${pushState.token.slice(0, 8)}…`
-      : null;
-  return {
-    permission: pushState.permission,
-    registered: pushState.registered,
-    provider: pushState.provider,
-    registrationError: pushState.registrationError,
-    tokenPrefix,
-  };
 }
 
 function collectRecentErrors(entries: readonly LogEntry[]): LogEntry[] {
@@ -246,7 +227,6 @@ export function collectDiagnosticsPageSnapshot(
     connection,
     rateLimitBlockedUntil: input.rateLimitBlockedUntil,
     realtime: {
-      eventQueueId: getZulipEventQueueIdForCurrentInstance() ?? null,
       online,
       tabVisible: isTabVisible(),
       stats: input.realtimeStats,
@@ -296,7 +276,7 @@ export function collectDiagnosticsPageSnapshot(
       cdnUrl: env.CDN_URL,
     },
     session: {
-      currentUserId: input.currentUserId,
+      currentUserUuid: input.currentUserUuid,
       locale: input.settingsLanguage,
       themeMode: input.themeMode,
       themePalette: input.themePalette,
@@ -309,18 +289,21 @@ export function collectDiagnosticsPageSnapshot(
     },
     stores: {
       streamsCount: input.streamsCount,
-      dmsCount: input.dmsCount,
+      conversationsCount: input.conversationsCount,
+      foldersCount: input.foldersCount,
       usersCount: input.usersCount,
       currentChatMessagesCount: input.currentChatMessagesCount,
     },
-    instances: {
-      count: input.instancesCount,
-      currentInstanceId: input.currentInstanceId,
-      currentRealm: input.currentRealm,
-      currentEmail: input.currentEmail,
-      unreadCountsByInstance: input.unreadCountsByInstance,
+    workspaceSession: {
+      count: input.workspaceSessionsCount,
+      accountId: input.workspaceAccountId,
+      instanceId: input.workspaceInstanceId,
+      organizationOrigin: input.workspaceOrganizationOrigin,
+      projectId: input.workspaceProjectId,
+      userUuid: input.workspaceUserUuid,
+      login: input.workspaceLogin,
+      ownerKey: input.workspaceOwnerKey,
     },
-    push: sanitizePushState(input.pushState),
     notifications: {
       permission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
     },
@@ -341,7 +324,7 @@ export function collectDiagnosticsPageSnapshot(
   };
 }
 
-/** Subset for support copy: connection, realtime, instances, recent errors. */
+/** Subset for support copy: connection, realtime, Workspace session, recent errors. */
 export function buildConnectionReportSnapshot(
   snapshot: DiagnosticsPageSnapshot,
 ): Record<string, unknown> {
@@ -351,7 +334,7 @@ export function buildConnectionReportSnapshot(
     connection: snapshot.connection,
     rateLimitBlockedUntil: snapshot.rateLimitBlockedUntil,
     realtime: snapshot.realtime,
-    instances: snapshot.instances,
+    workspaceSession: snapshot.workspaceSession,
     recentErrors: snapshot.logs.recentErrors.map((entry) => ({
       timestamp: entry.timestamp,
       scope: entry.scope,
@@ -359,10 +342,4 @@ export function buildConnectionReportSnapshot(
       data: entry.data,
     })),
   };
-}
-
-export function truncateQueueId(queueId: string | null, maxLength = 12): string | null {
-  if (queueId == null) return null;
-  if (queueId.length <= maxLength) return queueId;
-  return `${queueId.slice(0, maxLength)}…`;
 }

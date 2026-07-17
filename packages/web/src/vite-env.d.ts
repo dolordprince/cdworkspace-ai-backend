@@ -42,12 +42,8 @@ interface ImportMetaEnv {
   readonly VITE_DEFAULT_LOGIN_ORGANIZATION_URL?: string;
   /** Default organization display name for the login page quick-fill button. Optional. */
   readonly VITE_DEFAULT_LOGIN_ORGANIZATION_NAME?: string;
-  /** Persist chat messages to IndexedDB (write-through). Optional; legacy VITE_CHAT_MESSAGES_SOURCE_INDEXEDDB. */
-  readonly VITE_CHAT_MESSAGES_PERSIST_INDEXEDDB?: string;
-  /** @deprecated Prefer VITE_CHAT_MESSAGES_PERSIST_INDEXEDDB. */
-  readonly VITE_CHAT_MESSAGES_SOURCE_INDEXEDDB?: string;
-  /** Persist avatar blobs to IndexedDB. Optional; default on. */
-  readonly VITE_AVATAR_PERSIST_INDEXEDDB?: string;
+  /** Default Workspace project UUID for IAM password login. Required until project discovery exists. */
+  readonly VITE_DEFAULT_WORKSPACE_PROJECT_ID?: string;
   /** Top bar: show Calls nav. */
   readonly VITE_TOP_BAR_CALLS_NAV?: string;
   /** Top bar: show Services nav. */
@@ -56,16 +52,6 @@ interface ImportMetaEnv {
   readonly VITE_GA4_MEASUREMENT_ID?: string;
   /** Yandex Metrika counter ID (numeric). Optional. */
   readonly VITE_YM_COUNTER_ID?: string;
-  /** Firebase API key for FCM push. Optional. */
-  readonly VITE_FIREBASE_API_KEY?: string;
-  /** Firebase project ID. Optional. */
-  readonly VITE_FIREBASE_PROJECT_ID?: string;
-  /** Firebase messaging sender ID (numeric). Optional. */
-  readonly VITE_FIREBASE_MESSAGING_SENDER_ID?: string;
-  /** Firebase app ID. Optional. */
-  readonly VITE_FIREBASE_APP_ID?: string;
-  /** VAPID key for web push certificates. Optional. */
-  readonly VITE_FIREBASE_VAPID_KEY?: string;
   /** White-label: see `~/shared/lib/brand` and `.env.brand-example`. */
   readonly VITE_BRAND_APP_NAME?: string;
   readonly VITE_BRAND_SHORT_NAME?: string;
@@ -160,6 +146,7 @@ interface ElectronAPI {
       options?: { tag?: string; silent?: boolean; clickRoute?: string },
     ) => Promise<boolean>;
     closeByTag: (tag: string) => Promise<void>;
+    onClick?: (callback: (tag: string) => void) => () => void;
     diagnostics?: () => Promise<{
       platform: string;
       isPackaged: boolean;
@@ -198,39 +185,6 @@ interface ElectronAPI {
   diagnostics?: {
     getMemorySnapshot: () => Promise<ElectronMainMemorySnapshot>;
     getRendererMemory: () => Promise<ElectronRendererMemorySnapshot>;
-  };
-  auth?: {
-    // Electron-only bridge: read the CSRF cookie for the current Zulip realm from Chromium session.
-    getCsrfToken: (payload: { realm: string }) => Promise<string | null>;
-    // Electron-only bridge: renderer asks the main process to finish desktop-flow login.
-    exchangeDesktopFlowToken: (payload: { realm: string; token: string }) => Promise<
-      | {
-          ok: true;
-          data: {
-            // api_key is stored as before; session means auth works through cookies.
-            authType: "api_key" | "session";
-            // Email is needed to create the instance in the Zustand store.
-            email: string;
-            // Current Zulip user id is saved for cache bootstrap when available.
-            userId?: number;
-            // Session auth has no key because auth uses cookies.
-            apiKey?: string;
-          };
-        }
-      | {
-          ok: false;
-          // Short error code comes from the main process and does not depend on message text.
-          reason:
-            | "INVALID_DESKTOP_FLOW_TOKEN"
-            | "DESKTOP_FLOW_EXCHANGE_NETWORK_ERROR"
-            | "DESKTOP_FLOW_EXCHANGE_HTTP_ERROR"
-            | "DESKTOP_FLOW_SESSION_FAILED";
-          // HTTP status exists only when the server had time to respond.
-          status?: number;
-          // Technical details are for logs, not for user-facing text.
-          details?: string;
-        }
-    >;
   };
 }
 

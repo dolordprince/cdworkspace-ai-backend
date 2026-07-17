@@ -1,14 +1,17 @@
 import React, { useCallback, useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useInstancesStore } from "~/entities/instance/instance.model";
-import { InstanceSwitcher } from "~/features/instance-switch/instance-switch.ui";
+import {
+  selectCurrentWorkspaceRuntimeContext,
+  useWorkspaceAuthStore,
+} from "~/entities/workspace-auth/workspace-auth.model";
 import { t } from "~/i18n/i18n";
-import { DEFAULT_MESSENGER_STREAM_SLUG, SCROLL_AREA_CLASS } from "~/shared/config/constants";
+import { SCROLL_AREA_CLASS } from "~/shared/config/constants";
 import { isElectronDarwin } from "~/shared/lib/electron";
 import { ELECTRON_MAC_TITLEBAR_STRIP_CLASS } from "~/shared/lib/electron-title-bar.lib";
 import { env } from "~/shared/lib/env";
 import { resolveMessengerNavigationPath } from "~/shared/lib/last-messenger-route.lib";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
+import { isWorkspaceMessengerRoute } from "~/shared/lib/workspace-messenger-route.lib";
 import { useSearchModalStore } from "~/widgets/search-modal/search-modal.model";
 import { SearchModal } from "~/widgets/search-modal/search-modal.ui";
 import { TopBarDownloadCenter } from "./top-bar-download-center.ui";
@@ -17,6 +20,7 @@ import { TopBarProfileTrigger } from "./top-bar-profile-trigger.ui";
 import { TopBarSearchButton } from "./top-bar-search-button.ui";
 import { useTopBarSearchModal } from "./top-bar-search-modal.hook";
 import { TopBarSectionNav } from "./top-bar-section-nav.ui";
+import { InstanceSwitcher } from "./top-bar-workspace-session-switcher.ui";
 import {
   getSectionFromPathname,
   getTopBarSectionNavItems,
@@ -29,13 +33,24 @@ export const TopBar: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const openSearchModal = useSearchModalStore((s) => s.openModal);
+  const searchModalMode = isWorkspaceMessengerRoute(location.pathname) ? "workspace" : "zulip";
   const {
     open: searchOpen,
     setOpen: setSearchOpen,
-    onSelectMessage: handleSearchSelectMessage,
-    onSelectUser: handleSearchSelectUser,
-  } = useTopBarSearchModal({ navigate });
-  const currentInstanceId = useInstancesStore((s) => s.currentInstanceId);
+    onSelectUserUuid: handleSearchSelectUserUuid,
+  } = useTopBarSearchModal({ navigate, mode: searchModalMode, pathname: location.pathname });
+  const workspaceSessions = useWorkspaceAuthStore((s) => s.sessions);
+  const currentWorkspaceAccountId = useWorkspaceAuthStore((s) => s.currentAccountId);
+  const currentWorkspaceRuntimeContext = useMemo(
+    () =>
+      selectCurrentWorkspaceRuntimeContext({
+        sessions: workspaceSessions,
+        currentAccountId: currentWorkspaceAccountId,
+      }),
+    [currentWorkspaceAccountId, workspaceSessions],
+  );
+  const currentWorkspaceInstanceId = currentWorkspaceRuntimeContext?.instanceId ?? null;
+  const currentWorkspaceProjectId = currentWorkspaceRuntimeContext?.projectId ?? null;
   const sections = useMemo(
     () =>
       getTopBarSectionNavItems({
@@ -53,16 +68,19 @@ export const TopBar: React.FC = () => {
   const handleSectionChange = useCallback(
     (section: TopBarSection) => {
       if (section === "chat") {
-        void navigate(
-          withCurrentOrgRoute(
-            resolveMessengerNavigationPath(currentInstanceId, DEFAULT_MESSENGER_STREAM_SLUG),
-          ),
-        );
+        const messengerPath =
+          currentWorkspaceProjectId != null && currentWorkspaceProjectId.trim().length > 0
+            ? resolveMessengerNavigationPath({
+                instanceId: currentWorkspaceInstanceId,
+                projectId: currentWorkspaceProjectId,
+              })
+            : "/";
+        void navigate(withCurrentOrgRoute(messengerPath));
       } else {
         void navigate(withCurrentOrgRoute(`/${section}`));
       }
     },
-    [currentInstanceId, navigate],
+    [currentWorkspaceInstanceId, currentWorkspaceProjectId, navigate],
   );
 
   return (
@@ -70,8 +88,8 @@ export const TopBar: React.FC = () => {
       <SearchModal
         open={searchOpen}
         onOpenChange={setSearchOpen}
-        onSelectMessage={handleSearchSelectMessage}
-        onSelectUser={handleSearchSelectUser}
+        onSelectUserUuid={handleSearchSelectUserUuid}
+        mode={searchModalMode}
       />
       <header
         className="mb-1 flex w-full flex-col rounded-b-xl border-b border-border-subtle bg-bg-elevated"

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { notificationService } from "~/shared/lib/notifications";
 import type { NotificationPermissionStatus } from "~/shared/lib/notifications";
-import { pushService } from "~/shared/lib/push/push.service";
 import {
   readNotificationPromptDismissed,
   shouldShowNotificationPermissionBanner,
@@ -67,9 +66,6 @@ export function useLayoutNotificationPermission(options: {
       .requestPermission()
       .then((perm) => {
         setPermission(perm);
-        if (perm === "granted") {
-          void pushService.register();
-        }
       })
       .finally(() => {
         setEnabling(false);

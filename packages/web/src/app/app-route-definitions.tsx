@@ -1,15 +1,17 @@
 import React from "react";
 import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
+import type { WorkspaceAuthSession } from "~/entities/workspace-auth/workspace-auth.model";
+import { useWorkspaceAuthStore } from "~/entities/workspace-auth/workspace-auth.model";
 import { IS_CONNECTION_DIAGNOSTICS_ENABLED } from "~/shared/config/constants";
-import { withCurrentOrgRoute, withOrgRoutePrefix } from "~/shared/lib/org-route";
+import {
+  workspaceInboxRoute,
+  workspaceMessengerRootRoute,
+} from "~/shared/lib/workspace-messenger-route.lib";
 import { Layout } from "~/widgets/layout/layout.ui";
 import { WebViewShell } from "./webview-shell";
 
 const LoginPage = React.lazy(() =>
   import("~/pages/login/login-page.ui").then((m) => ({ default: m.LoginPage })),
-);
-const PasteTokenPage = React.lazy(() =>
-  import("~/pages/login/paste-token-page.ui").then((m) => ({ default: m.PasteTokenPage })),
 );
 const ChatPage = React.lazy(() =>
   import("~/pages/chat/chat-page.ui").then((m) => ({ default: m.ChatPage })),
@@ -44,23 +46,46 @@ const FeedPage = React.lazy(() =>
 const UpdatePage = React.lazy(() =>
   import("~/pages/update/update-page.ui").then((m) => ({ default: m.UpdatePage })),
 );
-const MessageRedirectPage = React.lazy(() =>
-  import("~/pages/message-redirect/message-redirect-page.ui").then((m) => ({
-    default: m.MessageRedirectPage,
-  })),
-);
 const SettingsPersonalInfoPage = React.lazy(() =>
   import("~/pages/settings/settings-personal-info-page.ui").then((m) => ({
     default: m.SettingsPersonalInfoPage,
   })),
 );
 
-export const OrgInboxRedirect: React.FC = () => {
-  const { orgId } = useParams<{ orgId?: string }>();
-  if (orgId == null || orgId.length === 0) {
-    return <Navigate to="/inbox" replace />;
+function resolveWorkspaceMessengerRootFromSessions(params: {
+  sessions: WorkspaceAuthSession[];
+  currentAccountId: string | null;
+  orgId?: string;
+}): string {
+  const currentSession =
+    params.sessions.find((session) => session.accountId === params.currentAccountId) ?? null;
+  const routeSession =
+    params.orgId != null
+      ? (params.sessions.find((session) => session.organizationId === params.orgId) ??
+        currentSession)
+      : currentSession;
+
+  if (routeSession == null) {
+    return "/";
   }
-  return <Navigate to={withOrgRoutePrefix("/inbox", orgId)} replace />;
+
+  return workspaceMessengerRootRoute(routeSession.organizationId, routeSession.projectId);
+}
+
+export const WorkspaceMessengerRootRedirect: React.FC = () => {
+  const { orgId } = useParams<{ orgId?: string }>();
+  const sessions = useWorkspaceAuthStore((state) => state.sessions);
+  const currentAccountId = useWorkspaceAuthStore((state) => state.currentAccountId);
+  const target = resolveWorkspaceMessengerRootFromSessions({ sessions, currentAccountId, orgId });
+  return <Navigate to={target} replace />;
+};
+
+export const WorkspaceMessengerDefaultRedirect: React.FC = () => {
+  const { orgId, projectId } = useParams<{ orgId?: string; projectId?: string }>();
+  if (orgId == null || orgId.length === 0 || projectId == null || projectId.length === 0) {
+    return <WorkspaceMessengerRootRedirect />;
+  }
+  return <Navigate to={workspaceInboxRoute(orgId, projectId)} replace />;
 };
 
 export const WebViewAppRoutes: React.FC = () => (
@@ -72,44 +97,34 @@ export const WebViewAppRoutes: React.FC = () => (
 
 export const LoginAppRoutes: React.FC = () => (
   <Routes>
-    <Route path="/paste-token" element={<PasteTokenPage />} />
     <Route path="*" element={<LoginPage />} />
   </Routes>
 );
 
 export interface AuthenticatedAppRoutesProps {
-  defaultInboxRoute: string;
+  defaultMessengerRoute: string;
 }
 
 export const AuthenticatedAppRoutes: React.FC<AuthenticatedAppRoutesProps> = ({
-  defaultInboxRoute,
+  defaultMessengerRoute,
 }) => {
   const location = useLocation();
   const diagnosticsRouteElement = IS_CONNECTION_DIAGNOSTICS_ENABLED ? (
     <LogsPage />
   ) : (
-    <Navigate to={withCurrentOrgRoute("/inbox")} replace />
+    <Navigate to={defaultMessengerRoute} replace />
   );
 
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/paste-token" element={<PasteTokenPage />} />
-      <Route path="/" element={<Navigate to={defaultInboxRoute} replace />} />
-      <Route path="/org/:orgId" element={<OrgInboxRedirect />} />
+      <Route path="/" element={<Navigate to={defaultMessengerRoute} replace />} />
+      <Route path="/org/:orgId" element={<WorkspaceMessengerRootRedirect />} />
       <Route path="/force-update" element={<UpdatePage forceMode />} />
       <Route path="/org/:orgId/force-update" element={<UpdatePage forceMode />} />
       <Route path="/licenses" element={<LicensesPage />} />
       <Route path="/org/:orgId/licenses" element={<LicensesPage />} />
       <Route element={<Layout />}>
-        <Route path="/stream/:streamSlug" element={<ChatPage key={location.pathname} />} />
-        <Route
-          path="/stream/:streamSlug/topic/:topicName"
-          element={<ChatPage key={location.pathname} />}
-        />
-        <Route path="/dm/:dmId" element={<ChatPage key={location.pathname} />} />
-        <Route path="/message/:messageId" element={<MessageRedirectPage />} />
-        <Route path="/activity/:filter" element={<ActivityPage />} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/mail" element={<MailPage />} />
         <Route path="/call" element={<CallsPage />} />
@@ -117,26 +132,35 @@ export const AuthenticatedAppRoutes: React.FC<AuthenticatedAppRoutesProps> = ({
         <Route path="/settings/personal-info" element={<SettingsPersonalInfoPage />} />
         <Route path="/settings/logs" element={diagnosticsRouteElement} />
         <Route path="/settings/build" element={<UpdatePage />} />
-        <Route
-          path="/settings/*"
-          element={<Navigate to={withCurrentOrgRoute("/inbox")} replace />}
-        />
+        <Route path="/settings/*" element={<Navigate to={defaultMessengerRoute} replace />} />
         <Route path="/logs" element={diagnosticsRouteElement} />
         <Route path="/services" element={<ServicesPage />} />
         <Route path="/all-services" element={<ServicesPage />} />
-        <Route path="/inbox" element={<InboxPage />} />
-        <Route path="/feed" element={<FeedPage />} />
         <Route path="/updates" element={<UpdatePage />} />
       </Route>
       <Route path="/org/:orgId" element={<Layout />}>
-        <Route path="stream/:streamSlug" element={<ChatPage key={location.pathname} />} />
         <Route
-          path="stream/:streamSlug/topic/:topicName"
+          path="project/:projectId/messenger"
+          element={<WorkspaceMessengerDefaultRedirect />}
+        />
+        <Route path="project/:projectId/inbox" element={<InboxPage />} />
+        <Route
+          path="project/:projectId/activity/:filter"
+          element={<ActivityPage key={location.pathname} />}
+        />
+        <Route path="project/:projectId/feed" element={<FeedPage />} />
+        <Route
+          path="project/:projectId/stream/:streamUuid"
           element={<ChatPage key={location.pathname} />}
         />
-        <Route path="dm/:dmId" element={<ChatPage key={location.pathname} />} />
-        <Route path="message/:messageId" element={<MessageRedirectPage />} />
-        <Route path="activity/:filter" element={<ActivityPage />} />
+        <Route
+          path="project/:projectId/stream/:streamUuid/topic/:topicUuid"
+          element={<ChatPage key={location.pathname} />}
+        />
+        <Route
+          path="project/:projectId/message/:messageUuid"
+          element={<ChatPage key={location.pathname} />}
+        />
         <Route path="calendar" element={<CalendarPage />} />
         <Route path="mail" element={<MailPage />} />
         <Route path="call" element={<CallsPage />} />
@@ -144,17 +168,14 @@ export const AuthenticatedAppRoutes: React.FC<AuthenticatedAppRoutesProps> = ({
         <Route path="settings/personal-info" element={<SettingsPersonalInfoPage />} />
         <Route path="settings/logs" element={diagnosticsRouteElement} />
         <Route path="settings/build" element={<UpdatePage />} />
-        <Route
-          path="settings/*"
-          element={<Navigate to={withCurrentOrgRoute("/inbox")} replace />}
-        />
+        <Route path="settings/*" element={<WorkspaceMessengerRootRedirect />} />
         <Route path="logs" element={diagnosticsRouteElement} />
         <Route path="services" element={<ServicesPage />} />
         <Route path="all-services" element={<ServicesPage />} />
-        <Route path="inbox" element={<InboxPage />} />
-        <Route path="feed" element={<FeedPage />} />
         <Route path="updates" element={<UpdatePage />} />
       </Route>
+      <Route path="/org/:orgId/*" element={<WorkspaceMessengerRootRedirect />} />
+      <Route path="*" element={<Navigate to={defaultMessengerRoute} replace />} />
     </Routes>
   );
 };

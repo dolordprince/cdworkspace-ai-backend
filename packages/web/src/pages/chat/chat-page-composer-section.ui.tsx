@@ -1,4 +1,5 @@
 import React from "react";
+import { WorkspaceReplyTabs } from "~/features/workspace-reply/workspace-reply.ui";
 import { t } from "~/i18n/i18n";
 import { Icon } from "~/shared/ui/icon";
 import { MessageComposer } from "~/widgets/message-composer/message-composer.ui";
@@ -19,20 +20,75 @@ export const ChatPageComposerSection = React.memo(function ChatPageComposerSecti
   onExpandStreamTopics,
   uploadProgress,
   onSend,
+  optimisticClearOnSend,
   onCreateCallLink,
   onCancelUpload,
   activeTopic,
   replyQuote,
   onClearReply,
+  workspaceReplySession,
+  onSelectWorkspaceReplyTab,
+  onRemoveWorkspaceReplyTab,
+  onReorderWorkspaceReplyTab,
+  outgoingBodyOverride,
+  allowEmptyActiveValueSend = false,
+  focusKey,
+  draftSessionKey,
   draftInitialValue,
   onComposerValueChange,
   onEditLastMessage,
   editSession,
   onSubmitEdit,
   onCancelEdit,
+  composerCapabilities,
+  resolveMention,
+  onLoadWorkspaceFilePreview,
   aiMessagesContext,
   aiChatContext,
+  readOnlyReason,
 }: ChatPageComposerSectionProps) {
+  // The old read-only mode remains for legacy scenarios.
+  // The Workspace path passes capabilities instead: the UI is the same, but blocked actions get placeholders.
+  const effectiveComposerCapabilities =
+    composerCapabilities ??
+    (readOnlyReason == null
+      ? undefined
+      : {
+          upload: { mode: "unsupported" as const, unsupportedText: readOnlyReason },
+          savedSnippets: { mode: "unsupported" as const, unsupportedText: readOnlyReason },
+          preview: { mode: "unsupported" as const, unsupportedText: readOnlyReason },
+          mentions: { mode: "unsupported" as const, unsupportedText: readOnlyReason },
+          scheduledSend: { mode: "unsupported" as const, unsupportedText: readOnlyReason },
+        });
+
+  if (readOnlyReason != null) {
+    return (
+      <MessageComposer
+        onSend={onSend}
+        optimisticClearOnSend={optimisticClearOnSend}
+        onCreateCallLink={undefined}
+        onCancelUpload={onCancelUpload}
+        disabled
+        uploadProgress={uploadProgress}
+        placeholder={readOnlyReason}
+        activeTopic={activeTopic ?? undefined}
+        replyQuote={null}
+        onClearReply={onClearReply}
+        initialValue={undefined}
+        onValueChange={onComposerValueChange}
+        onEditLastMessage={onEditLastMessage}
+        editSession={null}
+        onSubmitEdit={onSubmitEdit}
+        onCancelEdit={onCancelEdit}
+        capabilities={effectiveComposerCapabilities}
+        resolveMention={resolveMention}
+        onLoadWorkspaceFilePreview={onLoadWorkspaceFilePreview}
+        aiMessagesContext={[]}
+        aiChatContext={undefined}
+      />
+    );
+  }
+
   if (showTopicPrompt) {
     return (
       <button
@@ -58,9 +114,18 @@ export const ChatPageComposerSection = React.memo(function ChatPageComposerSecti
     activeStream,
   });
 
+  const showWorkspaceReplyTabs =
+    (editSession == null || editSession.preserveWorkspaceReplyContext === true) &&
+    workspaceReplySession != null &&
+    workspaceReplySession.tabs.length > 1 &&
+    onSelectWorkspaceReplyTab != null &&
+    onRemoveWorkspaceReplyTab != null &&
+    onReorderWorkspaceReplyTab != null;
+
   return (
     <MessageComposer
       onSend={onSend}
+      optimisticClearOnSend={optimisticClearOnSend}
       onCreateCallLink={onCreateCallLink}
       onCancelUpload={onCancelUpload}
       disabled={isComposerDisabled({
@@ -74,12 +139,29 @@ export const ChatPageComposerSection = React.memo(function ChatPageComposerSecti
       activeTopic={activeTopic ?? undefined}
       replyQuote={replyQuote}
       onClearReply={onClearReply}
+      leadingContent={
+        showWorkspaceReplyTabs ? (
+          <WorkspaceReplyTabs
+            session={workspaceReplySession}
+            onSelect={onSelectWorkspaceReplyTab}
+            onRemove={onRemoveWorkspaceReplyTab}
+            onReorder={onReorderWorkspaceReplyTab}
+          />
+        ) : null
+      }
+      outgoingBodyOverride={outgoingBodyOverride}
+      allowEmptyActiveValueSend={allowEmptyActiveValueSend}
+      focusKey={focusKey}
+      draftSessionKey={draftSessionKey}
       initialValue={draftInitialValue}
       onValueChange={onComposerValueChange}
       onEditLastMessage={onEditLastMessage}
       editSession={editSession}
       onSubmitEdit={onSubmitEdit}
       onCancelEdit={onCancelEdit}
+      capabilities={effectiveComposerCapabilities}
+      resolveMention={resolveMention}
+      onLoadWorkspaceFilePreview={onLoadWorkspaceFilePreview}
       aiMessagesContext={aiMessagesContext}
       aiChatContext={aiChatContext}
     />

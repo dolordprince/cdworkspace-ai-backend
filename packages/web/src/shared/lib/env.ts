@@ -29,22 +29,6 @@ function cleanOrigin(url: string): string {
   return url.replace(/\/api\/v1\/?$/, "").replace(/\/+$/, "");
 }
 
-const chatMessagesPersistIndexedDb = (() => {
-  if (import.meta.env.MODE === "test") return false;
-  const explicit = optional("VITE_CHAT_MESSAGES_PERSIST_INDEXEDDB", "");
-  if (explicit.trim() !== "") {
-    const v = explicit.toLowerCase();
-    return v !== "false" && v !== "0";
-  }
-  const legacy = optional("VITE_CHAT_MESSAGES_SOURCE_INDEXEDDB", "true").toLowerCase();
-  return legacy !== "false" && legacy !== "0";
-})();
-
-const avatarPersistIndexedDb = (() => {
-  if (import.meta.env.MODE === "test") return false;
-  return parseBooleanEnvFlag(optional("VITE_AVATAR_PERSIST_INDEXEDDB", "true"), true);
-})();
-
 function parseBooleanEnvFlag(value: string, fallback: boolean): boolean {
   // Consistent true/false and 1/0 parsing so feature flags behave the same everywhere.
   const normalized = value.trim().toLowerCase();
@@ -55,6 +39,7 @@ function parseBooleanEnvFlag(value: string, fallback: boolean): boolean {
 }
 
 const WORKSPACE_API_ORIGIN_RAW = optional("VITE_WORKSPACE_API_ORIGIN", "");
+const DEFAULT_WORKSPACE_PROJECT_ID = "fe02e55d-4548-4b3e-a175-fcae928f41b2";
 
 /** Rare: Zulip webroot is bare origin but uploads are only under {@link WORKSPACE_GATEWAY_V1_PATH}. */
 const USER_UPLOADS_PREFIX_ON_ZULIP_REALM = parseBooleanEnvFlag(
@@ -128,9 +113,8 @@ export const env = {
 
   /**
    * Jitsi Meet domain without protocol (e.g. `meet.example.com`).
-   * Build-time fallback when the server does not return a Jitsi URL in `POST /api/v1/register`.
-   * Runtime resolution: Zulip register `jitsi_server_url` / realm+server fields → this env →
-   * link detection still accepts public `meet.jit.si` (see `~/shared/lib/jitsi`).
+   * Build-time fallback when Workspace `server_settings.meet_url` is unavailable.
+   * Runtime calls should prefer Workspace server settings.
    */
   JITSI_MEET_DOMAIN: optional("VITE_JITSI_MEET_DOMAIN"),
 
@@ -191,17 +175,12 @@ export const env = {
   },
 
   /**
-   * When true, chat messages are written to IndexedDB (write-through cache). UI always uses Zustand.
-   * Set `VITE_CHAT_MESSAGES_PERSIST_INDEXEDDB=false` to disable IDB (no disk cache for messages).
-   * Legacy: `VITE_CHAT_MESSAGES_SOURCE_INDEXEDDB` is read if `VITE_CHAT_MESSAGES_PERSIST_INDEXEDDB` is unset.
+   * Default Workspace project UUID used to prefill IAM password login until project discovery exists.
+   * Can be overridden by `VITE_DEFAULT_WORKSPACE_PROJECT_ID`.
    */
-  CHAT_MESSAGES_PERSIST_INDEXEDDB: chatMessagesPersistIndexedDb,
-
-  /**
-   * When true, avatar images are cached as blobs in IndexedDB (LRU per instance).
-   * Set `VITE_AVATAR_PERSIST_INDEXEDDB=false` to disable.
-   */
-  AVATAR_PERSIST_INDEXEDDB: avatarPersistIndexedDb,
+  get DEFAULT_WORKSPACE_PROJECT_ID(): string {
+    return optional("VITE_DEFAULT_WORKSPACE_PROJECT_ID", DEFAULT_WORKSPACE_PROJECT_ID);
+  },
 
   /**
    * When true, top bar shows the Calls section shortcut.

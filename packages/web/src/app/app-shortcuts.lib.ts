@@ -1,5 +1,7 @@
+import { useWorkspaceAuthStore } from "~/entities/workspace-auth/workspace-auth.model";
 import { resolveMessengerNavigationPath } from "~/shared/lib/last-messenger-route.lib";
 import { withCurrentOrgRoute } from "~/shared/lib/org-route";
+import { workspaceActivityRoute } from "~/shared/lib/workspace-messenger-route.lib";
 
 export type GlobalNavigationShortcutKey = "mod+1" | "mod+2" | "mod+3" | "mod+4" | "mod+shift+a";
 export type GlobalShortcutKey = GlobalNavigationShortcutKey | "mod+shift+t";
@@ -14,11 +16,18 @@ export type GlobalShortcutAction =
 
 export function resolveGlobalNavigationRoute(
   key: GlobalNavigationShortcutKey,
-  defaultStream: string,
+  _defaultStream: string,
   instanceId?: string | null,
+  projectId?: string | null,
 ): string {
   if (key === "mod+1") {
-    return withCurrentOrgRoute(resolveMessengerNavigationPath(instanceId ?? null, defaultStream));
+    const runtimeContext = useWorkspaceAuthStore.getState().getCurrentRuntimeContext();
+    return withCurrentOrgRoute(
+      resolveMessengerNavigationPath({
+        instanceId: instanceId ?? runtimeContext?.instanceId ?? null,
+        projectId: projectId ?? runtimeContext?.projectId ?? null,
+      }),
+    );
   }
   if (key === "mod+2") {
     return withCurrentOrgRoute("/calendar");
@@ -27,7 +36,15 @@ export function resolveGlobalNavigationRoute(
     return withCurrentOrgRoute("/mail");
   }
   if (key === "mod+shift+a") {
-    return withCurrentOrgRoute("/activity/starred");
+    const runtimeContext = useWorkspaceAuthStore.getState().getCurrentRuntimeContext();
+    if (runtimeContext != null) {
+      return workspaceActivityRoute({
+        orgId: runtimeContext.organizationId,
+        projectId: runtimeContext.projectId,
+        filter: "starred",
+      });
+    }
+    return withCurrentOrgRoute("/");
   }
   return withCurrentOrgRoute("/calls");
 }

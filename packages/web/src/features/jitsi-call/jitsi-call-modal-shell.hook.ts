@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCallParticipantsStore } from "~/entities/call/call.model";
-import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { useUsersStore } from "~/entities/user/user.model";
 import { t } from "~/i18n/i18n";
 import { JITSI_PARTICIPANTS_POLL_MS } from "~/shared/config/constants";
 import { callState } from "~/shared/lib/call-state";
@@ -52,6 +50,7 @@ export function useJitsiCallModalShell({
   open,
   meetingUrl,
   locationName,
+  displayName: displayNameFromCall,
   startWithVideoMuted = true,
   onClose,
 }: JitsiCallModalProps) {
@@ -76,14 +75,8 @@ export function useJitsiCallModalShell({
     useJitsiParticipantCount(open);
   const setParticipants = useCallParticipantsStore((s) => s.setParticipants);
   const clearParticipants = useCallParticipantsStore((s) => s.clearParticipants);
-  const currentUserId = useChatListStore((s) => s.currentUserId);
-  const getUser = useUsersStore((s) => s.getUser);
-  const currentUser = currentUserId != null ? getUser(currentUserId) : undefined;
-  const trimmedDisplayName = currentUser?.full_name?.trim();
-  const displayName =
-    trimmedDisplayName != null && trimmedDisplayName.length > 0
-      ? trimmedDisplayName
-      : t("call.participant");
+  const trimmedDisplayName = displayNameFromCall?.trim() ?? "";
+  const displayName = trimmedDisplayName.length > 0 ? trimmedDisplayName : t("call.participant");
   const callLocationName = locationName?.trim() ?? "";
   const expandedWindowBounds = useMemo(() => getExpandedWindowBounds(viewportSize), [viewportSize]);
   const windowBounds = isMinimized ? pipWindowBounds : expandedWindowBounds;

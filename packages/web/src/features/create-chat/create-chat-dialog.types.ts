@@ -1,8 +1,10 @@
+import type { CreateChatTab } from "./create-chat-dialog.lib";
+
 export interface CreateChatDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onNavigateDm: (slug: string) => void;
-  /** Navigate to channel by stream id + name (archived channels are routable without unarchive). */
-  onNavigateStream: (streamId: number, streamName: string) => void;
+  visibleTabs?: readonly CreateChatTab[];
+  onNavigateWorkspaceStream?: (streamUuid: string) => void;
+  onNavigateWorkspaceTopic?: (streamUuid: string, topicUuid: string) => void;
   onChannelCreated: () => void;
 }

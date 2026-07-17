@@ -1,55 +1,127 @@
-import React, { useCallback } from "react";
-import { useFolderSyncStore } from "~/features/folder-sync/folder-sync.model";
-import { selectSidebarChatsLoading } from "~/features/folder-sync/folder-sync.selectors";
+import React, { useCallback, useMemo } from "react";
+import { useWorkspaceMessageStore } from "~/entities/message/message.model";
+import {
+  selectMessengerSidebarActivityCounts,
+  selectMessengerSidebarFolders,
+  selectMessengerSidebarStreams,
+  type MessengerSidebarStreamsState,
+} from "~/entities/messenger/messenger-sidebar.lib";
+import { useMessengerStore } from "~/entities/messenger/messenger.model";
+import type { MessengerSidebarStreamItem } from "~/entities/messenger/messenger.types";
+import { useUsersStore } from "~/entities/user/user.model";
+import {
+  selectCurrentWorkspaceRuntimeContext,
+  useWorkspaceAuthStore,
+} from "~/entities/workspace-auth/workspace-auth.model";
 import { useSettingsStore } from "~/features/settings/settings.model";
-import type { FolderRailFoldersChangedDetail } from "~/widgets/folder-rail/folder-rail.types";
+import { parseWorkspaceMessengerRoute } from "~/shared/lib/workspace-messenger-route.lib";
 import { FolderRail } from "~/widgets/folder-rail/folder-rail.ui";
 import { useSidebarConfigStore } from "./sidebar-config.model";
-import { Sidebar } from "./sidebar.ui";
+import { WorkspaceSidebar } from "./sidebar-workspace.ui";
+
+const EMPTY_WORKSPACE_STREAMS: MessengerSidebarStreamItem[] = [];
 
 interface SidebarShellProps {
   sidebarStyle?: React.CSSProperties;
   sidebarResizeControl?: React.ReactNode;
+  pathname?: string;
 }
 
 export const SidebarShell: React.FC<SidebarShellProps> = ({
   sidebarStyle,
   sidebarResizeControl,
+  pathname = "",
 }) => {
   const folderRailLayout = useSettingsStore((s) => s.folderRailLayout);
-  const folders = useFolderSyncStore((s) => s.folders);
-  const sidebarChats = useFolderSyncStore((s) => s.selectedFolderSidebarChats);
-  const sidebarChatsLoading = useFolderSyncStore(selectSidebarChatsLoading);
-  const refreshFolderSync = useFolderSyncStore((s) => s.refresh);
-  const applyLocallyCreatedFolder = useFolderSyncStore((s) => s.applyLocallyCreatedFolder);
-  const applyLocallyDeletedFolder = useFolderSyncStore((s) => s.applyLocallyDeletedFolder);
-  const selectFolderSync = useFolderSyncStore((s) => s.selectFolder);
-  const selectedFolderId = useFolderSyncStore((s) => s.selectedFolderId);
   const setSelectedFolderId = useSidebarConfigStore((s) => s.setSelectedFolderId);
-
-  const handleSelectFolder = useCallback(
-    (folderId: string) => {
-      setSelectedFolderId(folderId);
-      void selectFolderSync(folderId);
-    },
-    [selectFolderSync, setSelectedFolderId],
+  const workspaceRoute = useMemo(() => parseWorkspaceMessengerRoute(pathname), [pathname]);
+  const sessions = useWorkspaceAuthStore((state) => state.sessions);
+  const currentAccountId = useWorkspaceAuthStore((state) => state.currentAccountId);
+  const workspaceRuntimeContext = useMemo(
+    () => selectCurrentWorkspaceRuntimeContext({ sessions, currentAccountId }),
+    [currentAccountId, sessions],
   );
-  const handleFoldersChanged = useCallback(
-    (detail?: FolderRailFoldersChangedDetail) => {
-      if (detail?.created) {
-        applyLocallyCreatedFolder(detail.created);
-        return;
-      }
-      const deletedId = detail?.deletedFolderId?.trim();
-      if (deletedId != null && deletedId.length > 0) {
-        applyLocallyDeletedFolder(deletedId);
-        setSelectedFolderId(useFolderSyncStore.getState().selectedFolderId);
-        return;
-      }
-      void refreshFolderSync("mutation");
-    },
-    [applyLocallyCreatedFolder, applyLocallyDeletedFolder, refreshFolderSync, setSelectedFolderId],
+  const currentUserUuid = workspaceRuntimeContext?.userUuid ?? null;
+  const sidebarWorkspaceIdentity = useMemo(() => {
+    if (workspaceRoute != null) {
+      return { organizationId: workspaceRoute.orgId, projectId: workspaceRoute.projectId };
+    }
+    if (workspaceRuntimeContext != null) {
+      return {
+        organizationId: workspaceRuntimeContext.organizationId,
+        projectId: workspaceRuntimeContext.projectId,
+      };
+    }
+    return null;
+  }, [workspaceRoute, workspaceRuntimeContext]);
+  const workspaceFolders = useMessengerStore(selectMessengerSidebarFolders);
+  const workspaceActivityCounts = useMessengerStore(selectMessengerSidebarActivityCounts);
+  const workspaceStreamIds = useMessengerStore((state) => state.streamIds);
+  const workspaceStreamsById = useMessengerStore((state) => state.streamsById);
+  const workspaceTopicIds = useMessengerStore((state) => state.topicIds);
+  const workspaceTopicsById = useMessengerStore((state) => state.topicsById);
+  const workspaceFoldersById = useMessengerStore((state) => state.foldersById);
+  const workspaceConversationsById = useMessengerStore((state) => state.conversationsById);
+  const workspaceMessagesById = useWorkspaceMessageStore((state) => state.messagesById);
+  const workspaceUsersById = useUsersStore((state) => state.usersById);
+  const workspaceSidebarState = useMemo<MessengerSidebarStreamsState>(
+    () => ({
+      streamIds: workspaceStreamIds,
+      streamsById: workspaceStreamsById,
+      topicIds: workspaceTopicIds,
+      topicsById: workspaceTopicsById,
+      foldersById: workspaceFoldersById,
+      conversationsById: workspaceConversationsById,
+    }),
+    [
+      workspaceConversationsById,
+      workspaceFoldersById,
+      workspaceStreamIds,
+      workspaceStreamsById,
+      workspaceTopicIds,
+      workspaceTopicsById,
+    ],
   );
+  const workspaceSelectedFolderId = useSidebarConfigStore((s) => s.selectedFolderId);
+  const workspaceEffectiveFolder = workspaceFolders.some(
+    (folder) => folder.folderUuid === workspaceSelectedFolderId,
+  )
+    ? (workspaceFolders.find((folder) => folder.folderUuid === workspaceSelectedFolderId) ?? null)
+    : (workspaceFolders.find((folder) => folder.systemType === "all") ??
+      workspaceFolders[0] ??
+      null);
+  const workspaceEffectiveFolderId = workspaceEffectiveFolder?.folderUuid ?? null;
+  const workspaceTotalStreamCount = workspaceStreamIds.length;
+  const workspaceStreams = useMemo(
+    () =>
+      sidebarWorkspaceIdentity != null
+        ? selectMessengerSidebarStreams(workspaceSidebarState, {
+            organizationId: sidebarWorkspaceIdentity.organizationId,
+            projectId: sidebarWorkspaceIdentity.projectId,
+            currentUserUuid,
+            selectedFolderUuid: workspaceEffectiveFolderId,
+            messagesById: workspaceMessagesById,
+            usersById: workspaceUsersById,
+          })
+        : EMPTY_WORKSPACE_STREAMS,
+    [
+      currentUserUuid,
+      sidebarWorkspaceIdentity,
+      workspaceEffectiveFolderId,
+      workspaceMessagesById,
+      workspaceSidebarState,
+      workspaceUsersById,
+    ],
+  );
+  const workspaceLoading = useMessengerStore((state) => state.isLoading);
+  const workspaceError = useMessengerStore((state) => state.error);
+  const workspaceRailFolders = workspaceFolders.map((folder) => ({
+    id: folder.folderUuid,
+    label: folder.title,
+    backgroundColor: folder.backgroundColorValue ?? 0,
+    badge: folder.unreadCount > 0 ? folder.unreadCount : undefined,
+    systemType: folder.systemType ?? undefined,
+  }));
 
   const sidebarFrame = (children: React.ReactNode) => (
     <div className="relative flex min-h-0 flex-shrink-0 self-stretch" style={sidebarStyle}>
@@ -58,40 +130,49 @@ export const SidebarShell: React.FC<SidebarShellProps> = ({
     </div>
   );
 
+  const handleSelectWorkspaceFolder = useCallback(
+    (folderId: string) => {
+      setSelectedFolderId(folderId);
+    },
+    [setSelectedFolderId],
+  );
+
+  const workspaceFolderRail = (
+    <FolderRail
+      folders={workspaceRailFolders}
+      selectedFolderId={workspaceEffectiveFolderId ?? "all"}
+      onSelectFolder={handleSelectWorkspaceFolder}
+      layout={folderRailLayout}
+    />
+  );
+
   if (folderRailLayout === "vertical") {
     return (
       <>
-        <div className="flex min-h-0 flex-shrink-0 self-stretch">
-          <FolderRail
-            folders={folders}
-            selectedFolderId={selectedFolderId}
-            onSelectFolder={handleSelectFolder}
-            onFoldersChanged={handleFoldersChanged}
-            layout="vertical"
-          />
-        </div>
+        <div className="flex min-h-0 flex-shrink-0 self-stretch">{workspaceFolderRail}</div>
         {sidebarFrame(
-          <Sidebar sidebarChats={sidebarChats} sidebarChatsLoading={sidebarChatsLoading} />,
+          <WorkspaceSidebar
+            streams={workspaceStreams}
+            loading={workspaceLoading}
+            error={workspaceError}
+            activityCounts={workspaceActivityCounts}
+            workspaceStreamCount={workspaceTotalStreamCount}
+            selectedFolderSystemType={workspaceEffectiveFolder?.systemType ?? null}
+          />,
         )}
       </>
     );
   }
 
   return sidebarFrame(
-    <Sidebar
-      sidebarChats={sidebarChats}
-      sidebarChatsLoading={sidebarChatsLoading}
-      activityPanelBottomSlot={
-        <>
-          <FolderRail
-            folders={folders}
-            selectedFolderId={selectedFolderId}
-            onSelectFolder={handleSelectFolder}
-            onFoldersChanged={handleFoldersChanged}
-            layout="horizontal"
-          />
-        </>
-      }
+    <WorkspaceSidebar
+      streams={workspaceStreams}
+      loading={workspaceLoading}
+      error={workspaceError}
+      activityCounts={workspaceActivityCounts}
+      workspaceStreamCount={workspaceTotalStreamCount}
+      selectedFolderSystemType={workspaceEffectiveFolder?.systemType ?? null}
+      activityPanelBottomSlot={workspaceFolderRail}
     />,
   );
 };

@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
+import { selectUserDisplayName } from "~/entities/user/user-selectors.lib";
 import { useUsersStore } from "~/entities/user/user.model";
 import { filterUsers } from "~/features/mention-suggest/mention-suggest.lib";
 import { useMentionSuggestStore } from "~/features/mention-suggest/mention-suggest.model";
 import type { MentionSuggestion } from "~/features/mention-suggest/mention-suggest.types";
 
-export function useComposerMentions() {
+const EMPTY_MENTION_SUGGESTIONS: MentionSuggestion[] = [];
+
+export function useComposerMentions(options: { enabled?: boolean } = {}) {
+  const { enabled = true } = options;
+  const userIds = useUsersStore((s) => s.userIds);
+  const usersById = useUsersStore((s) => s.usersById);
   const mentionQuery = useMentionSuggestStore((s) => s.query);
   const mentionSuggestions = useMentionSuggestStore((s) => s.results);
   const showMentions = useMentionSuggestStore((s) => s.visible);
@@ -16,39 +22,51 @@ export function useComposerMentions() {
   const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const [mentionStartPos, setMentionStartPos] = useState(0);
 
-  const allUsers = useUsersStore((s) => s.users);
-  const mentionUsers: MentionSuggestion[] = useMemo(
-    () =>
-      Array.from(allUsers.values()).map((u) => ({
-        userId: u.user_id,
-        fullName: u.full_name,
-        email: u.email ?? "",
-        avatarUrl: u.avatar_url ?? undefined,
-      })),
-    [allUsers],
-  );
+  const mentionUsers: MentionSuggestion[] = useMemo(() => {
+    const suggestions: MentionSuggestion[] = [];
+
+    userIds.forEach((userUuid) => {
+      const user = usersById[userUuid];
+      if (user == null) return;
+
+      suggestions.push({
+        userUuid: user.uuid,
+        displayName: selectUserDisplayName(user, user.uuid),
+        username: user.username,
+        email: user.email ?? "",
+        status: user.status ?? null,
+        ...(user.avatarUrl != null ? { avatarUrl: user.avatarUrl } : {}),
+      });
+    });
+
+    return suggestions;
+  }, [userIds, usersById]);
 
   useEffect(() => {
+    if (!enabled) {
+      clearMentionState();
+      return;
+    }
     if (!showMentions) return;
     setMentionResults(filterUsers(mentionQuery, mentionUsers));
-  }, [showMentions, mentionQuery, mentionUsers, setMentionResults]);
+  }, [clearMentionState, enabled, showMentions, mentionQuery, mentionUsers, setMentionResults]);
 
   useEffect(() => {
-    if (!showMentions) {
+    if (!enabled || !showMentions) {
       setActiveMentionIndex(0);
       return;
     }
     if (activeMentionIndex >= mentionSuggestions.length) {
       setActiveMentionIndex(0);
     }
-  }, [showMentions, activeMentionIndex, mentionSuggestions.length]);
+  }, [enabled, showMentions, activeMentionIndex, mentionSuggestions.length]);
 
   useEffect(() => clearMentionState, [clearMentionState]);
 
   return {
     mentionQuery,
-    mentionSuggestions,
-    showMentions,
+    mentionSuggestions: enabled ? mentionSuggestions : EMPTY_MENTION_SUGGESTIONS,
+    showMentions: enabled ? showMentions : false,
     setMentionQuery,
     showMentionDropdown,
     hideMentionDropdown,
@@ -56,6 +74,6 @@ export function useComposerMentions() {
     setActiveMentionIndex,
     mentionStartPos,
     setMentionStartPos,
-    mentionUsers,
+    mentionUsers: enabled ? mentionUsers : EMPTY_MENTION_SUGGESTIONS,
   };
 }

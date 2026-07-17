@@ -1,7 +1,4 @@
 import { type Token, type TokenizerAndRendererExtension, type Tokens } from "marked";
-import { buildMessageRedirectRoute, buildPushClickUrl } from "~/shared/lib/push-click";
-import { normalizeTopicForIdentity } from "~/shared/lib/topic-identity.lib";
-import { encodeZulipHashComponent } from "~/shared/lib/zulip-web-permalink.lib";
 
 interface ZulipStreamReferenceToken extends Tokens.Generic {
   type: "zulip_stream_reference";
@@ -31,22 +28,6 @@ function escapeHtmlAttributeText(text: string): string {
   return escapeInlineHtmlText(text).replace(/"/g, "&quot;");
 }
 
-function buildZulipStreamNarrowSlug(streamId: number, streamName: string): string {
-  const name = streamName.trim().replaceAll(" ", "-");
-  return encodeZulipHashComponent(`${streamId}-${name}`);
-}
-
-function buildZulipStreamTopicMessageHref(
-  stream: ResolvedStreamReference,
-  topic: string,
-  messageId: number,
-): string {
-  const streamSlug = buildZulipStreamNarrowSlug(stream.streamId, stream.streamName);
-  const topicHash = encodeZulipHashComponent(normalizeTopicForIdentity(topic));
-  const nearHash = encodeZulipHashComponent(String(messageId));
-  return `#narrow/channel/${streamSlug}/topic/${topicHash}/near/${nearHash}`;
-}
-
 function renderZulipStreamReferenceToken(token: Token): string {
   const streamReferenceToken = token as ZulipStreamReferenceToken;
   const text = escapeInlineHtmlText(streamReferenceToken.text);
@@ -60,7 +41,7 @@ function renderZulipStreamReferenceToken(token: Token): string {
 
 export function resolveZulipStreamReference(
   inner: string,
-  resolveStreamByName?: (streamName: string) => ResolvedStreamReference | null,
+  _resolveStreamByName?: (streamName: string) => ResolvedStreamReference | null,
 ): ResolvedZulipStreamReference | null {
   const messageMatch = /^([^*>]+)>([^*]*)@(\d+)$/.exec(inner);
   if (messageMatch != null) {
@@ -70,18 +51,9 @@ export function resolveZulipStreamReference(
     if (streamName.length === 0 || messageIdRaw == null) {
       return null;
     }
-    const messageId = Number(messageIdRaw);
-    if (!Number.isSafeInteger(messageId) || messageId <= 0) {
-      return null;
-    }
-    const resolvedStream = resolveStreamByName?.(streamName) ?? null;
     return {
-      href:
-        resolvedStream != null
-          ? buildZulipStreamTopicMessageHref(resolvedStream, topic, messageId)
-          : buildMessageRedirectRoute(messageId),
       htmlClass: "message-link",
-      text: `#${streamName}>${topic}@${String(messageId)}`,
+      text: `#${streamName}>${topic}@${messageIdRaw}`,
     };
   }
 
@@ -92,18 +64,7 @@ export function resolveZulipStreamReference(
     if (streamName.length === 0) {
       return null;
     }
-    const resolvedStream = resolveStreamByName?.(streamName) ?? null;
     return {
-      href: buildPushClickUrl({
-        type: "stream",
-        ...(resolvedStream != null
-          ? {
-              streamId: resolvedStream.streamId,
-              streamName: resolvedStream.streamName,
-            }
-          : { streamName }),
-        topic,
-      }),
       htmlClass: "stream-topic",
       text: `#${streamName}>${topic}`,
     };
@@ -115,17 +76,7 @@ export function resolveZulipStreamReference(
     if (streamName.length === 0) {
       return null;
     }
-    const resolvedStream = resolveStreamByName?.(streamName) ?? null;
     return {
-      href: buildPushClickUrl({
-        type: "stream",
-        ...(resolvedStream != null
-          ? {
-              streamId: resolvedStream.streamId,
-              streamName: resolvedStream.streamName,
-            }
-          : { streamName }),
-      }),
       htmlClass: "stream",
       text: `#${streamName}`,
     };
@@ -135,7 +86,7 @@ export function resolveZulipStreamReference(
 }
 
 export function createZulipStreamReferenceExtension(
-  resolveStreamByName?: (streamName: string) => ResolvedStreamReference | null,
+  _resolveStreamByName?: (streamName: string) => ResolvedStreamReference | null,
 ): TokenizerAndRendererExtension {
   return {
     level: "inline",
@@ -149,7 +100,7 @@ export function createZulipStreamReferenceExtension(
       const match = /^#\*\*([^*]+?)\*\*/.exec(src);
       if (match == null) return undefined;
       const inner = match[1] ?? "";
-      const resolved = resolveZulipStreamReference(inner, resolveStreamByName);
+      const resolved = resolveZulipStreamReference(inner);
       if (resolved == null) return undefined;
       return {
         type: ZULIP_STREAM_REFERENCE_TOKEN_TYPE,

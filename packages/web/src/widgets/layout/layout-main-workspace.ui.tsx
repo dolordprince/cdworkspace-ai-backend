@@ -14,6 +14,7 @@ import type { LayoutMainWorkspaceProps } from "./layout-main-workspace.types";
 
 export const LayoutMainWorkspace = React.memo(function LayoutMainWorkspace({
   shouldShowChatShell,
+  pathname,
   sidebarOpen,
   rightDrawerOpen,
   rightDrawerMode,
@@ -21,8 +22,7 @@ export const LayoutMainWorkspace = React.memo(function LayoutMainWorkspace({
   rightPanelTitle,
   participantsCount,
   onlineCount,
-  rightPanelUser,
-  onSelectCommonGroup,
+  workspaceRightPanelInfo,
   onOpenSettingsDrawer,
   onOpenAboutDrawer,
 }: LayoutMainWorkspaceProps) {
@@ -141,6 +141,7 @@ export const LayoutMainWorkspace = React.memo(function LayoutMainWorkspace({
         {shouldShowChatShell && sidebarOpen && (
           <SidebarShell
             sidebarStyle={sidebarStyle}
+            pathname={pathname}
             sidebarResizeControl={
               <div
                 aria-label={t("layout.resizeSidebar")}
@@ -173,8 +174,7 @@ export const LayoutMainWorkspace = React.memo(function LayoutMainWorkspace({
               title={rightPanelTitle}
               participantsCount={participantsCount}
               onlineCount={onlineCount}
-              user={rightPanelUser}
-              onSelectCommonGroup={onSelectCommonGroup}
+              workspaceInfo={workspaceRightPanelInfo}
               onOpenSettingsDrawer={onOpenSettingsDrawer}
               onOpenAboutDrawer={onOpenAboutDrawer}
             />

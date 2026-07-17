@@ -1,6 +1,4 @@
 import { useMemo } from "react";
-import { resolvePersonalDmSidebarTitle } from "~/entities/chat-list/chat-list-format.lib";
-import { useUsersStore } from "~/entities/user/user.model";
 import { t } from "~/i18n/i18n";
 import { computeIsGroupDmView, normalizeDmRouteUserIds } from "~/shared/lib/dm-route.lib";
 import {
@@ -16,6 +14,11 @@ import type {
 } from "./layout-right-drawer-context.types";
 
 export type { LayoutRightDrawerContext } from "./layout-right-drawer-context.types";
+
+function resolveDmTitle(chatName: string | undefined): string {
+  const trimmed = chatName?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : t("dm.directMessage");
+}
 
 export function useLayoutRightDrawerContext(
   options: UseLayoutRightDrawerContextOptions,
@@ -80,13 +83,6 @@ export function useLayoutRightDrawerContext(
     return dmRecipientIds[0] ?? dmChat?.id;
   }, [isGroupDm, dmRecipientIds, dmChat?.id]);
 
-  const partnerUserRecord = useUsersStore((s) =>
-    partnerUserId != null ? s.getUser(partnerUserId) : undefined,
-  );
-  const partnerStoreDisplayName = useUsersStore((s) =>
-    partnerUserId != null ? s.getDisplayName(partnerUserId) : "Unknown",
-  );
-
   const rightDrawerTargetUserId = rightDrawerUserIdOverride ?? partnerUserId;
 
   const dmParticipantIds = useMemo(() => {
@@ -127,11 +123,7 @@ export function useLayoutRightDrawerContext(
       if (isGroupDm) {
         return (dmChat?.name?.trim() ?? "") || t("dm.groupChat");
       }
-      return resolvePersonalDmSidebarTitle({
-        chatName: dmChat?.name ?? "",
-        userFullName: partnerUserRecord?.full_name,
-        storeDisplayName: partnerStoreDisplayName,
-      });
+      return resolveDmTitle(dmChat?.name);
     }
     if (activeStreamName && activeStreamName.trim().length > 0) {
       return `#${activeStreamName}`;
@@ -146,8 +138,6 @@ export function useLayoutRightDrawerContext(
     dmChat?.name,
     dmIdParam,
     isGroupDm,
-    partnerStoreDisplayName,
-    partnerUserRecord?.full_name,
     rightDrawerOpen,
     rightDrawerOverrideUserName,
     rightDrawerUserIdOverride,

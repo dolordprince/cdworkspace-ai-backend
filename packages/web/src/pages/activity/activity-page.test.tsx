@@ -2,22 +2,20 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useActivityStore } from "~/entities/activity/activity.model";
-import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { useDraftStore } from "~/entities/draft/draft.model";
-import { useInstancesStore } from "~/entities/instance/instance.model";
+import { useMessengerStore } from "~/entities/messenger/messenger.model";
+import type { MessengerStream, MessengerTopic } from "~/entities/messenger/messenger.types";
 import { useUsersStore } from "~/entities/user/user.model";
-import type { ZulipRawMessage } from "~/shared/api/zulip.types";
-import { createMessage, createUser } from "~/test/factories";
+import {
+  type WorkspaceAuthSession,
+  useWorkspaceAuthStore,
+} from "~/entities/workspace-auth/workspace-auth.model";
+import type { WorkspaceMessengerMessageDto } from "~/shared/api/messenger.types";
 import { ActivityPage } from "./activity-page.ui";
 import type * as ReactRouterDom from "react-router-dom";
 
 const navigateSpy = vi.hoisted(() => vi.fn());
-const deleteDraftOnServer = vi.hoisted(() => vi.fn());
-const updateDraftOnServer = vi.hoisted(() => vi.fn());
-const fetchActivityMessagesPageWithPersist = vi.hoisted(() => vi.fn());
-const hydrateActivityMessagesFromCache = vi.hoisted(() => vi.fn().mockResolvedValue([]));
-const removeMessageFlag = vi.hoisted(() => vi.fn());
+const fetchWorkspaceStarredMessages = vi.hoisted(() => vi.fn());
+const openWorkspaceForward = vi.hoisted(() => vi.fn());
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof ReactRouterDom>("react-router-dom");
@@ -27,40 +25,15 @@ vi.mock("react-router-dom", async () => {
   };
 });
 
-vi.mock("~/entities/draft/draft.api", async () => {
-  const actual = await vi.importActual<typeof import("~/entities/draft/draft.api")>(
-    "~/entities/draft/draft.api",
-  );
-  return {
-    ...actual,
-    deleteDraftOnServer,
-    updateDraftOnServer,
-  };
-});
-
-vi.mock("~/entities/activity/activity.api", () => ({
-  fetchActivityMessagesPageWithPersist,
+vi.mock("~/entities/activity/activity-workspace-starred.api", () => ({
+  fetchWorkspaceStarredMessages,
 }));
 
-vi.mock("~/entities/activity/activity-cache.lib", async () => {
-  const actual = await vi.importActual<typeof import("~/entities/activity/activity-cache.lib")>(
-    "~/entities/activity/activity-cache.lib",
-  );
-  return {
-    ...actual,
-    hydrateActivityMessagesFromCache,
-  };
-});
-
-vi.mock("~/shared/api/zulip-messages", async () => {
-  const actual = await vi.importActual<typeof import("~/shared/api/zulip-messages")>(
-    "~/shared/api/zulip-messages",
-  );
-  return {
-    ...actual,
-    removeMessageFlag,
-  };
-});
+vi.mock("~/features/workspace-forward-message/workspace-forward-message.model", () => ({
+  useWorkspaceForwardMessageStore: (
+    selector: (state: { open: typeof openWorkspaceForward }) => unknown,
+  ) => selector({ open: openWorkspaceForward }),
+}));
 
 const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(
   HTMLElement.prototype,
@@ -84,497 +57,280 @@ function mockElementScrollHeight(value: number): () => void {
   };
 }
 
-describe("ActivityPage drafts routing", () => {
+const WORKSPACE_SESSION: WorkspaceAuthSession = {
+  accountId: "account-1",
+  instanceId: "instance-1",
+  organizationId: "acme",
+  organizationOrigin: "https://acme.example.com",
+  projectId: "project-1",
+  userUuid: "user-1",
+  accessToken: "access-token",
+  refreshToken: "refresh-token",
+  runtimeGeneration: 1,
+  login: "alice@example.com",
+  profile: {
+    uuid: "user-1",
+    username: "alice",
+    firstName: "Alice",
+    lastName: null,
+    email: "alice@example.com",
+  },
+};
+
+function renderActivityPage(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <Routes>
+        <Route path="/activity/:filter" element={<ActivityPage />} />
+        <Route path="/org/:orgId/project/:projectId/activity/:filter" element={<ActivityPage />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+function setWorkspaceSession(session: WorkspaceAuthSession = WORKSPACE_SESSION): void {
+  useWorkspaceAuthStore.setState({
+    sessions: [session],
+    currentAccountId: session.accountId,
+    runtimeGeneration: session.runtimeGeneration,
+  });
+}
+
+function createWorkspaceMessage(
+  overrides: Partial<WorkspaceMessengerMessageDto> = {},
+): WorkspaceMessengerMessageDto {
+  return {
+    uuid: "message-1",
+    project_id: WORKSPACE_SESSION.projectId,
+    stream_uuid: "stream-1",
+    topic_uuid: "topic-1",
+    author_uuid: "user-2",
+    payload: { kind: "markdown", content: "Workspace starred message" },
+    user_uuid: WORKSPACE_SESSION.userUuid,
+    read: true,
+    pinned: false,
+    starred: true,
+    is_own: false,
+    reactions: {},
+    created_at: "2026-06-22T10:10:00Z",
+    updated_at: "2026-06-22T10:10:00Z",
+    ...overrides,
+  };
+}
+
+function seedWorkspaceMessengerContext(): void {
+  const stream: MessengerStream = {
+    uuid: "stream-1",
+    projectId: WORKSPACE_SESSION.projectId,
+    ownerUuid: WORKSPACE_SESSION.userUuid,
+    userUuid: WORKSPACE_SESSION.userUuid,
+    role: "member",
+    notificationMode: "all_messages",
+    name: "engineering",
+    description: "",
+    unreadCount: 0,
+    sourceName: "native",
+    source: { kind: "native" },
+    audience: "channel",
+    isPrivate: false,
+    inviteOnly: false,
+    announce: false,
+    isArchived: false,
+    directUserUuid: null,
+    lastMessageUuid: null,
+    createdAt: "2026-06-22T10:00:00Z",
+    updatedAt: "2026-06-22T10:00:00Z",
+  };
+  const topic: MessengerTopic = {
+    uuid: "topic-1",
+    projectId: WORKSPACE_SESSION.projectId,
+    streamUuid: "stream-1",
+    userUuid: WORKSPACE_SESSION.userUuid,
+    name: "bugs",
+    unreadCount: 0,
+    isDefault: false,
+    isDone: false,
+    notificationMode: "default",
+    lastMessageUuid: null,
+    createdAt: "2026-06-22T10:00:00Z",
+    updatedAt: "2026-06-22T10:00:00Z",
+  };
+
+  useMessengerStore.setState({
+    ownerKey: `${WORKSPACE_SESSION.organizationId}:${WORKSPACE_SESSION.projectId}:${WORKSPACE_SESSION.userUuid}`,
+    streamsById: { [stream.uuid]: stream },
+    streamIds: [stream.uuid],
+    topicsById: { [topic.uuid]: topic },
+    topicIds: [topic.uuid],
+  });
+}
+
+function mockWorkspaceStarredPage(messages: WorkspaceMessengerMessageDto[]): void {
+  fetchWorkspaceStarredMessages.mockResolvedValue({
+    messages,
+    nextPageMarker: null,
+    hasMore: false,
+    pageLimit: null,
+  });
+}
+
+describe("ActivityPage", () => {
   beforeEach(() => {
-    useActivityStore.getState().clear();
-    useInstancesStore.setState({
-      instances: [],
-      currentInstanceId: null,
-      unreadCountsByInstance: {},
-      activeOrgEpoch: 0,
-    });
+    useWorkspaceAuthStore.getState().clear();
+    useMessengerStore.getState().clear();
+    useUsersStore.getState().clear();
+    fetchWorkspaceStarredMessages.mockReset();
+    openWorkspaceForward.mockReset();
+    navigateSpy.mockReset();
   });
 
   afterEach(() => {
-    navigateSpy.mockReset();
-    deleteDraftOnServer.mockReset();
-    updateDraftOnServer.mockReset();
-    fetchActivityMessagesPageWithPersist.mockReset();
-    hydrateActivityMessagesFromCache.mockReset();
-    hydrateActivityMessagesFromCache.mockResolvedValue([]);
-    removeMessageFlag.mockReset();
-    useDraftStore.getState().clear();
-    useChatListStore.getState().clear();
+    useWorkspaceAuthStore.getState().clear();
+    useMessengerStore.getState().clear();
     useUsersStore.getState().clear();
-    useActivityStore.getState().clear();
-    useInstancesStore.setState({
-      instances: [],
-      currentInstanceId: null,
-      unreadCountsByInstance: {},
-      activeOrgEpoch: 0,
-    });
+    fetchWorkspaceStarredMessages.mockReset();
+    openWorkspaceForward.mockReset();
+    navigateSpy.mockReset();
   });
 
-  it("navigates stream drafts using the canonical stream slug from the store", async () => {
-    useChatListStore.setState({
-      streamsMap: new Map([
-        [
-          10,
-          {
-            stream_id: 10,
-            name: "engineering",
-            lastMessage: "",
-            time: "",
-            ts: 0,
-            topics: new Map(),
-          },
-        ],
-      ]),
-    });
-
-    useDraftStore.getState().setDrafts([
-      {
-        id: 1,
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Draft content",
-        timestamp: 1710000000,
-      },
+  it("loads starred messages from Workspace without requesting a legacy page", async () => {
+    setWorkspaceSession();
+    seedWorkspaceMessengerContext();
+    mockWorkspaceStarredPage([
+      createWorkspaceMessage({
+        uuid: "message-55",
+        payload: { kind: "markdown", content: "Starred message" },
+      }),
     ]);
 
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Draft content")).toBeInTheDocument();
-      expect(
-        screen.getByText((_, element) => element?.textContent === "#engineering · general"),
-      ).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByText("Draft content"));
-
-    expect(navigateSpy).toHaveBeenCalledWith("/stream/10-engineering/topic/general");
-  });
-
-  it("renders empty-topic drafts as the system general chat and routes them to __empty__", async () => {
-    useChatListStore.setState({
-      streamsMap: new Map([
-        [
-          10,
-          {
-            stream_id: 10,
-            name: "engineering",
-            lastMessage: "",
-            time: "",
-            ts: 0,
-            topics: new Map(),
-          },
-        ],
-      ]),
-    });
-
-    useDraftStore.getState().setDrafts([
-      {
-        id: 1,
-        type: "stream",
-        to: [10],
-        topic: "",
-        content: "Draft content",
-        timestamp: 1710000000,
-      },
-    ]);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Draft content")).toBeInTheDocument();
-      expect(screen.getByText("General Chat")).toHaveClass("italic");
-    });
-
-    fireEvent.click(screen.getByText("Draft content"));
-
-    expect(navigateSpy).toHaveBeenCalledWith("/stream/10-engineering/topic/__empty__");
-  });
-
-  it("shows DM partner name on private draft rows", async () => {
-    useUsersStore.getState().mergeUser(createUser({ user_id: 7, full_name: "Bob" }));
-    useChatListStore.setState({ currentUserId: 42 });
-
-    useDraftStore.getState().setDrafts([
-      {
-        id: 2,
-        type: "private",
-        to: [7, 42],
-        topic: "",
-        content: "DM draft text",
-        timestamp: 1710000001,
-      },
-    ]);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("DM draft text")).toBeInTheDocument();
-      expect(screen.getByText(/Bob/)).toBeInTheDocument();
-    });
-  });
-
-  it("opens activity message in chat from context action", async () => {
-    const page = [
-      createMessage({
-        id: 33,
-        sender_id: 42,
-        sender_full_name: "Alice",
-        stream_id: 10,
-        subject: "bugs",
-        content: "Open me",
-        timestamp: 1,
-        type: "stream",
-        display_recipient: "engineering",
-      }),
-    ];
-
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: page,
-      foundOldest: true,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/mentions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Open me")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Open in chat" }));
-
-    expect(navigateSpy).toHaveBeenCalledWith("/stream/10-engineering/topic/bugs?msg=33");
-  });
-
-  it("opens forward flow from activity message action", async () => {
-    const page = [
-      createMessage({
-        id: 44,
-        sender_id: 42,
-        sender_full_name: "Alice",
-        stream_id: 10,
-        subject: "bugs",
-        content: "Forward me",
-        timestamp: 1,
-        type: "stream",
-        display_recipient: "engineering",
-      }),
-    ];
-
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: page,
-      foundOldest: true,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/mentions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Forward me")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Forward" }));
-
-    expect(navigateSpy).toHaveBeenCalledWith("/stream/10-engineering/topic/bugs?msg=44&forward=44");
-  });
-
-  it("renders cached activity list immediately while newest refresh is in flight", () => {
-    const cachedMention = createMessage({
-      id: 88,
-      sender_id: 42,
-      sender_full_name: "Alice",
-      stream_id: 10,
-      subject: "bugs",
-      content: "Cached mention",
-      timestamp: 1,
-      type: "stream",
-      display_recipient: "engineering",
-    }) as ZulipRawMessage;
-    useActivityStore.getState().setFilterCache("mentions", [cachedMention], true);
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: [cachedMention],
-      foundOldest: true,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/mentions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    expect(screen.getByText("Cached mention")).toBeInTheDocument();
-  });
-
-  it("keeps current in-memory activity snapshot when cached snapshot is older", async () => {
-    const freshReaction = createMessage({
-      id: 30,
-      sender_id: 42,
-      sender_full_name: "Alice",
-      stream_id: 10,
-      subject: "bugs",
-      content: "Fresh reaction",
-      timestamp: 300,
-      type: "stream",
-      display_recipient: "engineering",
-    }) as ZulipRawMessage;
-    const oldReaction = createMessage({
-      id: 10,
-      sender_id: 42,
-      sender_full_name: "Alice",
-      stream_id: 10,
-      subject: "bugs",
-      content: "Old reaction",
-      timestamp: 100,
-      type: "stream",
-      display_recipient: "engineering",
-    }) as ZulipRawMessage;
-
-    useChatListStore.setState({ currentUserId: 42 });
-    useActivityStore.getState().setFilterCache("reactions", [freshReaction], true);
-    useActivityStore.setState((state) => ({
-      filters: {
-        ...state.filters,
-        reactions: { ...state.filters.reactions, lastLoadedAt: null },
-      },
-    }));
-    hydrateActivityMessagesFromCache.mockResolvedValue([oldReaction]);
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: [freshReaction],
-      foundOldest: true,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/reactions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(fetchActivityMessagesPageWithPersist).toHaveBeenCalled();
-    });
-
-    expect(screen.getByText("Fresh reaction")).toBeInTheDocument();
-    expect(screen.queryByText("Old reaction")).not.toBeInTheDocument();
-  });
-
-  it("applies cached activity snapshot when it is fresher than in-memory state", async () => {
-    const oldReaction = createMessage({
-      id: 10,
-      sender_id: 42,
-      sender_full_name: "Alice",
-      stream_id: 10,
-      subject: "bugs",
-      content: "Old reaction",
-      timestamp: 100,
-      type: "stream",
-      display_recipient: "engineering",
-    }) as ZulipRawMessage;
-    const freshReaction = createMessage({
-      id: 30,
-      sender_id: 42,
-      sender_full_name: "Alice",
-      stream_id: 10,
-      subject: "bugs",
-      content: "Fresh reaction",
-      timestamp: 300,
-      type: "stream",
-      display_recipient: "engineering",
-    }) as ZulipRawMessage;
-
-    useChatListStore.setState({ currentUserId: 42 });
-    useActivityStore.getState().setFilterCache("reactions", [oldReaction], true);
-    useActivityStore.setState((state) => ({
-      filters: {
-        ...state.filters,
-        reactions: { ...state.filters.reactions, lastLoadedAt: null },
-      },
-    }));
-    hydrateActivityMessagesFromCache.mockResolvedValue([freshReaction]);
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: [freshReaction],
-      foundOldest: true,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/reactions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Fresh reaction")).toBeInTheDocument();
-    });
-
-    expect(screen.queryByText("Old reaction")).not.toBeInTheDocument();
-  });
-
-  it("removes starred message from list after unstar action", async () => {
-    const page = [
-      createMessage({
-        id: 55,
-        sender_id: 42,
-        sender_full_name: "Alice",
-        stream_id: 10,
-        subject: "bugs",
-        content: "Starred message",
-        timestamp: 1,
-        type: "stream",
-        display_recipient: "engineering",
-      }),
-    ];
-
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: page,
-      foundOldest: true,
-    });
-    removeMessageFlag.mockResolvedValue(undefined);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/starred"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderActivityPage("/activity/starred");
 
     await waitFor(() => {
       expect(screen.getByText("Starred message")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /unstar/i }));
-
-    await waitFor(() => {
-      expect(removeMessageFlag).toHaveBeenCalledWith([55], "starred");
-    });
-    expect(screen.queryByText("Starred message")).not.toBeInTheDocument();
+    expect(fetchWorkspaceStarredMessages).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeContext: expect.objectContaining({
+          organizationId: WORKSPACE_SESSION.organizationId,
+          projectId: WORKSPACE_SESSION.projectId,
+          userUuid: WORKSPACE_SESSION.userUuid,
+        }),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(fetchWorkspaceStarredMessages.mock.calls[0]?.[0]).not.toHaveProperty("pageLimit");
+    expect(screen.queryByRole("button", { name: /unstar/i })).not.toBeInTheDocument();
   });
 
-  it("keeps starred message when unstar request fails", async () => {
-    const page = [
-      createMessage({
-        id: 56,
-        sender_id: 42,
-        sender_full_name: "Alice",
-        stream_id: 10,
-        subject: "bugs",
-        content: "Starred message persists",
-        timestamp: 1,
-        type: "stream",
-        display_recipient: "engineering",
+  it("opens Workspace starred message in the Workspace messenger route", async () => {
+    setWorkspaceSession();
+    seedWorkspaceMessengerContext();
+    mockWorkspaceStarredPage([
+      createWorkspaceMessage({
+        uuid: "message-56",
+        payload: { kind: "markdown", content: "Starred message persists" },
       }),
-    ];
+    ]);
 
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: page,
-      foundOldest: true,
-    });
-    removeMessageFlag.mockRejectedValue(new Error("network"));
-
-    render(
-      <MemoryRouter initialEntries={["/activity/starred"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderActivityPage("/activity/starred");
 
     await waitFor(() => {
       expect(screen.getByText("Starred message persists")).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /unstar/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Open in chat" }));
 
-    await waitFor(() => {
-      expect(removeMessageFlag).toHaveBeenCalledWith([56], "starred");
-    });
-    expect(screen.getByText("Starred message persists")).toBeInTheDocument();
+    expect(navigateSpy).toHaveBeenCalledWith("/org/acme/project/project-1/message/message-56");
   });
 
-  it("does not remove a new-organization starred row when stale unstar resolves", async () => {
-    let resolveUnstar: (() => void) | undefined;
-    removeMessageFlag.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveUnstar = resolve;
-        }),
-    );
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: [
-        createMessage({
-          id: 55,
-          sender_id: 42,
-          sender_full_name: "Alice",
-          stream_id: 10,
-          subject: "bugs",
-          content: "Org A starred message",
-          timestamp: 1,
-          type: "stream",
-          display_recipient: "engineering",
-        }),
-      ],
-      foundOldest: true,
-    });
-    useInstancesStore.setState({
-      instances: [
-        {
-          id: "instance-1",
-          realm: "https://one.example.com",
-          email: "one@example.com",
-          apiKey: "a",
-        },
-        {
-          id: "instance-2",
-          realm: "https://two.example.com",
-          email: "two@example.com",
-          apiKey: "b",
-        },
-      ],
-      currentInstanceId: "instance-1",
-      unreadCountsByInstance: {},
-      activeOrgEpoch: 0,
+  it("opens Workspace starred forward flow with message UUID", async () => {
+    setWorkspaceSession();
+    seedWorkspaceMessengerContext();
+    mockWorkspaceStarredPage([
+      createWorkspaceMessage({
+        uuid: "message-56",
+        payload: { kind: "markdown", content: "Forward Workspace starred" },
+      }),
+    ]);
+
+    renderActivityPage("/activity/starred");
+
+    await waitFor(() => {
+      expect(screen.getByText("Forward Workspace starred")).toBeInTheDocument();
     });
 
-    render(
+    fireEvent.click(screen.getByRole("button", { name: "Forward" }));
+
+    expect(openWorkspaceForward).toHaveBeenCalledWith({
+      messageUuids: ["message-56"],
+    });
+    expect(navigateSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["mentions", "Mentions are not connected to Workspace messaging yet."],
+    ["reactions", "Reactions are not connected to Workspace messaging yet."],
+    ["drafts", "Workspace drafts are not connected yet."],
+  ] as const)("shows an explicit unsupported state for /activity/%s", (filter, message) => {
+    renderActivityPage(`/activity/${filter}`);
+
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(fetchWorkspaceStarredMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not apply stale Workspace starred load after runtime changes", async () => {
+    let resolveFirstLoad:
+      | ((value: {
+          messages: WorkspaceMessengerMessageDto[];
+          nextPageMarker: null;
+          hasMore: false;
+          pageLimit: number | null;
+        }) => void)
+      | undefined;
+    const nextSession: WorkspaceAuthSession = {
+      ...WORKSPACE_SESSION,
+      accountId: "account-2",
+      instanceId: "instance-2",
+      organizationId: "bravo",
+      projectId: "project-2",
+      userUuid: "user-9",
+      runtimeGeneration: 2,
+    };
+
+    setWorkspaceSession();
+    seedWorkspaceMessengerContext();
+    fetchWorkspaceStarredMessages
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstLoad = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({
+        messages: [
+          createWorkspaceMessage({
+            uuid: "message-b",
+            project_id: nextSession.projectId,
+            user_uuid: nextSession.userUuid,
+            payload: { kind: "markdown", content: "Org B starred message" },
+          }),
+        ],
+        nextPageMarker: null,
+        hasMore: false,
+        pageLimit: null,
+      });
+
+    const { rerender } = renderActivityPage("/activity/starred");
+
+    await waitFor(() => {
+      expect(fetchWorkspaceStarredMessages).toHaveBeenCalledTimes(1);
+    });
+
+    act(() => {
+      setWorkspaceSession(nextSession);
+    });
+    rerender(
       <MemoryRouter initialEntries={["/activity/starred"]}>
         <Routes>
           <Route path="/activity/:filter" element={<ActivityPage />} />
@@ -583,256 +339,49 @@ describe("ActivityPage drafts routing", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("Org A starred message")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /unstar/i }));
-
-    await waitFor(() => {
-      expect(removeMessageFlag).toHaveBeenCalledWith([55], "starred");
+      expect(screen.getByText("Org B starred message")).toBeInTheDocument();
     });
 
     act(() => {
-      useInstancesStore.getState().setCurrentInstanceId("instance-2");
-      useActivityStore.setState((state) => ({
-        filters: {
-          ...state.filters,
-          starred: {
-            ...state.filters.starred,
-            messages: [
-              createMessage({
-                id: 55,
-                sender_id: 99,
-                sender_full_name: "Bob",
-                stream_id: 20,
-                subject: "support",
-                content: "Org B starred message",
-                timestamp: 2,
-                type: "stream",
-                display_recipient: "support",
-              }),
-            ],
-          },
-        },
-      }));
-    });
-
-    act(() => {
-      resolveUnstar?.();
-    });
-
-    expect(useActivityStore.getState().filters.starred.messages[0]?.content).toBe(
-      "Org B starred message",
-    );
-  });
-
-  it("does not fetch reactions until currentUserId is known", async () => {
-    useChatListStore.setState({ currentUserId: null });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/reactions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    fetchActivityMessagesPageWithPersist.mockClear();
-    expect(fetchActivityMessagesPageWithPersist).not.toHaveBeenCalled();
-    expect(screen.getByText(/loading/i)).toBeInTheDocument();
-
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: [
-        createMessage({
-          id: 50,
-          sender_id: 42,
-          content: "My reacted message",
-          timestamp: 2,
-        }),
-      ],
-      foundOldest: true,
-    });
-
-    act(() => {
-      useChatListStore.getState().setCurrentUserId(42);
-    });
-
-    await waitFor(() => {
-      expect(fetchActivityMessagesPageWithPersist).toHaveBeenCalledWith(
-        "reactions",
-        42,
-        "newest",
-        expect.any(Number),
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
-      );
-    });
-  });
-
-  it("shows reactions-specific empty state copy", async () => {
-    useChatListStore.setState({ currentUserId: 42 });
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: [],
-      foundOldest: true,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/reactions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/Your messages that received emoji reactions will appear here/i),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("shows peer emoji reactions on the reactions activity list", async () => {
-    useChatListStore.setState({ currentUserId: 42 });
-    useUsersStore
-      .getState()
-      .mergeUsers([
-        createUser({ user_id: 7, full_name: "Bob" }),
-        createUser({ user_id: 42, full_name: "Me" }),
-      ]);
-    fetchActivityMessagesPageWithPersist.mockResolvedValue({
-      messages: [
-        createMessage({
-          id: 50,
-          sender_id: 42,
-          content: "My reacted message",
-          timestamp: 2,
-          reactions: [
-            {
-              emoji_name: "thumbs_up",
-              emoji_code: "1f44d",
-              reaction_type: "unicode_emoji",
-              user_id: 42,
-            },
-            {
-              emoji_name: "thumbs_up",
-              emoji_code: "1f44d",
-              reaction_type: "unicode_emoji",
-              user_id: 7,
-            },
-          ],
-        }),
-      ],
-      foundOldest: true,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/reactions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("My reacted message")).toBeInTheDocument();
-    });
-
-    const reactionsRow = screen.getByTestId("activity-peer-reactions-50");
-    expect(reactionsRow).toHaveTextContent("Bob");
-    expect(reactionsRow).toHaveTextContent("👍");
-    expect(reactionsRow).not.toHaveTextContent("Me");
-  });
-
-  it.each(["mentions", "reactions", "starred"] as const)(
-    "initializes %s list at the latest messages",
-    async (filter) => {
-      const restoreScrollHeight = mockElementScrollHeight(1200);
-      try {
-        if (filter === "reactions") {
-          useChatListStore.setState({ currentUserId: 42 });
-        }
-        const page = [
-          createMessage({
-            id: 10,
-            sender_id: 42,
-            sender_full_name: "Alice",
-            stream_id: 10,
-            subject: "bugs",
-            content: `${filter} first`,
-            timestamp: 1,
-            type: "stream",
-            display_recipient: "engineering",
+      resolveFirstLoad?.({
+        messages: [
+          createWorkspaceMessage({
+            uuid: "message-a",
+            payload: { kind: "markdown", content: "Org A starred message" },
           }),
-          createMessage({
-            id: 20,
-            sender_id: 42,
-            sender_full_name: "Alice",
-            stream_id: 10,
-            subject: "bugs",
-            content: `${filter} latest`,
-            timestamp: 2,
-            type: "stream",
-            display_recipient: "engineering",
-          }),
-        ];
+        ],
+        nextPageMarker: null,
+        hasMore: false,
+        pageLimit: null,
+      });
+    });
 
-        fetchActivityMessagesPageWithPersist.mockResolvedValue({
-          messages: page,
-          foundOldest: true,
-        });
+    expect(screen.getByText("Org B starred message")).toBeInTheDocument();
+    expect(screen.queryByText("Org A starred message")).not.toBeInTheDocument();
+  });
 
-        const { container } = render(
-          <MemoryRouter initialEntries={[`/activity/${filter}`]}>
-            <Routes>
-              <Route path="/activity/:filter" element={<ActivityPage />} />
-            </Routes>
-          </MemoryRouter>,
-        );
-
-        await waitFor(() => {
-          expect(screen.getByText(`${filter} latest`)).toBeInTheDocument();
-        });
-
-        const list = container.querySelector("ul");
-        expect(list).not.toBeNull();
-        expect((list as HTMLUListElement).scrollTop).toBe(1200);
-      } finally {
-        restoreScrollHeight();
-      }
-    },
-  );
-
-  it("initializes drafts list at the latest items", async () => {
+  it("initializes Workspace starred list at the latest messages", async () => {
     const restoreScrollHeight = mockElementScrollHeight(1200);
     try {
-      useDraftStore.getState().setDrafts([
-        {
-          id: 1,
-          type: "stream",
-          to: [10],
-          topic: "general",
-          content: "Older draft",
-          timestamp: 1710000000,
-        },
-        {
-          id: 2,
-          type: "stream",
-          to: [10],
-          topic: "general",
-          content: "Latest draft",
-          timestamp: 1710000100,
-        },
+      setWorkspaceSession();
+      seedWorkspaceMessengerContext();
+      mockWorkspaceStarredPage([
+        createWorkspaceMessage({
+          uuid: "message-10",
+          payload: { kind: "markdown", content: "starred first" },
+          created_at: "2026-06-22T10:00:00Z",
+        }),
+        createWorkspaceMessage({
+          uuid: "message-20",
+          payload: { kind: "markdown", content: "starred latest" },
+          created_at: "2026-06-22T10:01:00Z",
+        }),
       ]);
 
-      const { container } = render(
-        <MemoryRouter initialEntries={["/activity/drafts"]}>
-          <Routes>
-            <Route path="/activity/:filter" element={<ActivityPage />} />
-          </Routes>
-        </MemoryRouter>,
-      );
+      const { container } = renderActivityPage("/activity/starred");
 
       await waitFor(() => {
-        expect(screen.getByText("Latest draft")).toBeInTheDocument();
+        expect(screen.getByText("starred latest")).toBeInTheDocument();
       });
 
       const list = container.querySelector("ul");
@@ -841,587 +390,5 @@ describe("ActivityPage drafts routing", () => {
     } finally {
       restoreScrollHeight();
     }
-  });
-
-  it("keeps a draft row visible while server deletion is pending", async () => {
-    let resolveDelete: (value: boolean) => void = (_value: boolean) => {
-      throw new Error("Expected delete resolver to be assigned");
-    };
-    deleteDraftOnServer.mockReturnValue(
-      new Promise<boolean>((resolve) => {
-        resolveDelete = resolve;
-      }),
-    );
-    useDraftStore.getState().setDrafts([
-      {
-        id: 7,
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Pending delete draft",
-        timestamp: 1710000000,
-      },
-    ]);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Pending delete draft")).toBeInTheDocument();
-    });
-
-    const deleteButton = screen.getByTitle("Delete draft");
-    fireEvent.click(deleteButton);
-
-    expect(deleteDraftOnServer).toHaveBeenCalledWith(7);
-    expect(screen.getByText("Pending delete draft")).toBeInTheDocument();
-    expect(deleteButton).toBeDisabled();
-
-    resolveDelete(true);
-
-    await waitFor(() => {
-      expect(screen.queryByText("Pending delete draft")).not.toBeInTheDocument();
-    });
-  });
-
-  it("keeps a draft row when server deletion returns false", async () => {
-    deleteDraftOnServer.mockResolvedValue(false);
-    useDraftStore.getState().setDrafts([
-      {
-        id: 11,
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Failed delete draft",
-        timestamp: 1710000000,
-      },
-    ]);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Failed delete draft")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTitle("Delete draft"));
-
-    await waitFor(() => {
-      expect(deleteDraftOnServer).toHaveBeenCalledWith(11);
-    });
-
-    expect(screen.getByText("Failed delete draft")).toBeInTheDocument();
-  });
-
-  it("does not delete a new-organization draft when stale delete resolves", async () => {
-    let resolveDelete: ((value: boolean) => void) | undefined;
-    deleteDraftOnServer.mockImplementationOnce(
-      () =>
-        new Promise<boolean>((resolve) => {
-          resolveDelete = resolve;
-        }),
-    );
-    useInstancesStore.setState({
-      instances: [
-        {
-          id: "instance-1",
-          realm: "https://one.example.com",
-          email: "one@example.com",
-          apiKey: "a",
-        },
-        {
-          id: "instance-2",
-          realm: "https://two.example.com",
-          email: "two@example.com",
-          apiKey: "b",
-        },
-      ],
-      currentInstanceId: "instance-1",
-      unreadCountsByInstance: {},
-      activeOrgEpoch: 0,
-    });
-    useDraftStore.getState().setDrafts([
-      {
-        id: 7,
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Org A draft",
-        timestamp: 1710000000,
-      },
-    ]);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Org A draft")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTitle("Delete draft"));
-    expect(deleteDraftOnServer).toHaveBeenCalledWith(7);
-
-    act(() => {
-      useInstancesStore.getState().setCurrentInstanceId("instance-2");
-      useDraftStore.getState().setDrafts([
-        {
-          id: 7,
-          type: "stream",
-          to: [20],
-          topic: "triage",
-          content: "Org B draft",
-          timestamp: 1710000200,
-        },
-      ]);
-    });
-
-    act(() => {
-      resolveDelete?.(true);
-    });
-
-    expect(useDraftStore.getState().drafts[0]?.content).toBe("Org B draft");
-  });
-
-  it("edits a server-backed draft from the drafts list", async () => {
-    updateDraftOnServer.mockResolvedValue(true);
-    useDraftStore.getState().setDrafts([
-      {
-        id: 8,
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Editable draft",
-        timestamp: 1710000000,
-      },
-    ]);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Editable draft")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTitle("Edit draft"));
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Edited draft content" } });
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(updateDraftOnServer).toHaveBeenCalledWith(8, {
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Edited draft content",
-      });
-    });
-
-    expect(screen.getByText("Edited draft content")).toBeInTheDocument();
-  });
-
-  it("does not edit a new-organization draft when stale save resolves", async () => {
-    let resolveUpdate: ((value: boolean) => void) | undefined;
-    updateDraftOnServer.mockImplementationOnce(
-      () =>
-        new Promise<boolean>((resolve) => {
-          resolveUpdate = resolve;
-        }),
-    );
-    useInstancesStore.setState({
-      instances: [
-        {
-          id: "instance-1",
-          realm: "https://one.example.com",
-          email: "one@example.com",
-          apiKey: "a",
-        },
-        {
-          id: "instance-2",
-          realm: "https://two.example.com",
-          email: "two@example.com",
-          apiKey: "b",
-        },
-      ],
-      currentInstanceId: "instance-1",
-      unreadCountsByInstance: {},
-      activeOrgEpoch: 0,
-    });
-    useDraftStore.getState().setDrafts([
-      {
-        id: 8,
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Org A draft",
-        timestamp: 1710000000,
-      },
-    ]);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Org A draft")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTitle("Edit draft"));
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Edited in org A" } });
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(updateDraftOnServer).toHaveBeenCalledWith(8, {
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Edited in org A",
-      });
-    });
-
-    act(() => {
-      useInstancesStore.getState().setCurrentInstanceId("instance-2");
-      useDraftStore.getState().setDrafts([
-        {
-          id: 8,
-          type: "stream",
-          to: [20],
-          topic: "triage",
-          content: "Org B draft",
-          timestamp: 1710000200,
-        },
-      ]);
-    });
-
-    act(() => {
-      resolveUpdate?.(true);
-    });
-
-    expect(useDraftStore.getState().drafts[0]?.content).toBe("Org B draft");
-  });
-
-  it("treats empty edited draft content as delete", async () => {
-    deleteDraftOnServer.mockResolvedValue(true);
-    useDraftStore.getState().setDrafts([
-      {
-        id: 12,
-        type: "stream",
-        to: [10],
-        topic: "general",
-        content: "Delete from edit draft",
-        timestamp: 1710000000,
-      },
-    ]);
-
-    render(
-      <MemoryRouter initialEntries={["/activity/drafts"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Delete from edit draft")).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTitle("Edit draft"));
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(deleteDraftOnServer).toHaveBeenCalledWith(12);
-    });
-
-    expect(screen.queryByText("Delete from edit draft")).not.toBeInTheDocument();
-  });
-
-  it("refetches activity messages when the page is marked stale", async () => {
-    fetchActivityMessagesPageWithPersist
-      .mockResolvedValueOnce({
-        messages: [
-          createMessage({
-            id: 1,
-            sender_id: 42,
-            sender_full_name: "Alice",
-            stream_id: 10,
-            subject: "bugs",
-            content: "Initial mention",
-            timestamp: 1,
-            type: "stream",
-            display_recipient: "engineering",
-          }),
-        ],
-        foundOldest: true,
-      })
-      .mockResolvedValueOnce({
-        messages: [
-          createMessage({
-            id: 2,
-            sender_id: 42,
-            sender_full_name: "Alice",
-            stream_id: 10,
-            subject: "bugs",
-            content: "Updated mention",
-            timestamp: 2,
-            type: "stream",
-            display_recipient: "engineering",
-          }),
-        ],
-        foundOldest: true,
-      });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/mentions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("Initial mention")).toBeInTheDocument();
-    });
-
-    act(() => {
-      useActivityStore.getState().markStale();
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("Updated mention")).toBeInTheDocument();
-    });
-
-    expect(fetchActivityMessagesPageWithPersist).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not apply cached mentions from the previous organization after switch", async () => {
-    let resolveHydrate!: (messages: ZulipRawMessage[]) => void;
-    const staleHydrate = new Promise<ZulipRawMessage[]>((resolve) => {
-      resolveHydrate = resolve;
-    });
-
-    let resolveNextOrgFetch!: (value: {
-      messages: ZulipRawMessage[];
-      foundOldest: boolean;
-    }) => void;
-    const nextOrgFetch = new Promise<{ messages: ZulipRawMessage[]; foundOldest: boolean }>(
-      (resolve) => {
-        resolveNextOrgFetch = resolve;
-      },
-    );
-
-    hydrateActivityMessagesFromCache
-      .mockReturnValueOnce(staleHydrate)
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
-    fetchActivityMessagesPageWithPersist.mockReturnValue(nextOrgFetch);
-
-    useInstancesStore.setState({
-      instances: [
-        {
-          id: "instance-1",
-          realm: "https://one.example.com",
-          email: "one@example.com",
-          apiKey: "api-key",
-        },
-        {
-          id: "instance-2",
-          realm: "https://two.example.com",
-          email: "two@example.com",
-          apiKey: "api-key",
-        },
-      ],
-      currentInstanceId: "instance-1",
-      unreadCountsByInstance: {},
-      activeOrgEpoch: 0,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/mentions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    act(() => {
-      useInstancesStore.getState().setCurrentInstanceId("instance-2");
-      useActivityStore.getState().clear();
-    });
-
-    await act(async () => {
-      resolveHydrate([
-        createMessage({
-          id: 901,
-          sender_id: 42,
-          sender_full_name: "Alice",
-          stream_id: 10,
-          subject: "bugs",
-          content: "Old org cached mention",
-          timestamp: 1,
-          type: "stream",
-          display_recipient: "engineering",
-        }),
-      ]);
-      await staleHydrate;
-    });
-
-    expect(useActivityStore.getState().filters.mentions.messages).toEqual([]);
-
-    await act(async () => {
-      resolveNextOrgFetch({
-        messages: [
-          createMessage({
-            id: 902,
-            sender_id: 99,
-            sender_full_name: "Bob",
-            stream_id: 20,
-            subject: "support",
-            content: "Current org mention",
-            timestamp: 2,
-            type: "stream",
-            display_recipient: "support",
-          }),
-        ],
-        foundOldest: true,
-      });
-      await nextOrgFetch;
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("Current org mention")).toBeInTheDocument();
-    });
-    expect(screen.queryByText("Old org cached mention")).not.toBeInTheDocument();
-  });
-
-  it("does not apply stale mentions refresh after organization switch", async () => {
-    let resolveOldFetch!: (value: { messages: ZulipRawMessage[]; foundOldest: boolean }) => void;
-    const oldFetch = new Promise<{ messages: ZulipRawMessage[]; foundOldest: boolean }>(
-      (resolve) => {
-        resolveOldFetch = resolve;
-      },
-    );
-
-    let resolveNewFetch!: (value: { messages: ZulipRawMessage[]; foundOldest: boolean }) => void;
-    const newFetch = new Promise<{ messages: ZulipRawMessage[]; foundOldest: boolean }>(
-      (resolve) => {
-        resolveNewFetch = resolve;
-      },
-    );
-
-    hydrateActivityMessagesFromCache.mockResolvedValue([]);
-    fetchActivityMessagesPageWithPersist
-      .mockReturnValueOnce(oldFetch)
-      .mockReturnValueOnce(newFetch);
-
-    useInstancesStore.setState({
-      instances: [
-        {
-          id: "instance-1",
-          realm: "https://one.example.com",
-          email: "one@example.com",
-          apiKey: "api-key",
-        },
-        {
-          id: "instance-2",
-          realm: "https://two.example.com",
-          email: "two@example.com",
-          apiKey: "api-key",
-        },
-      ],
-      currentInstanceId: "instance-1",
-      unreadCountsByInstance: {},
-      activeOrgEpoch: 0,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/activity/mentions"]}>
-        <Routes>
-          <Route path="/activity/:filter" element={<ActivityPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    await waitFor(() => {
-      expect(fetchActivityMessagesPageWithPersist).toHaveBeenCalledTimes(1);
-    });
-
-    act(() => {
-      useInstancesStore.getState().setCurrentInstanceId("instance-2");
-      useActivityStore.getState().clear();
-    });
-
-    await waitFor(() => {
-      expect(fetchActivityMessagesPageWithPersist).toHaveBeenCalledTimes(2);
-    });
-
-    await act(async () => {
-      resolveOldFetch({
-        messages: [
-          createMessage({
-            id: 903,
-            sender_id: 42,
-            sender_full_name: "Alice",
-            stream_id: 10,
-            subject: "bugs",
-            content: "Old org refreshed mention",
-            timestamp: 1,
-            type: "stream",
-            display_recipient: "engineering",
-          }),
-        ],
-        foundOldest: true,
-      });
-      await oldFetch;
-    });
-
-    expect(useActivityStore.getState().filters.mentions.messages).toEqual([]);
-
-    await act(async () => {
-      resolveNewFetch({
-        messages: [
-          createMessage({
-            id: 904,
-            sender_id: 99,
-            sender_full_name: "Bob",
-            stream_id: 20,
-            subject: "support",
-            content: "Current org refreshed mention",
-            timestamp: 2,
-            type: "stream",
-            display_recipient: "support",
-          }),
-        ],
-        foundOldest: true,
-      });
-      await newFetch;
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("Current org refreshed mention")).toBeInTheDocument();
-    });
-    expect(screen.queryByText("Old org refreshed mention")).not.toBeInTheDocument();
   });
 });

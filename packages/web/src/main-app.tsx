@@ -2,19 +2,10 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { installAiContext } from "~/app/ai-context";
 import { installDevTools } from "~/app/devtools";
-import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { useInstancesStore } from "~/entities/instance/instance.model";
-import { useThemeStore } from "~/entities/theme/theme.model";
-import { reportPresence } from "~/entities/user/api/user.api";
-import {
-  refreshWorkspaceApiBase,
-  refreshZulipApiBase,
-  setInstanceProvider,
-} from "~/shared/api/client";
-import { clearInFlightWorkspaceFolderRequests } from "~/shared/api/workspace-client";
-import { registerWorkspaceOrvalMutator } from "~/shared/api/workspace-orval-mutator";
+import { createWorkspacePluginDataProvider } from "~/app/workspace-plugin-data-provider.lib";
+import { useMessengerStore } from "~/entities/messenger/messenger.model";
 import { initAnalytics } from "~/shared/lib/analytics/setup";
-import { setStoreWiper, setAuthInstanceGetter } from "~/shared/lib/auth-guard";
+import { setStoreWiper } from "~/shared/lib/auth-guard";
 import { brand } from "~/shared/lib/brand";
 import { initConnectionHealth } from "~/shared/lib/connection-health";
 import { createLogger } from "~/shared/lib/logger";
@@ -23,8 +14,7 @@ import { attachNotificationAudioUnlock } from "~/shared/lib/notification-sound";
 import { perf } from "~/shared/lib/perf";
 import { setPluginDataProvider } from "~/shared/lib/plugins/api";
 import { initPlugins } from "~/shared/lib/plugins/setup";
-import { initPresenceTracker, setPresenceReporter } from "~/shared/lib/presence";
-import { initPush } from "~/shared/lib/push/push.service";
+import { initPresenceTracker } from "~/shared/lib/presence";
 import { cleanupDevServiceWorkers, initPwaListeners, getRuntime } from "~/shared/lib/pwa";
 import { initSentry } from "~/shared/lib/sentry";
 import { initTouchTracking } from "~/shared/lib/touch";
@@ -35,73 +25,17 @@ import { AppRoot } from "./app/app-root";
 import "./app/app.styles.css";
 import "./app/focus-outline.styles.css";
 
-// ---------------------------------------------------------------------------
-// FSD provider wiring (shared layer cannot import entities; we inject here)
-// ---------------------------------------------------------------------------
-
-registerWorkspaceOrvalMutator();
-
-setInstanceProvider(() => {
-  const inst = useInstancesStore.getState().getCurrentInstance();
-  if (!inst) return null;
-  return {
-    id: inst.id,
-    realm: inst.realm,
-    email: inst.email,
-    apiKey: inst.apiKey,
-    authType: inst.authType ?? "api_key",
-    workspaceOrgOrigin: inst.workspaceOrgOrigin,
-  };
-});
-
-function syncApiBasesAfterInstanceChange(): void {
-  refreshZulipApiBase();
-  refreshWorkspaceApiBase();
-}
-
-useInstancesStore.subscribe((state, prev) => {
-  if (state.currentInstanceId !== prev.currentInstanceId) {
-    syncApiBasesAfterInstanceChange();
-    clearInFlightWorkspaceFolderRequests();
-  }
-});
-
-setAuthInstanceGetter(() => {
-  const inst = useInstancesStore.getState().getCurrentInstance();
-  if (!inst) return null;
-  return { email: inst.email, apiKey: inst.apiKey, realm: inst.realm };
-});
-
 setStoreWiper(() => {
-  const store = useInstancesStore.getState();
-  const current = store.getCurrentInstance();
-  if (current) {
-    store.removeInstance(current.id);
-  }
-  useChatListStore.getState().clear();
+  useMessengerStore.getState().clear();
 });
 
-setPluginDataProvider({
-  getCurrentUserId: () => useChatListStore.getState().currentUserId ?? null,
-  getStreams: () =>
-    useChatListStore
-      .getState()
-      .streams()
-      .map((s) => ({
-        id: s.stream_id,
-        name: s.name,
-        badge: s.badge,
-      })),
-  getThemeMode: () => useThemeStore.getState().mode,
-});
+setPluginDataProvider(createWorkspacePluginDataProvider());
 
 /** Application bootstrap after vendored Jitsi external_api is loaded (see `main.tsx`). */
 export function mountApplication(): void {
   // ---------------------------------------------------------------------------
   // App initialization
   // ---------------------------------------------------------------------------
-
-  syncApiBasesAfterInstanceChange();
 
   perf.mark("app:init");
   initSentry();
@@ -112,11 +46,7 @@ export function mountApplication(): void {
   initConnectionHealth();
   initTouchTracking();
   initVisibilityTracking();
-  setPresenceReporter((status) => {
-    void reportPresence(status);
-  });
   initPresenceTracker();
-  initPush();
   attachNotificationAudioUnlock();
   initWebViewBridge();
   installAiContext();
@@ -130,7 +60,6 @@ export function mountApplication(): void {
     runtime: getRuntime(),
     version: import.meta.env.VITE_APP_VERSION ?? "unknown",
     brand: brand.appName,
-    instanceCount: useInstancesStore.getState().instances.length,
   });
 
   ReactDOM.createRoot(document.getElementById("root")!).render(React.createElement(AppRoot));

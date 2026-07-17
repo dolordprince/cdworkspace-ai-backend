@@ -1,9 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import EmojiPicker, { EmojiStyle, type EmojiClickData } from "emoji-picker-react";
 import React from "react";
-import type { UserStatusEmojiDisplay } from "~/entities/user/user-status.lib";
-import type { UserStatusReactionType } from "~/entities/user/user.model";
-import type { RealmEmoji } from "~/shared/api/zulip.types";
 import {
   AppDialogShell,
   APP_DIALOG_CONTENT_BASE_CLASS,
@@ -12,6 +9,10 @@ import {
 } from "~/shared/ui/app-dialog.ui";
 import { STATUS_EMOJI_PRESETS } from "./right-panel-user-menu-constants.lib";
 import type { ComponentProps } from "react";
+
+export type UserStatusEmojiDisplay =
+  | { kind: "text"; text: string }
+  | { kind: "image"; src: string; alt: string };
 
 const CONTENT_CLASS = `${APP_DIALOG_CONTENT_BASE_CLASS} top-1/2 max-w-md -translate-y-1/2 p-0`;
 
@@ -22,11 +23,8 @@ export interface RightPanelUserMenuStatusDialogProps {
   statusEmojiPickerOpen: boolean;
   onStatusEmojiPickerToggle: () => void;
   setStatusEmojiPickerOpen: (value: boolean | ((prev: boolean) => boolean)) => void;
-  statusEmojiNameDraft: string;
-  setStatusEmojiNameDraft: (value: string) => void;
-  statusEmojiCodeDraft: string;
-  setStatusEmojiCodeDraft: (value: string) => void;
-  setStatusEmojiReactionTypeDraft: (value: UserStatusReactionType | undefined) => void;
+  statusEmojiDraft: string;
+  setStatusEmojiDraft: (value: string) => void;
   statusTextDraft: string;
   setStatusTextDraft: (value: string) => void;
   statusAwayDraft: boolean;
@@ -34,11 +32,10 @@ export interface RightPanelUserMenuStatusDialogProps {
   statusSubmitting: boolean;
   selectedStatusEmojiDisplay: UserStatusEmojiDisplay | null;
   statusEmojiPickerTheme: NonNullable<ComponentProps<typeof EmojiPicker>["theme"]>;
-  customEmojis?: RealmEmoji[];
   t: (key: string, options?: Record<string, string | number>) => string;
   handleStatusEmojiPick: (data: EmojiClickData) => void;
   clearStatusDraft: () => void;
-  handleSaveStatus: () => Promise<void>;
+  handleSaveStatus: () => void;
 }
 
 export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDialogProps> = ({
@@ -48,11 +45,8 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
   statusEmojiPickerOpen,
   onStatusEmojiPickerToggle,
   setStatusEmojiPickerOpen,
-  statusEmojiNameDraft,
-  setStatusEmojiNameDraft,
-  statusEmojiCodeDraft: _statusEmojiCodeDraft,
-  setStatusEmojiCodeDraft,
-  setStatusEmojiReactionTypeDraft,
+  statusEmojiDraft,
+  setStatusEmojiDraft,
   statusTextDraft,
   setStatusTextDraft,
   statusAwayDraft,
@@ -60,7 +54,6 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
   statusSubmitting,
   selectedStatusEmojiDisplay,
   statusEmojiPickerTheme,
-  customEmojis,
   t,
   handleStatusEmojiPick,
   clearStatusDraft,
@@ -84,13 +77,11 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
               key={preset.name}
               type="button"
               onClick={() => {
-                setStatusEmojiNameDraft(preset.name);
-                setStatusEmojiCodeDraft(preset.code);
-                setStatusEmojiReactionTypeDraft("unicode_emoji");
+                setStatusEmojiDraft(preset.symbol);
                 setStatusEmojiPickerOpen(false);
               }}
               className={`inline-flex h-9 w-9 items-center justify-center rounded-md border text-base transition-colors ${
-                statusEmojiNameDraft === preset.name
+                statusEmojiDraft === preset.symbol
                   ? "bg-accent/15 border-accent"
                   : "border-border-subtle bg-bg hover:bg-bg-elevated"
               }`}
@@ -117,7 +108,6 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
           <div className="overflow-hidden rounded-lg border border-border-subtle">
             <EmojiPicker
               onEmojiClick={handleStatusEmojiPick}
-              customEmojis={customEmojis}
               emojiStyle={EmojiStyle.NATIVE}
               searchDisabled={false}
               skinTonesDisabled
@@ -146,7 +136,7 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
             <input
               type="text"
               value={statusTextDraft}
-              onChange={(event) => setStatusTextDraft(event.target.value.slice(0, 60))}
+              onChange={(event) => setStatusTextDraft(event.target.value.slice(0, 256))}
               placeholder={t("settings.statusPlaceholder")}
               aria-label={t("settings.status")}
               className="w-full bg-transparent text-sm text-text-primary outline-none placeholder:text-text-muted"
@@ -184,9 +174,7 @@ export const RightPanelUserMenuStatusDialog: React.FC<RightPanelUserMenuStatusDi
             {t("common.cancel")}
           </DialogCancelButton>
           <DialogPrimaryButton
-            onClick={() => {
-              void handleSaveStatus();
-            }}
+            onClick={handleSaveStatus}
             disabled={statusSubmitting}
             isSubmitting={statusSubmitting}
             className="rounded-md px-3 py-2"

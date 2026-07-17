@@ -1,21 +1,27 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useChatListStore } from "~/entities/chat-list/chat-list.model";
-import { useInstancesStore } from "~/entities/instance/instance.model";
-import { applyUserStatusSnapshot } from "~/entities/user/api/user-status-write.lib";
-import { fetchOwnStatus, updateOwnStatus } from "~/entities/user/api/user.api";
-import { formatUserStatusLabel } from "~/entities/user/user-status.lib";
-import { useUsersStore, type UserStatus } from "~/entities/user/user.model";
+import { selectUserStatusLabel } from "~/entities/user/user-selectors.lib";
+import { updateWorkspaceOwnStatus } from "~/entities/user/user-workspace-status-actions.lib";
+import { useUsersStore } from "~/entities/user/user.model";
+import type { User } from "~/entities/user/user.types";
+import {
+  useWorkspaceAuthStore,
+  type WorkspaceAuthProfile,
+} from "~/entities/workspace-auth/workspace-auth.model";
 import {
   fetchUserProfile,
+  fetchOwnStatus,
   getOwnAvatarCapabilities,
   removeOwnAvatar,
   uploadOwnAvatar,
   updateOwnProfile,
 } from "~/features/user-profile/user-profile.api";
-import { type UserProfileData } from "~/features/user-profile/user-profile.types";
+import {
+  type OwnStatusData,
+  type UserProfileData,
+} from "~/features/user-profile/user-profile.types";
+import { WorkspaceAvatar } from "~/features/workspace-avatar/workspace-avatar.ui";
 import { t } from "~/i18n/i18n";
-import { getRealmBaseUrl } from "~/shared/api/zulip-client.internal";
 import { bumpAvatarVersion, resolveAvatarUrl } from "~/shared/lib/avatar";
 import { writeText } from "~/shared/lib/clipboard";
 import { formatDateJoined } from "~/shared/lib/datetime.lib";
@@ -64,12 +70,22 @@ type PendingAvatarAction =
 
 const EMPTY_PENDING_AVATAR_ACTION: PendingAvatarAction = { kind: "none" };
 
-function buildProfileStatusLabel(status: UserStatus | null | undefined): string {
-  const label = formatUserStatusLabel(status);
+function buildProfileStatusLabel(status: OwnStatusData | null | undefined): string {
+  const label = status?.text?.trim() ?? "";
   if (label != null && label.length > 0) {
     return status?.away ? `${label} • ${t("presence.away")}` : label;
   }
   return status?.away ? t("presence.away") : t("presence.online");
+}
+
+function buildWorkspaceProfileStatusLabel(status: WorkspaceAuthProfile["status"]): string {
+  if (status === "offline") return t("presence.offline");
+  if (status === "idle" || status === "do_not_disturb") return t("presence.away");
+  return t("presence.online");
+}
+
+function isWorkspaceAwayStatus(status: WorkspaceAuthProfile["status"]): boolean {
+  return status === "idle" || status === "do_not_disturb";
 }
 
 export const SettingsPersonalInfoPage: React.FC = () => {
@@ -79,7 +95,7 @@ export const SettingsPersonalInfoPage: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editableFullName, setEditableFullName] = useState("");
   const [editableTimezone, setEditableTimezone] = useState("");
-  const [ownStatus, setOwnStatus] = useState<UserStatus | null>(null);
+  const [ownStatus, setOwnStatus] = useState<OwnStatusData | null>(null);
   const [editableStatusText, setEditableStatusText] = useState("");
   const [editableStatusAway, setEditableStatusAway] = useState(false);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -90,23 +106,59 @@ export const SettingsPersonalInfoPage: React.FC = () => {
   );
   const [avatarDraftError, setAvatarDraftError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const currentUserId = useChatListStore((s) => s.currentUserId);
-  const user = useUsersStore((s) => (currentUserId != null ? s.getUser(currentUserId) : undefined));
-  const mergeUser = useUsersStore((s) => s.mergeUser);
-  const currentInstance = useInstancesStore((s) => s.getCurrentInstance());
+  const currentUserId: number | null = null;
+  const currentWorkspaceSession = useWorkspaceAuthStore((s) => {
+    const accountId = s.currentAccountId;
+    return accountId != null
+      ? s.sessions.find((session) => session.accountId === accountId)
+      : undefined;
+  });
+  const workspaceProfile = currentWorkspaceSession?.profile;
+  const workspaceReadOnly = currentWorkspaceSession != null;
+  const canEditWorkspaceStatus = currentWorkspaceSession != null;
+  const currentWorkspaceUser = useUsersStore((s) =>
+    currentWorkspaceSession?.userUuid != null
+      ? s.usersById[currentWorkspaceSession.userUuid]
+      : undefined,
+  );
   const avatarCapabilities = getOwnAvatarCapabilities();
   const supportedTimezones = useMemo(() => getRuntimeSupportedTimezones(), []);
   const supportedTimezoneSet = useMemo(() => new Set(supportedTimezones), [supportedTimezones]);
+  const updateCurrentUser = useCallback(
+    (patch: Partial<Pick<User, "avatarUrl" | "displayName" | "updatedAt">>) => {
+      const userUuid = currentWorkspaceSession?.userUuid ?? null;
+      const store = useUsersStore.getState();
+      const user = userUuid != null ? store.getUser(userUuid) : undefined;
+      if (user == null) return;
+      store.upsertUser({
+        ...user,
+        ...patch,
+        updatedAt: patch.updatedAt ?? new Date().toISOString(),
+      });
+    },
+    [currentWorkspaceSession?.userUuid],
+  );
 
   useEffect(() => {
     if (isEditing) {
       return;
     }
-    setOwnStatus(user?.status ?? null);
-  }, [isEditing, user?.status]);
+    setOwnStatus(null);
+  }, [isEditing]);
 
   useEffect(() => {
     let cancelled = false;
+    if (workspaceReadOnly) {
+      void Promise.resolve().then(() => {
+        if (!cancelled) {
+          setProfile(null);
+          setOwnStatus(null);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
     if (currentUserId == null) {
       void Promise.resolve().then(() => {
         if (!cancelled) {
@@ -122,48 +174,83 @@ export const SettingsPersonalInfoPage: React.FC = () => {
       .then(([nextProfile, nextOwnStatus]) => {
         if (!cancelled) {
           setProfile(nextProfile);
-          setOwnStatus(
-            nextOwnStatus ?? useUsersStore.getState().getUser(currentUserId)?.status ?? null,
-          );
+          setOwnStatus(nextOwnStatus);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setProfile(null);
-          setOwnStatus(useUsersStore.getState().getUser(currentUserId)?.status ?? null);
+          setOwnStatus(null);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [currentUserId]);
+  }, [currentUserId, workspaceReadOnly]);
 
   const fullName = useMemo(() => {
     const profileName = profile?.fullName?.trim();
     if (profileName != null && profileName.length > 0) return profileName;
-    const userName = user?.full_name?.trim();
-    return userName != null && userName.length > 0 ? userName : "-";
-  }, [profile?.fullName, user?.full_name]);
+    const storeName = currentWorkspaceUser?.displayName?.trim();
+    if (storeName != null && storeName.length > 0) return storeName;
+    const workspaceName = [workspaceProfile?.firstName, workspaceProfile?.lastName]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    if (workspaceName.length > 0) return workspaceName;
+    const workspaceUsername = workspaceProfile?.username?.trim();
+    if (workspaceUsername != null && workspaceUsername.length > 0) return workspaceUsername;
+    const workspaceEmail = workspaceProfile?.email?.trim();
+    return workspaceEmail != null && workspaceEmail.length > 0 ? workspaceEmail : "-";
+  }, [
+    profile?.fullName,
+    currentWorkspaceUser?.displayName,
+    workspaceProfile?.email,
+    workspaceProfile?.firstName,
+    workspaceProfile?.lastName,
+    workspaceProfile?.username,
+  ]);
 
   useEffect(() => {
     if (isEditing) return;
     setEditableFullName(fullName === "-" ? "" : fullName);
     setEditableTimezone(profile?.timezone?.trim() ?? "");
-    setEditableStatusText(ownStatus?.text ?? "");
-    setEditableStatusAway(ownStatus?.away ?? false);
-  }, [fullName, isEditing, ownStatus?.away, ownStatus?.text, profile?.timezone]);
+    setEditableStatusText(currentWorkspaceUser?.statusText?.trim() ?? ownStatus?.text ?? "");
+    setEditableStatusAway(
+      currentWorkspaceUser != null
+        ? isWorkspaceAwayStatus(currentWorkspaceUser.status)
+        : (ownStatus?.away ?? false),
+    );
+  }, [
+    currentWorkspaceUser?.status,
+    currentWorkspaceUser?.statusText,
+    fullName,
+    isEditing,
+    ownStatus?.away,
+    ownStatus?.text,
+    profile?.timezone,
+  ]);
 
   const email = useMemo(() => {
     const profileEmail = profile?.email?.trim();
     if (profileEmail != null && profileEmail.length > 0) return profileEmail;
-    const userEmail = user?.email?.trim();
-    return userEmail != null && userEmail.length > 0 ? userEmail : "-";
-  }, [profile?.email, user?.email]);
+    const storeEmail = currentWorkspaceUser?.email?.trim();
+    if (storeEmail != null && storeEmail.length > 0) return storeEmail;
+    const workspaceEmail = workspaceProfile?.email?.trim();
+    if (workspaceEmail != null && workspaceEmail.length > 0) return workspaceEmail;
+    const login = currentWorkspaceSession?.login.trim();
+    return login != null && login.includes("@") ? login : "-";
+  }, [
+    currentWorkspaceSession?.login,
+    currentWorkspaceUser?.email,
+    profile?.email,
+    workspaceProfile?.email,
+  ]);
 
   const userId = useMemo(() => {
-    const value = profile?.userId ?? currentUserId;
+    const value = profile?.userId ?? currentUserId ?? currentWorkspaceSession?.userUuid;
     return value != null ? String(value) : "-";
-  }, [profile?.userId, currentUserId]);
+  }, [profile?.userId, currentUserId, currentWorkspaceSession?.userUuid]);
 
   const timezone = useMemo(() => {
     const value = profile?.timezone?.trim();
@@ -215,10 +302,10 @@ export const SettingsPersonalInfoPage: React.FC = () => {
   }, [profile?.isActive]);
 
   const profileLink = useMemo(() => {
-    const realm = currentInstance?.realm?.trim();
+    const realm = currentWorkspaceSession?.organizationOrigin;
     if (!realm || !isValidRealmUrl(realm) || userId === "-") return undefined;
     return `${realm.replace(/\/+$/, "")}/#user/${userId}`;
-  }, [currentInstance?.realm, userId]);
+  }, [currentWorkspaceSession?.organizationOrigin, userId]);
 
   const handleShareProfile = useCallback(() => {
     if (!profileLink) return;
@@ -230,28 +317,58 @@ export const SettingsPersonalInfoPage: React.FC = () => {
   const handleStartProfileEdit = useCallback(() => {
     setEditableFullName(fullName === "-" ? "" : fullName);
     setEditableTimezone(profile?.timezone?.trim() ?? "");
-    setEditableStatusText(ownStatus?.text ?? "");
-    setEditableStatusAway(ownStatus?.away ?? false);
+    setEditableStatusText(currentWorkspaceUser?.statusText?.trim() ?? ownStatus?.text ?? "");
+    setEditableStatusAway(
+      currentWorkspaceUser != null
+        ? isWorkspaceAwayStatus(currentWorkspaceUser.status)
+        : (ownStatus?.away ?? false),
+    );
     setPendingAvatarAction(EMPTY_PENDING_AVATAR_ACTION);
     setAvatarDraftError(null);
     setTimezoneDraftError(null);
     setProfileSaveError(null);
     setIsEditing(true);
-  }, [fullName, ownStatus?.away, ownStatus?.text, profile?.timezone]);
+  }, [
+    currentWorkspaceUser?.status,
+    currentWorkspaceUser?.statusText,
+    fullName,
+    ownStatus?.away,
+    ownStatus?.text,
+    profile?.timezone,
+  ]);
 
   const handleCancelProfileEdit = useCallback(() => {
     setEditableFullName(fullName === "-" ? "" : fullName);
     setEditableTimezone(profile?.timezone?.trim() ?? "");
-    setEditableStatusText(ownStatus?.text ?? "");
-    setEditableStatusAway(ownStatus?.away ?? false);
+    setEditableStatusText(currentWorkspaceUser?.statusText?.trim() ?? ownStatus?.text ?? "");
+    setEditableStatusAway(
+      currentWorkspaceUser != null
+        ? isWorkspaceAwayStatus(currentWorkspaceUser.status)
+        : (ownStatus?.away ?? false),
+    );
     setPendingAvatarAction(EMPTY_PENDING_AVATAR_ACTION);
     setAvatarDraftError(null);
     setTimezoneDraftError(null);
     setProfileSaveError(null);
     setIsEditing(false);
-  }, [fullName, ownStatus?.away, ownStatus?.text, profile?.timezone]);
+  }, [
+    currentWorkspaceUser?.status,
+    currentWorkspaceUser?.statusText,
+    fullName,
+    ownStatus?.away,
+    ownStatus?.text,
+    profile?.timezone,
+  ]);
 
-  const profileStatus = useMemo(() => buildProfileStatusLabel(ownStatus), [ownStatus]);
+  const profileStatus = useMemo(() => {
+    const workspaceStatusLabel = selectUserStatusLabel(currentWorkspaceUser);
+    if (workspaceStatusLabel != null) {
+      return workspaceStatusLabel;
+    }
+    return ownStatus != null
+      ? buildProfileStatusLabel(ownStatus)
+      : buildWorkspaceProfileStatusLabel(currentWorkspaceUser?.status ?? workspaceProfile?.status);
+  }, [currentWorkspaceUser?.status, currentWorkspaceUser, ownStatus, workspaceProfile?.status]);
 
   const mapAvatarErrorMessage = useCallback(
     (kind: "forbidden" | "invalid" | "unsupported" | "transient", fallbackMessage?: string) => {
@@ -264,9 +381,30 @@ export const SettingsPersonalInfoPage: React.FC = () => {
   );
 
   const handleSaveProfile = useCallback(() => {
-    if (currentUserId == null || isSavingProfile) return;
+    if (currentWorkspaceSession != null) {
+      if (isSavingProfile) return;
+      setIsSavingProfile(true);
+      setProfileSaveError(null);
+      void updateWorkspaceOwnStatus({
+        runtimeContext: currentWorkspaceSession,
+        statusText: editableStatusText,
+        statusEmoji: currentWorkspaceUser?.statusEmoji ?? null,
+        away: editableStatusAway,
+      })
+        .then((result) => {
+          if (!result.ok) {
+            setProfileSaveError(t("settings.statusUpdateError"));
+            return;
+          }
+          setIsEditing(false);
+        })
+        .finally(() => {
+          setIsSavingProfile(false);
+        });
+      return;
+    }
+    if (workspaceReadOnly || currentUserId == null || isSavingProfile) return;
     const trimmedFullName = editableFullName.trim();
-    const trimmedStatusText = editableStatusText.trim();
     const trimmedTimezone = editableTimezone.trim();
     if (trimmedFullName.length === 0) {
       setProfileSaveError(t("settings.fullNameRequired"));
@@ -296,51 +434,23 @@ export const SettingsPersonalInfoPage: React.FC = () => {
     setTimezoneDraftError(null);
 
     void (async () => {
-      const avatarSnapshot = useUsersStore.getState().getAvatarUrl(currentUserId) ?? "";
-      let avatarMutationCommitted = false;
-      let committedAvatarUrl = avatarSnapshot;
-
       if (pendingAvatarAction.kind === "upload") {
-        // Optimistic preview for global UI surfaces while save is in-flight.
-        mergeUser({
-          user_id: currentUserId,
-          avatar_url: pendingAvatarAction.previewUrl,
-        });
-
         const result = await uploadOwnAvatar(pendingAvatarAction.file);
         if (!result.ok) {
-          mergeUser({
-            user_id: currentUserId,
-            avatar_url: avatarSnapshot,
-          });
           setAvatarDraftError(mapAvatarErrorMessage(result.kind, result.message));
           return;
         }
 
-        avatarMutationCommitted = true;
-        committedAvatarUrl = result.avatarUrl ?? avatarSnapshot;
+        const committedAvatarUrl = result.avatarUrl ?? "";
         setProfile((prev) => (prev ? { ...prev, avatarUrl: committedAvatarUrl } : prev));
-        mergeUser({
-          user_id: currentUserId,
-          avatar_url: committedAvatarUrl,
-        });
+        updateCurrentUser({ avatarUrl: committedAvatarUrl });
         bumpAvatarVersion();
         setPendingAvatarAction(EMPTY_PENDING_AVATAR_ACTION);
       }
 
       if (pendingAvatarAction.kind === "remove") {
-        // Optimistic removal so all widgets fallback to initials/avatar placeholder.
-        mergeUser({
-          user_id: currentUserId,
-          avatar_url: "",
-        });
-
         const result = await removeOwnAvatar();
         if (!result.ok) {
-          mergeUser({
-            user_id: currentUserId,
-            avatar_url: avatarSnapshot,
-          });
           const message =
             result.kind === "invalid"
               ? t("settings.avatarRemoveError")
@@ -349,27 +459,17 @@ export const SettingsPersonalInfoPage: React.FC = () => {
           return;
         }
 
-        avatarMutationCommitted = true;
-        committedAvatarUrl = result.avatarUrl ?? "";
+        const committedAvatarUrl = result.avatarUrl ?? "";
         setProfile((prev) => (prev ? { ...prev, avatarUrl: committedAvatarUrl } : prev));
-        mergeUser({
-          user_id: currentUserId,
-          avatar_url: committedAvatarUrl,
-        });
+        updateCurrentUser({ avatarUrl: committedAvatarUrl });
         bumpAvatarVersion();
         setPendingAvatarAction(EMPTY_PENDING_AVATAR_ACTION);
       }
 
-      const [profileUpdated, statusResult] = await Promise.all([
-        updateOwnProfile({ fullName: trimmedFullName, timezone: canonicalTimezone }),
-        updateOwnStatus({
-          text: trimmedStatusText,
-          emojiName: ownStatus?.emojiName,
-          emojiCode: ownStatus?.emojiCode,
-          reactionType: ownStatus?.reactionType,
-          away: editableStatusAway,
-        }),
-      ]);
+      const profileUpdated = await updateOwnProfile({
+        fullName: trimmedFullName,
+        timezone: canonicalTimezone,
+      });
 
       if (!profileUpdated.ok) {
         if (profileUpdated.kind === "unsupported") {
@@ -382,25 +482,10 @@ export const SettingsPersonalInfoPage: React.FC = () => {
         return;
       }
 
-      if (!statusResult.ok) {
-        // Avatar mutation has already been committed by server, keep it as-is.
-        if (avatarMutationCommitted) {
-          mergeUser({
-            user_id: currentUserId,
-            avatar_url: committedAvatarUrl,
-          });
-        }
-        setProfileSaveError(t("settings.profileSaveError"));
-        return;
-      }
-
       setProfile((prev) =>
         prev ? { ...prev, fullName: trimmedFullName, timezone: canonicalTimezone } : prev,
       );
-      const fetchedAt = Date.now();
-      setOwnStatus(statusResult.status);
-      applyUserStatusSnapshot(currentUserId, statusResult.status, fetchedAt);
-      mergeUser({ user_id: currentUserId, full_name: trimmedFullName });
+      updateCurrentUser({ displayName: trimmedFullName });
       setIsEditing(false);
       setPendingAvatarAction(EMPTY_PENDING_AVATAR_ACTION);
       setAvatarDraftError(null);
@@ -414,19 +499,19 @@ export const SettingsPersonalInfoPage: React.FC = () => {
       });
   }, [
     currentUserId,
+    currentWorkspaceSession,
+    currentWorkspaceUser?.statusEmoji,
     editableFullName,
     editableStatusAway,
     editableStatusText,
     editableTimezone,
     isSavingProfile,
     mapAvatarErrorMessage,
-    mergeUser,
-    ownStatus?.emojiCode,
-    ownStatus?.emojiName,
-    ownStatus?.reactionType,
     pendingAvatarAction,
     profile?.timezone,
     supportedTimezoneSet,
+    updateCurrentUser,
+    workspaceReadOnly,
   ]);
 
   const validateAvatarFile = useCallback(
@@ -465,7 +550,7 @@ export const SettingsPersonalInfoPage: React.FC = () => {
     (event: React.ChangeEvent<HTMLInputElement>) => {
       const [file] = Array.from(event.target.files ?? []);
       event.currentTarget.value = "";
-      if (!file || currentUserId == null || !isEditing || isSavingProfile) {
+      if (!file || workspaceReadOnly || currentUserId == null || !isEditing || isSavingProfile) {
         return;
       }
       if (avatarCapabilities.avatarChangesDisabled) {
@@ -490,18 +575,25 @@ export const SettingsPersonalInfoPage: React.FC = () => {
       isEditing,
       isSavingProfile,
       validateAvatarFile,
+      workspaceReadOnly,
     ],
   );
 
   const handleAvatarRemove = useCallback(() => {
-    if (currentUserId == null || !isEditing || isSavingProfile) return;
+    if (workspaceReadOnly || currentUserId == null || !isEditing || isSavingProfile) return;
     if (avatarCapabilities.avatarChangesDisabled) {
       setAvatarDraftError(t("settings.avatarChangesDisabled"));
       return;
     }
     setAvatarDraftError(null);
     setPendingAvatarAction({ kind: "remove" });
-  }, [avatarCapabilities.avatarChangesDisabled, currentUserId, isEditing, isSavingProfile]);
+  }, [
+    avatarCapabilities.avatarChangesDisabled,
+    currentUserId,
+    isEditing,
+    isSavingProfile,
+    workspaceReadOnly,
+  ]);
 
   useEffect(() => {
     if (pendingAvatarAction.kind !== "upload") return;
@@ -534,12 +626,13 @@ export const SettingsPersonalInfoPage: React.FC = () => {
     }
     const profileAvatar = profile?.avatarUrl;
     if (profileAvatar != null && profileAvatar.length > 0) {
-      return resolveAvatarUrl(profileAvatar, getRealmBaseUrl()) ?? null;
+      return resolveAvatarUrl(profileAvatar) ?? null;
     }
-    const userAvatar = user?.avatar_url;
-    if (userAvatar == null || userAvatar.length === 0) return null;
-    return resolveAvatarUrl(userAvatar, getRealmBaseUrl()) ?? null;
-  }, [pendingAvatarAction, profile?.avatarUrl, user?.avatar_url]);
+    return null;
+  }, [pendingAvatarAction, profile?.avatarUrl]);
+
+  const shouldUseWorkspaceAvatar =
+    currentWorkspaceSession != null && pendingAvatarAction.kind === "none";
 
   return (
     <div className="flex max-h-full min-h-0 min-w-0 max-w-narrow-page flex-1 flex-col overflow-hidden">
@@ -558,13 +651,19 @@ export const SettingsPersonalInfoPage: React.FC = () => {
               onChange={handleAvatarUploadChange}
             />
             <div className="flex items-center gap-3">
-              <Avatar size="lg" src={avatarSrc}>
-                {avatarFallback}
-              </Avatar>
+              {shouldUseWorkspaceAvatar ? (
+                <WorkspaceAvatar size="lg" avatarUrn={currentWorkspaceUser?.avatarUrl}>
+                  {avatarFallback}
+                </WorkspaceAvatar>
+              ) : (
+                <Avatar size="lg" src={avatarSrc}>
+                  {avatarFallback}
+                </Avatar>
+              )}
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-text-primary">{fullName}</p>
                 <p className="text-[11px] text-text-secondary">{profileStatus}</p>
-                {isEditing && (
+                {isEditing && !workspaceReadOnly && (
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <button
                       type="button"
@@ -594,7 +693,7 @@ export const SettingsPersonalInfoPage: React.FC = () => {
               <Icon name="profile" size={20} className="mt-0.5 shrink-0 text-icon-base" />
               <div className="min-w-0 flex-1">
                 <SectionLabel className="mb-0.5">{t("settings.fullName")}</SectionLabel>
-                {isEditing ? (
+                {isEditing && !workspaceReadOnly ? (
                   <input
                     type="text"
                     value={editableFullName}
@@ -622,7 +721,7 @@ export const SettingsPersonalInfoPage: React.FC = () => {
               <Icon name="calendar" size={20} className="mt-0.5 shrink-0 text-icon-base" />
               <div className="min-w-0 flex-1">
                 <SectionLabel className="mb-0.5">{t("info.timezone")}</SectionLabel>
-                {isEditing ? (
+                {isEditing && !workspaceReadOnly ? (
                   <>
                     <input
                       type="text"
@@ -774,7 +873,7 @@ export const SettingsPersonalInfoPage: React.FC = () => {
           </ul>
         </div>
         <div className="flex items-center gap-2">
-          {!isEditing ? (
+          {!isEditing && (!workspaceReadOnly || canEditWorkspaceStatus) ? (
             <button
               type="button"
               onClick={handleStartProfileEdit}
@@ -782,7 +881,7 @@ export const SettingsPersonalInfoPage: React.FC = () => {
             >
               {t("settings.editProfile")}
             </button>
-          ) : (
+          ) : isEditing ? (
             <>
               <button
                 type="button"
@@ -801,7 +900,7 @@ export const SettingsPersonalInfoPage: React.FC = () => {
                 {t("common.cancel")}
               </button>
             </>
-          )}
+          ) : null}
           <button
             type="button"
             onClick={handleShareProfile}

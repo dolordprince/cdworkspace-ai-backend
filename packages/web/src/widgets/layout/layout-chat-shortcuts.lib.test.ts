@@ -22,7 +22,7 @@ const chats: SidebarChat[] = [
 ];
 
 describe("layout-chat-shortcuts", () => {
-  it("moves to next chat with wrap-around", () => {
+  it("does not generate a legacy route for next-chat shortcuts", () => {
     expect(
       resolveChatShortcutRoute({
         sidebarChats: chats,
@@ -30,7 +30,7 @@ describe("layout-chat-shortcuts", () => {
         activeStreamSlug: "10-engineering",
         activeDmIdParam: null,
       }),
-    ).toBe("/dm/42-alice");
+    ).toBeUndefined();
 
     expect(
       resolveChatShortcutRoute({
@@ -39,10 +39,10 @@ describe("layout-chat-shortcuts", () => {
         activeStreamSlug: "11-design",
         activeDmIdParam: null,
       }),
-    ).toBe("/stream/10-engineering");
+    ).toBeUndefined();
   });
 
-  it("moves to previous chat with wrap-around", () => {
+  it("does not generate a legacy route for previous-chat shortcuts", () => {
     expect(
       resolveChatShortcutRoute({
         sidebarChats: chats,
@@ -50,7 +50,7 @@ describe("layout-chat-shortcuts", () => {
         activeStreamSlug: "10-engineering",
         activeDmIdParam: null,
       }),
-    ).toBe("/stream/11-design");
+    ).toBeUndefined();
 
     expect(
       resolveChatShortcutRoute({
@@ -59,10 +59,10 @@ describe("layout-chat-shortcuts", () => {
         activeStreamSlug: null,
         activeDmIdParam: "42-alice",
       }),
-    ).toBe("/stream/10-engineering");
+    ).toBeUndefined();
   });
 
-  it("falls back to first or last chat when active chat is missing", () => {
+  it("does not fall back to a legacy route when active chat is missing", () => {
     expect(
       resolveChatShortcutRoute({
         sidebarChats: chats,
@@ -70,7 +70,7 @@ describe("layout-chat-shortcuts", () => {
         activeStreamSlug: null,
         activeDmIdParam: null,
       }),
-    ).toBe("/stream/10-engineering");
+    ).toBeUndefined();
 
     expect(
       resolveChatShortcutRoute({
@@ -79,7 +79,7 @@ describe("layout-chat-shortcuts", () => {
         activeStreamSlug: null,
         activeDmIdParam: null,
       }),
-    ).toBe("/stream/11-design");
+    ).toBeUndefined();
   });
 
   it("returns null for empty chat list", () => {
