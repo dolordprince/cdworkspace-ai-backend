@@ -28,11 +28,10 @@ export const WorkspaceSidebarActivity: React.FC<WorkspaceSidebarActivityProps> =
       }}
       disabledItems={{
         mentions: t("workspaceMessenger.mentionsUnsupported"),
-        drafts: t("workspaceMessenger.draftsUnsupported"),
         reactions: t("workspaceMessenger.reactionsUnsupported"),
         feed: t("workspaceMessenger.feedUnsupported"),
       }}
-      showPrivateNotes
+      showPrivateNotes={false}
       privateNotesDisabledReason={t("workspaceMessenger.privateNotesUnsupported")}
       isCompactDensity={isCompactDensity}
     />

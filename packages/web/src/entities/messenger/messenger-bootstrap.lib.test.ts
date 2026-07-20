@@ -23,6 +23,13 @@ import {
   useMessengerStore,
 } from "./messenger.model";
 import type { MessengerBootstrapClientDeps } from "./messenger-bootstrap.lib";
+
+const loadWorkspaceComposerDrafts = vi.hoisted(() => vi.fn());
+
+vi.mock("~/entities/composer-draft/composer-draft-loader.lib", () => ({
+  loadWorkspaceComposerDrafts,
+}));
+
 type BootstrapUserDto = Awaited<
   ReturnType<NonNullable<MessengerBootstrapClientDeps["getUsers"]>>
 >[number];
@@ -273,6 +280,8 @@ describe("messenger bootstrap store", () => {
     useMessengerStore.getState().clear();
     useWorkspaceMessageStore.getState().clear();
     useUsersStore.getState().clear();
+    loadWorkspaceComposerDrafts.mockReset();
+    loadWorkspaceComposerDrafts.mockResolvedValue(undefined);
   });
 
   it("applies a successful Workspace payload to domain state", async () => {
@@ -314,6 +323,33 @@ describe("messenger bootstrap store", () => {
         projectId: PROJECT_A,
       }),
     );
+  });
+
+  it("loads drafts for bootstrap but lets a realtime snapshot refresh skip them", async () => {
+    const runtimeContext = createRuntimeContext();
+
+    await bootstrapMessengerStore({
+      runtimeContext,
+      getRuntimeContext: () => runtimeContext,
+      client: createClient(),
+    });
+
+    expect(loadWorkspaceComposerDrafts).toHaveBeenCalledWith({
+      runtimeContext,
+      getRuntimeContext: expect.any(Function),
+      signal: undefined,
+      resumePending: true,
+    });
+
+    loadWorkspaceComposerDrafts.mockClear();
+    await bootstrapMessengerStore({
+      runtimeContext,
+      getRuntimeContext: () => runtimeContext,
+      client: createClient(),
+      loadDrafts: false,
+    });
+
+    expect(loadWorkspaceComposerDrafts).not.toHaveBeenCalled();
   });
 
   it("does not reconcile cached folders from the first folderless bootstrap payload", async () => {
@@ -504,7 +540,7 @@ describe("messenger bootstrap store", () => {
     const ownerKey = workspaceRuntimeOwnerKey(runtimeContext);
     const streamRequest = createDeferred<WorkspaceMessengerStreamDto[]>();
     const cachedPayload = adaptMessengerBootstrapPayload({
-      streams: [createStreamDto({ last_message_uuid: MESSAGE_A })],
+      streams: [createStreamDto({ last_message_uuid: MESSAGE_A, color: 0x2563eb })],
       topics: [createTopicDto({ last_message_uuid: MESSAGE_A })],
       folders: [],
     });
@@ -532,6 +568,7 @@ describe("messenger bootstrap store", () => {
     await flushPromises();
 
     expect(useMessengerStore.getState().streamsById[STREAM_A]?.name).toBe("Engineering");
+    expect(useMessengerStore.getState().streamsById[STREAM_A]?.color).toBe(0x2563eb);
     expect(readMessagesByUuids).toHaveBeenCalledWith(ownerKey, [MESSAGE_A]);
     expect(useWorkspaceMessageStore.getState().messagesById[MESSAGE_A]?.payload.content).toBe(
       "Cached preview",

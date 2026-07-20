@@ -41,6 +41,7 @@ export interface WorkspaceMessengerStreamDto {
   announce: boolean;
   private: boolean;
   is_archived: boolean;
+  color?: number | null;
   direct_user_uuid?: WorkspaceMessengerUuid | null;
   last_message_uuid?: WorkspaceMessengerUuid | null;
   created_at: WorkspaceMessengerDateTime;
@@ -83,6 +84,29 @@ export interface WorkspaceMessengerMarkdownPayloadDto {
 // Keep the backend payload envelope extensible. The current Workspace API
 // supports markdown only, but new message kinds must be added here explicitly.
 export type WorkspaceMessengerMessagePayloadDto = WorkspaceMessengerMarkdownPayloadDto;
+
+export interface WorkspaceMessengerDraftDto {
+  uuid: WorkspaceMessengerUuid;
+  project_id: WorkspaceMessengerUuid;
+  user_uuid: WorkspaceMessengerUuid;
+  stream_uuid: WorkspaceMessengerUuid;
+  topic_uuid: WorkspaceMessengerUuid;
+  payload: WorkspaceMessengerMarkdownPayloadDto;
+  revision: number;
+  created_at: WorkspaceMessengerDateTime;
+  updated_at: WorkspaceMessengerDateTime;
+}
+
+export interface WorkspaceMessengerCreateDraftRequestBody {
+  uuid: WorkspaceMessengerUuid;
+  stream_uuid: WorkspaceMessengerUuid;
+  topic_uuid: WorkspaceMessengerUuid;
+  payload: WorkspaceMessengerMarkdownPayloadDto;
+}
+
+export interface WorkspaceMessengerUpdateDraftRequestBody {
+  payload: WorkspaceMessengerMarkdownPayloadDto;
+}
 
 // Aggregate хранит только серверные счетчики по имени emoji.
 // Здесь намеренно нет списка пользователей, reaction_type, emoji_code или numeric user id:
@@ -814,6 +838,22 @@ export function isWorkspaceMessengerMessagePayloadDto(
   return isWorkspaceMessengerMarkdownPayloadDto(value);
 }
 
+export function isWorkspaceMessengerDraftDto(value: unknown): value is WorkspaceMessengerDraftDto {
+  return (
+    isRecord(value) &&
+    isUuid(value.uuid) &&
+    isUuid(value.project_id) &&
+    isUuid(value.user_uuid) &&
+    isUuid(value.stream_uuid) &&
+    isUuid(value.topic_uuid) &&
+    isWorkspaceMessengerMarkdownPayloadDto(value.payload) &&
+    isNonNegativeInteger(value.revision) &&
+    value.revision >= 1 &&
+    isDateTime(value.created_at) &&
+    isDateTime(value.updated_at)
+  );
+}
+
 export function isWorkspaceMessengerReactionAggregate(
   value: unknown,
 ): value is WorkspaceMessengerReactionAggregate {
@@ -849,6 +889,9 @@ export function isWorkspaceMessengerStreamDto(
     typeof value.announce === "boolean" &&
     typeof value.private === "boolean" &&
     typeof value.is_archived === "boolean" &&
+    (value.color === undefined ||
+      value.color === null ||
+      (isNonNegativeInteger(value.color) && value.color <= 0xffffff)) &&
     (value.direct_user_uuid === undefined || isNullableUuid(value.direct_user_uuid)) &&
     (value.last_message_uuid === undefined || isNullableUuid(value.last_message_uuid)) &&
     isDateTime(value.created_at) &&
