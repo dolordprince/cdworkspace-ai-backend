@@ -371,7 +371,6 @@ const RightPanelWorkspaceDirectPrivateInfo: React.FC<{
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden text-text-primary">
       <ScrollArea className="flex-1 px-4 py-3">
         <header className="border-b border-border-subtle pb-3">
-          <h2 className="mb-3 text-sm font-semibold text-text-primary">{t("info.information")}</h2>
           <div className="flex items-center gap-3">
             <div className="relative shrink-0">
               <WorkspaceAvatar
@@ -474,6 +473,13 @@ const RightPanelWorkspaceChannelInfo: React.FC<{
     [currentAccountId, sessions],
   );
   const notificationMode = storeNotificationMode ?? info.notificationMode;
+  const channelAvatarStyle = useMemo(
+    () =>
+      info.color == null
+        ? undefined
+        : { backgroundColor: `#${info.color.toString(16).padStart(6, "0")}` },
+    [info.color],
+  );
   const notificationLevel = useMemo<WorkspaceStreamNotificationLevel | null>(
     () =>
       notificationMode == null ? null : mapWorkspaceStreamNotificationModeToLevel(notificationMode),
@@ -718,10 +724,13 @@ const RightPanelWorkspaceChannelInfo: React.FC<{
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden text-text-primary">
-      <header className="flex-shrink-0 border-b border-border-subtle px-4 pb-3 pt-0">
-        <h2 className="mb-3 text-sm font-semibold text-text-primary">{t("info.channelInfo")}</h2>
+      <header className="flex-shrink-0 border-b border-border-subtle px-4 pb-3 pt-1">
         <div className="flex items-center gap-3">
-          <Avatar size="lg" className="bg-bg-elevated text-text-secondary">
+          <Avatar
+            size="lg"
+            className="bg-bg-elevated text-text-secondary"
+            style={channelAvatarStyle}
+          >
             {info.title.slice(0, 1)}
           </Avatar>
           <div className="min-w-0 flex-1">
@@ -736,9 +745,13 @@ const RightPanelWorkspaceChannelInfo: React.FC<{
 
       <ScrollArea className="flex-1 space-y-4 px-4 py-3">
         <div>
-          <p className="px-2 pb-2 text-[11px] font-medium uppercase tracking-wide text-text-muted">
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">
             {t("channel.notifications")}
-          </p>
+            <span className="font-medium normal-case text-text-muted">
+              {" "}
+              ({t("channel.notificationsForEntireChat")})
+            </span>
+          </h3>
           {info.streamUuid != null && notificationLevel != null ? (
             <>
               <StreamNotificationLevelSwitch
@@ -749,11 +762,6 @@ const RightPanelWorkspaceChannelInfo: React.FC<{
                 }}
                 className="mx-2"
               />
-              <p className="mx-2 mt-2 text-[11px] text-text-muted">
-                {notificationLevel === "default" && t("channel.notificationDefault")}
-                {notificationLevel === "muted" && t("channel.notificationMuted")}
-                {notificationLevel === "subscribed" && t("channel.notificationSubscribed")}
-              </p>
               {notificationError && (
                 <p className="mx-2 mt-1 text-xs text-notice-base">{notificationError}</p>
               )}
@@ -790,7 +798,7 @@ const RightPanelWorkspaceChannelInfo: React.FC<{
                   <li key={topic.id}>
                     <button
                       type="button"
-                      className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-text-primary transition-colors hover:bg-bg-elevated"
+                      className="flex w-full min-w-0 items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-text-primary transition-colors hover:bg-card-bg-active"
                       onClick={() => handleOpenTopic(topic.route)}
                     >
                       <span className={`truncate ${topicDisplay.isSystem ? "italic" : ""}`}>
@@ -810,19 +818,18 @@ const RightPanelWorkspaceChannelInfo: React.FC<{
         </div>
 
         <div>
+          {/* Заголовок как на макете: только текст «Участники», без иконки слева.
+              Кнопка person_add — 24×24, совпадает с hit-area h-6 w-6. */}
           <h3 className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-text-secondary">
-            <span className="flex items-center gap-2">
-              <Icon name="profile" size={16} className="shrink-0 text-current" />
-              {t("channel.members")}
-            </span>
+            {t("channel.members")}
             {info.streamUuid != null && runtimeContext != null && (
               <button
                 type="button"
                 aria-label={t("channel.addMembers")}
                 onClick={handleOpenAddMembers}
-                className="flex h-6 w-6 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                className="flex h-6 w-6 items-center justify-center rounded text-text-secondary transition-colors hover:bg-card-bg-active hover:text-text-primary"
               >
-                <Icon name="person_add" size={16} className="text-current" />
+                <Icon name="person_add" size={24} className="text-current" />
               </button>
             )}
           </h3>
@@ -836,12 +843,16 @@ const RightPanelWorkspaceChannelInfo: React.FC<{
                 <li key={member.bindingUuid} className="group/member">
                   {/* The member row is intentionally not a button: Workspace profile
                       flow is not wired here yet, so this surface creates no false action. */}
-                  <div className="flex items-center gap-2 rounded-lg px-1.5 py-1 transition-colors hover:bg-bg-elevated">
+                  <div className="flex items-center gap-2 rounded-lg px-1.5 py-1 transition-colors hover:bg-card-bg-active">
                     <div className="flex min-w-0 flex-1 items-center gap-3 text-left">
                       <div className="relative shrink-0">
-                        <Avatar size="sm" className="bg-bg-elevated text-text-primary">
+                        <WorkspaceAvatar
+                          size="sm"
+                          avatarUrn={member.avatarUrl}
+                          className="bg-bg-elevated text-text-primary"
+                        >
                           {member.name.slice(0, 1)}
-                        </Avatar>
+                        </WorkspaceAvatar>
                         <span className="absolute -bottom-0.5 -right-0.5">
                           <PresenceIndicator
                             status={member.isOnline ? "active" : "offline"}

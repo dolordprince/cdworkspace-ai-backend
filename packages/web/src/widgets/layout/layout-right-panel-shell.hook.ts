@@ -36,6 +36,9 @@ export interface UseLayoutRightPanelShellParams {
 }
 
 export interface LayoutRightPanelShellResult {
+  /** Shell title for RightDrawer header (panel purpose). */
+  rightDrawerTitle: string;
+  /** Entity title for RightPanel content (channel/user name). */
   rightPanelTitleResolved: string;
   participantsCount: number;
   onlineCount: number;
@@ -146,6 +149,7 @@ export function useLayoutRightPanelShell(
       streamUuid: null,
       notificationMode: null,
       title: t("workspaceMessenger.temporarilyNotConnected"),
+      color: null,
       description: null,
       participantsCount: 0,
       onlineCount: 0,
@@ -154,10 +158,10 @@ export function useLayoutRightPanelShell(
     };
   }, [workspaceMessengerActive, workspaceRightPanelInfo]);
 
-  const rightPanelTitleResolved = resolveLayoutRightPanelTitle(
+  const rightDrawerShellTitle = resolveLayoutRightPanelTitle(
     rightDrawerMode,
-    rightDrawerTitle,
     t,
+    effectiveWorkspaceRightPanelInfo?.kind ?? null,
   );
   const workspaceParticipantsCount =
     effectiveWorkspaceRightPanelInfo?.kind === "channel"
@@ -169,7 +173,9 @@ export function useLayoutRightPanelShell(
       : null;
 
   return {
-    rightPanelTitleResolved: effectiveWorkspaceRightPanelInfo?.title ?? rightPanelTitleResolved,
+    rightDrawerTitle: rightDrawerShellTitle,
+    // Entity name for panel body; chat-context title is the fallback when info is absent.
+    rightPanelTitleResolved: effectiveWorkspaceRightPanelInfo?.title ?? rightDrawerTitle,
     participantsCount: workspaceParticipantsCount ?? 0,
     onlineCount: workspaceOnlineCount ?? 0,
     workspaceRightPanelInfo: effectiveWorkspaceRightPanelInfo,

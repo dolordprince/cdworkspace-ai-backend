@@ -55,7 +55,6 @@ import type { RightPanelUserMenuProps } from "./right-panel-user-menu.types";
 const log = createLogger("right-panel-user-menu");
 
 export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
-  heading,
   onOpenAboutDrawer,
   onOpenBuildsDrawer,
 }) => {
@@ -109,7 +108,6 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
   const [statusEmojiPickerOpen, setStatusEmojiPickerOpen] = useState(false);
   const [statusSubmitting, setStatusSubmitting] = useState(false);
   const [externalAccountDialogOpen, setExternalAccountDialogOpen] = useState(false);
-  const panelHeading = heading?.trim() ?? "";
   const currentLocaleName =
     locales.find((supportedLocale) => supportedLocale.id === currentLocale)?.nativeLabel ??
     currentLocale;
@@ -334,12 +332,6 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden text-text-primary">
-      {panelHeading.length > 0 && (
-        <header className="flex flex-shrink-0 items-center justify-between border-b border-border-subtle px-4 py-4">
-          <h2 className="text-base font-semibold text-text-primary">{panelHeading}</h2>
-        </header>
-      )}
-
       <ScrollArea className="flex-1 px-2 py-2">
         <div className="space-y-3">
           <section>
@@ -348,10 +340,7 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
             </SectionLabel>
             <div className="divide-y divide-border-subtle overflow-hidden rounded-lg border border-border-subtle bg-card-bg">
               {currentWorkspaceSession != null && (
-                <div
-                  data-testid="user-menu-current-server-item"
-                  className="flex items-center justify-between gap-3 px-2.5 py-2.5"
-                >
+                <div data-testid="user-menu-current-server-item" className="px-2.5 py-2.5">
                   <span className="flex min-w-0 items-center gap-3">
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-bg">
                       {currentServerIconUrl != null ? (
@@ -376,15 +365,6 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
                       </span>
                     </span>
                   </span>
-                  <button
-                    type="button"
-                    onClick={handleLogoutFromCurrentOrg}
-                    className="hover:bg-notice-base/20 border-notice-base/40 bg-notice-base/10 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md border text-notice-base transition-colors"
-                    aria-label={t("auth.logoutFromOrg")}
-                    title={t("auth.logoutFromOrg")}
-                  >
-                    <Icon name="logout" size={14} className="text-current" />
-                  </button>
                 </div>
               )}
               {currentWorkspaceSession != null && (
@@ -570,8 +550,8 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
                         onClick={() => selectPalette(palette.id)}
                         className={`flex items-center justify-between gap-2 rounded-md border px-2.5 py-2 text-xs transition-colors ${
                           currentPaletteId === palette.id
-                            ? "border-accent bg-bg"
-                            : "border-border-subtle bg-card-bg hover:bg-bg"
+                            ? "border-accent bg-card-bg-active"
+                            : "border-border-subtle bg-card-bg hover:bg-card-bg-active"
                         }`}
                       >
                         <span className="flex items-center gap-2">
@@ -711,6 +691,20 @@ export const RightPanelUserMenu: React.FC<RightPanelUserMenuProps> = ({
               />
             </div>
           </section>
+
+          {currentWorkspaceSession != null && (
+            <button
+              type="button"
+              onClick={handleLogoutFromCurrentOrg}
+              className="flex w-full items-center justify-center gap-3 rounded-lg border border-[#D92D20] bg-[#D92D20] px-3 py-3 text-sm font-semibold text-text-primary transition-colors hover:bg-[#B42318] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D92D20] focus-visible:ring-offset-2 focus-visible:ring-offset-card-bg"
+              aria-label={t("auth.logoutFromOrg")}
+              data-icon-hover="custom"
+              data-testid="user-menu-logout-button"
+            >
+              <Icon name="logout" size={22} className="text-current" />
+              {t("auth.logoutFromOrg")}
+            </button>
+          )}
         </div>
       </ScrollArea>
 

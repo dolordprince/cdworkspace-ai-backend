@@ -119,7 +119,15 @@ function compareSidebarStreams(
 }
 
 function compareSidebarTopics(a: MessengerSidebarTopicItem, b: MessengerSidebarTopicItem): number {
-  return compareNullableStringsDesc(a.lastMessageCreatedAt, b.lastMessageCreatedAt);
+  // Done topics stay visible but always sink below active ones.
+  if (a.isDone !== b.isDone) {
+    return a.isDone ? 1 : -1;
+  }
+
+  return compareNullableStringsDesc(
+    a.lastMessageCreatedAt ?? a.updatedAt,
+    b.lastMessageCreatedAt ?? b.updatedAt,
+  );
 }
 
 function resolveUserDisplayName(user: User | undefined): string | undefined {

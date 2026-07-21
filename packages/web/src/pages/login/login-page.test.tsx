@@ -58,6 +58,26 @@ const PREPARED_LOGIN = {
   ],
 };
 
+const COMPLETED_SESSION = {
+  accountId: "chat.example.com:project-a:user-1",
+  instanceId: "instance-1",
+  organizationId: "chat.example.com",
+  organizationOrigin: "https://chat.example.com",
+  projectId: "project-a",
+  userUuid: "user-1",
+  login: "user@example.com",
+  accessToken: "project-access-token",
+  refreshToken: "project-refresh-token",
+  profile: {
+    uuid: "user-1",
+    username: "user",
+    firstName: "Test",
+    lastName: "User",
+    email: "user@example.com",
+  },
+  runtimeGeneration: 1,
+};
+
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual("react-router-dom");
   return {
@@ -77,7 +97,7 @@ vi.mock("~/entities/workspace-auth/workspace-auth.lib", async (importOriginal) =
 });
 
 async function moveToCredentialsStep(): Promise<void> {
-  fireEvent.change(screen.getByLabelText(/zulip server address/i), {
+  fireEvent.change(screen.getByLabelText(/^server address$/i), {
     target: { value: "https://chat.example.com" },
   });
   fireEvent.click(screen.getByRole("button", { name: /next/i }));
@@ -103,7 +123,10 @@ describe("LoginPage", () => {
     vi.unstubAllEnvs();
     fetchWorkspaceServerSettingsForOrganization.mockResolvedValue(VALID_SERVER_SETTINGS);
     prepareWorkspaceProjectLogin.mockResolvedValue(PREPARED_LOGIN);
-    completeWorkspaceProjectLogin.mockResolvedValue({});
+    completeWorkspaceProjectLogin.mockResolvedValue({
+      session: COMPLETED_SESSION,
+      serverSettings: VALID_SERVER_SETTINGS,
+    });
   });
 
   afterEach(() => {
@@ -227,7 +250,7 @@ describe("LoginPage", () => {
     fetchWorkspaceServerSettingsForOrganization.mockRejectedValueOnce(new Error("network"));
     renderWithProviders(<LoginPage />, { route: "/login" });
 
-    fireEvent.change(screen.getByLabelText(/zulip server address/i), {
+    fireEvent.change(screen.getByLabelText(/^server address$/i), {
       target: { value: "https://chat.example.com" },
     });
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
@@ -264,7 +287,10 @@ describe("LoginPage", () => {
         preparedLogin: PREPARED_LOGIN,
         projectId: "project-a",
       });
-      expect(navigateSpy).toHaveBeenCalledWith("/", { replace: true });
+      expect(navigateSpy).toHaveBeenCalledWith(
+        "/org/chat.example.com/project/project-a/messenger",
+        { replace: true },
+      );
     });
   });
 

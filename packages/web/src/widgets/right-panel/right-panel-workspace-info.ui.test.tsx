@@ -54,6 +54,7 @@ function createInfo(
     streamUuid: STREAM_UUID,
     notificationMode: "all_messages",
     title: "#general",
+    color: 0x336699,
     description: null,
     participantsCount: 2,
     onlineCount: 1,
@@ -62,6 +63,7 @@ function createInfo(
         bindingUuid: ALICE_BINDING_UUID,
         userUuid: ALICE_USER_UUID,
         name: "Alice Adams",
+        avatarUrl: "urn:url:https://cdn.example/alice.png",
         email: "alice@example.com",
         status: "active",
         role: "member",
@@ -197,7 +199,6 @@ describe("RightPanelWorkspaceInfo", () => {
 
     renderWithProviders(<RightPanelWorkspaceInfo info={createInfo()} />);
 
-    expect(screen.getByText("All messages")).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "All messages" })).toHaveAttribute(
       "aria-checked",
       "true",
@@ -268,6 +269,35 @@ describe("RightPanelWorkspaceInfo", () => {
     expect(screen.getByText("online")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Alice Adams" })).not.toBeInTheDocument();
     expect(screen.queryByText("Temporarily unavailable")).not.toBeInTheDocument();
+    expect(document.querySelector('img[src="https://cdn.example/alice.png"]')).not.toBeNull();
+  });
+
+  it("uses the stream color as the channel avatar background", () => {
+    seedWorkspaceAuth();
+
+    renderWithProviders(<RightPanelWorkspaceInfo info={createInfo()} />);
+
+    const channelTitle = screen.getByText("#general");
+    const channelAvatar = channelTitle.parentElement?.previousElementSibling;
+    expect(channelAvatar).toHaveStyle({ backgroundColor: "#336699" });
+  });
+
+  it("renders members heading without a leading profile icon and a 24px add button", () => {
+    // Зачем: на макете у блока «Участники» только заголовок + person_add 24×24, без profile слева.
+    seedWorkspaceAuth();
+
+    const { container } = renderWithProviders(<RightPanelWorkspaceInfo info={createInfo()} />);
+
+    const membersHeading = screen.getByText("Members").closest("h3");
+    expect(membersHeading).not.toBeNull();
+    expect(membersHeading!.querySelectorAll("svg")).toHaveLength(1);
+
+    const addMembersButton = screen.getByRole("button", { name: "Add members" });
+    const addIcon = addMembersButton.querySelector("svg");
+    expect(addIcon).not.toBeNull();
+    expect(addIcon).toHaveAttribute("width", "24");
+    expect(addIcon).toHaveAttribute("height", "24");
+    expect(container.querySelector('h3 svg[width="16"]')).toBeNull();
   });
 
   it("renders workspace direct private profile without channel-only actions", () => {
@@ -421,6 +451,7 @@ describe("RightPanelWorkspaceInfo", () => {
               bindingUuid: SELF_BINDING_UUID,
               userUuid: CURRENT_USER_UUID,
               name: "Current User",
+              avatarUrl: null,
               email: "current@example.com",
               status: "active",
               role: "owner",
@@ -462,6 +493,7 @@ describe("RightPanelWorkspaceInfo", () => {
               bindingUuid: ALICE_BINDING_UUID,
               userUuid: ALICE_USER_UUID,
               name: "Alice Adams",
+              avatarUrl: null,
               email: "alice@example.com",
               status: "active",
               role: "member",

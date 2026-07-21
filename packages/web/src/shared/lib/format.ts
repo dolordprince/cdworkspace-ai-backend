@@ -60,5 +60,7 @@ export function getPresenceState(
 
 /** Returns Tailwind classes for a sidebar row (active vs hover). */
 export function sidebarRowClass(isActive: boolean): string {
-  return isActive ? "bg-sidebar-hover" : "hover:bg-sidebar-hover";
+  // Active: accent-soft (Figma selected chat).
+  // Hover uses sidebar-item-hover — bg-elevated matches white sidebars and disappears in light emerald.
+  return isActive ? "bg-accent-soft" : "hover:bg-sidebar-hover";
 }
