@@ -176,6 +176,131 @@ describe("WorkspaceMessageList", () => {
     expect(renderedMessage).not.toHaveAttribute(["data", "message", "id"].join("-"));
   });
 
+  it("renders topic dividers and topic labels from presentation settings", () => {
+    const onOpenWorkspaceReference = vi.fn();
+    const { container } = render(
+      <WorkspaceMessageList
+        messages={[
+          createWorkspaceMessage({ uuid: "topic-a-message", topicUuid: "topic-a" }),
+          createWorkspaceMessage({
+            uuid: "topic-a-second-message",
+            topicUuid: "topic-a",
+            createdAt: "2026-07-03T09:00:30.000Z",
+          }),
+          createWorkspaceMessage({
+            uuid: "topic-b-message",
+            topicUuid: "topic-b",
+            createdAt: "2026-07-03T09:01:00.000Z",
+          }),
+          createWorkspaceMessage({
+            uuid: "unknown-topic-message",
+            topicUuid: "topic-missing",
+            createdAt: "2026-07-03T09:02:00.000Z",
+          }),
+        ]}
+        currentUserUuid="current-user-uuid"
+        conversationId="stream:stream-uuid-1"
+        presentation={{ topicDividers: true, topicLabels: true }}
+        resolveTopicLabel={(topicUuid) =>
+          ({ "topic-a": "Planning", "topic-b": "Releases" })[topicUuid] ?? null
+        }
+        actions={{ onOpenWorkspaceReference }}
+      />,
+    );
+
+    const topicDividers = container.querySelectorAll("[data-topic-divider='true']");
+    expect(topicDividers).toHaveLength(2);
+    expect(topicDividers[0]).toHaveTextContent("#Releases");
+    expect(topicDividers[1]?.querySelector("span")).toBeNull();
+    const topicLabels = container.querySelectorAll("[data-topic-label='true']");
+    expect(topicLabels).toHaveLength(2);
+    expect(
+      topicLabels[0]?.parentElement?.querySelector("[data-peer-author-label='true']"),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        "[data-message-uuid='topic-a-second-message'] [data-topic-label='true']",
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("#Planning")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("#Planning"));
+    const releasesDividerLink = topicDividers[0]?.querySelector("[data-topic-link='true']");
+    expect(releasesDividerLink).not.toBeNull();
+    fireEvent.click(releasesDividerLink as Element);
+
+    expect(onOpenWorkspaceReference).toHaveBeenNthCalledWith(1, {
+      kind: "topic",
+      streamUuid: "stream-uuid-1",
+      topicUuid: "topic-a",
+    });
+    expect(onOpenWorkspaceReference).toHaveBeenNthCalledWith(2, {
+      kind: "topic",
+      streamUuid: "stream-uuid-1",
+      topicUuid: "topic-b",
+    });
+  });
+
+  it("can enable topic dividers without showing topic labels in bubbles", () => {
+    const { container } = render(
+      <WorkspaceMessageList
+        messages={[
+          createWorkspaceMessage({ uuid: "topic-a-message", topicUuid: "topic-a" }),
+          createWorkspaceMessage({
+            uuid: "topic-b-message",
+            topicUuid: "topic-b",
+            createdAt: "2026-07-03T09:01:00.000Z",
+          }),
+        ]}
+        currentUserUuid="current-user-uuid"
+        conversationId="stream:stream-uuid-1"
+        presentation={{ topicDividers: true }}
+        resolveTopicLabel={() => "Topic name"}
+      />,
+    );
+
+    expect(container.querySelector("[data-topic-divider='true']")).toHaveTextContent("#Topic name");
+    expect(container.querySelector("[data-topic-label='true']")).not.toBeInTheDocument();
+  });
+
+  it("shows a topic label only in the first bubble of an own message group", () => {
+    const { container } = render(
+      <WorkspaceMessageList
+        messages={[
+          createWorkspaceMessage({
+            uuid: "own-first",
+            authorUuid: "current-user-uuid",
+            userUuid: "current-user-uuid",
+            isOwn: true,
+          }),
+          createWorkspaceMessage({
+            uuid: "own-second",
+            authorUuid: "current-user-uuid",
+            userUuid: "current-user-uuid",
+            isOwn: true,
+            createdAt: "2026-07-03T09:01:00.000Z",
+          }),
+        ]}
+        currentUserUuid="current-user-uuid"
+        conversationId="stream:stream-uuid-1"
+        presentation={{ topicLabels: true }}
+        resolveTopicLabel={() => "Planning"}
+      />,
+    );
+
+    const topicLabel = container.querySelector(
+      "[data-message-uuid='own-first'] [data-topic-label='true']",
+    );
+    expect(container.querySelectorAll("[data-topic-label='true']")).toHaveLength(1);
+    expect(topicLabel).toHaveTextContent("#Planning");
+    // Brand accent reads on own/peer bubbles; accent-soft is a wash and fails contrast
+    expect(topicLabel).toHaveClass("text-accent");
+    expect(
+      container.querySelector("[data-message-uuid='own-second'] [data-topic-label='true']"),
+    ).not.toBeInTheDocument();
+    expect(container.querySelector("[data-peer-author-label='true']")).not.toBeInTheDocument();
+  });
+
   it("renders one Workspace peer avatar with presence for an author group", () => {
     const onOpenAuthorProfile = vi.fn();
     useUsersStore.getState().replaceUsers([
@@ -1046,6 +1171,12 @@ describe("WorkspaceMessageList", () => {
 
     expect(ownArticle).toHaveAttribute("data-message-owner", "own");
     expect(peerArticle).toHaveAttribute("data-message-owner", "peer");
+    expect(ownArticle?.querySelector("[data-workspace-message-bubble='true']")).toHaveClass(
+      "bg-msg-own-bg",
+    );
+    expect(peerArticle?.querySelector("[data-workspace-message-bubble='true']")).toHaveClass(
+      "bg-msg-bg",
+    );
     expect(ownArticle?.querySelector("[data-peer-author-label='true']")).not.toBeInTheDocument();
     expect(peerArticle?.querySelector("[data-peer-author-label='true']")).toHaveTextContent(
       "Bob Reed",
@@ -2710,6 +2841,11 @@ describe("WorkspaceMessageList", () => {
             reactions: { "👍": 1 },
             ownReactionUuidsByEmojiName: { "👍": "reaction-uuid-1" },
           }),
+          createWorkspaceMessage({
+            uuid: "peer-reaction-chip-message",
+            markdown: "Peer reacted text",
+            reactions: { "👏": 2 },
+          }),
         ]}
         currentUserUuid="current-user-uuid"
         conversationId="topic:stream-uuid-1:topic-uuid-1"
@@ -2723,12 +2859,18 @@ describe("WorkspaceMessageList", () => {
       "[data-workspace-message-reaction-footer='true']",
     );
     const messageTime = article?.querySelector("[data-message-time='true']");
+    const peerArticle = container.querySelector("[data-message-uuid='peer-reaction-chip-message']");
+    const peerReactionChip = peerArticle?.querySelector(
+      "[data-workspace-message-reaction-chip='true']",
+    );
 
     expect(reactionChip).toBeInTheDocument();
     expect(reactionChip).toHaveTextContent("👍");
     expect(reactionChip).toHaveTextContent("1");
     expect(reactionFooter).toContainElement(reactionChip as HTMLElement);
     expect(reactionFooter).toContainElement(messageTime as HTMLElement);
+    // Idle chips use card hover tokens so they stay visible on white peer bubbles
+    expect(peerReactionChip).toHaveClass("bg-card-bg", "hover:bg-card-bg-active");
 
     fireEvent.click(reactionChip!);
 
@@ -2765,6 +2907,8 @@ describe("WorkspaceMessageList", () => {
 
     openWorkspaceMessageMenu();
 
+    expect(screen.getByLabelText("Message menu")).toHaveClass("hover:bg-sidebar-hover");
+    expect(await screen.findByRole("menu")).toHaveClass("bg-bg-elevated");
     expect(await screen.findByRole("menuitem", { name: "Reply" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Copy text" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Edit message" })).toBeInTheDocument();
@@ -3058,6 +3202,7 @@ describe("WorkspaceMessageList", () => {
     expect(bubble).toHaveClass("rounded-[18px]");
     expect(bubble).toHaveClass("rounded-bl-[6px]");
     expect(bubble).toHaveClass("bg-msg-call-bg");
+    expect(bubble).not.toHaveClass("bg-msg-bg");
     expect(bubble).not.toHaveClass("bg-bg-elevated");
     expect(jitsiCallButton).toHaveTextContent(/workspace design sync room/i);
     expect(jitsiCallButton).toHaveTextContent(/roadmap/i);

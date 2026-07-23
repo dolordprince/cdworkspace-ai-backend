@@ -209,7 +209,10 @@ function topicItemFromTopic(input: {
     topicUuid: input.topic.uuid,
     title: input.topic.name,
     unreadCount: input.topic.unreadCount,
+    // Default/general is still tracked for other UX; the sidebar strip has no special case.
+    isDefault: input.topic.isDefault,
     isDone: input.topic.isDone,
+    color: input.topic.color ?? null,
     route: workspaceMessengerTopicRoute({
       orgId: input.organizationId,
       projectId: input.projectId,
@@ -348,10 +351,10 @@ function streamItemFromConversation(input: {
   };
 }
 
-function topicsForStream(input: {
+export function selectMessengerSidebarTopicsForStream(input: {
   organizationId: string;
   projectId: string;
-  state: MessengerSidebarStreamsState;
+  state: Pick<MessengerSidebarStreamsState, "topicIds" | "topicsById">;
   streamUuid: MessengerUuid;
   messagesById: Record<MessengerUuid, MessengerMessage>;
   usersById: UsersById;
@@ -418,7 +421,7 @@ export function selectMessengerSidebarStreams(
               unreadCount: item.unreadCount,
               pinnedAt: item.pinnedAt,
               orderIndex: item.orderIndex,
-              topics: topicsForStream({
+              topics: selectMessengerSidebarTopicsForStream({
                 organizationId: options.organizationId,
                 projectId: options.projectId,
                 state,
@@ -458,7 +461,7 @@ export function selectMessengerSidebarStreams(
             messagesById,
             usersById,
             currentUserUuid,
-            topics: topicsForStream({
+            topics: selectMessengerSidebarTopicsForStream({
               organizationId: options.organizationId,
               projectId: options.projectId,
               state,

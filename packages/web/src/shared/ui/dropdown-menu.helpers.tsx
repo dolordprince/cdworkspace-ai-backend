@@ -8,7 +8,9 @@ import type {
   DropdownMenuRenderStyles,
 } from "./dropdown-menu";
 
-/** Base menu container classes shared by all variants. */
+/** Base menu container classes shared by all variants.
+ * Uses bg-elevated so menus match header/sidebar chrome across all palettes.
+ */
 const CONTENT_BASE_CLASS_NAME =
   "z-dropdown rounded-lg border border-border-subtle bg-bg-elevated shadow-lg";
 

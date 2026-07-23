@@ -6,7 +6,8 @@ export const emeraldChat: ThemePalette = {
 
   dark: {
     bg: "#1b1b1d",
-    "bg-elevated": "#26262a",
+    // Surface = legacy sidebar-bg (#2c2c2e); chrome was wrongly glued to card-bg
+    "bg-elevated": "#2c2c2e",
     "card-bg": "#373737",
     "card-bg-active": "#4b4b4b",
     "text-field-bg": "#1a2a25",
@@ -27,10 +28,12 @@ export const emeraldChat: ThemePalette = {
     "sidebar-sender": "#63e09a",
     "sidebar-unread": "#2ecf72",
 
-    "composer-outer": "#1a2a25",
+    // Same Surface as sidebars / headers (not the old green-tinted #1a2a25)
+    "composer-outer": "#2c2c2e",
     "composer-send": "#2ecf72",
     "composer-icon": "#7e9890",
 
+    // Emerald exception: peer bubbles stay green-tinted, not card-bg chrome
     "msg-bg": "#1f2f2a",
     "msg-own-bg": "#1f4d3e",
     "msg-time": "#97b1a9",
@@ -64,8 +67,9 @@ export const emeraldChat: ThemePalette = {
   light: {
     bg: "#e4e4e4",
     "bg-elevated": "#ffffff",
-    "card-bg": "#ffffff",
-    // Reuse accent-soft: gray #f0f0f0 was invisible on white cards in light mode
+    // Light Figma: card underlay darker than white sidebar chrome
+    "card-bg": "#f0f0f0",
+    // Reuse accent-soft: gray hover disappeared on the old white cards
     "card-bg-active": "#d9f1e4",
     "text-field-bg": "#f2f2f2",
 
@@ -80,7 +84,7 @@ export const emeraldChat: ThemePalette = {
     "border-subtle": "#d9d9d9",
 
     "sidebar-bg": "#ffffff",
-    // Same as accent-soft / card-bg-active — no gray leftover from the old #f0f0f0 hover
+    // Accent-soft stays visible on the gray card underlay
     "sidebar-item-hover": "#d9f1e4",
     "sidebar-sender": "#2bbf6c",
     "sidebar-unread": "#2bbf6c",

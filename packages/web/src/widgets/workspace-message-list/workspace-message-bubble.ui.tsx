@@ -18,6 +18,7 @@ import { WorkspaceMessageBubbleJitsiCard } from "./workspace-message-bubble-jits
 import { WorkspaceMessageBubbleMenu } from "./workspace-message-bubble-menu.ui";
 import { WorkspaceMessageBubbleMeta } from "./workspace-message-bubble-meta.ui";
 import { WorkspaceMessageOutgoingDeliveryIndicator } from "./workspace-message-outgoing-delivery-indicator.ui";
+import { WorkspaceMessageTopicLink } from "./workspace-message-topic-link.ui";
 import type { WorkspaceMessageBubbleProps } from "./workspace-message-bubble.types";
 import type { WorkspaceMessageListItem } from "./workspace-message-list.types";
 
@@ -42,9 +43,10 @@ const WORKSPACE_MESSAGE_BUBBLE_RENDER_OPTIONS = {
 const BASE_BUBBLE_CLASS_NAME =
   "max-w-[min(720px,88%)] rounded-[18px] px-3 py-2 text-sm text-text-primary shadow-sm";
 const OWN_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-br-[6px] bg-msg-own-bg`;
-const PEER_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-bl-[6px] bg-bg-elevated`;
+// Peer bubbles use msg-bg (aligned with card-bg chrome in dark palettes)
+const PEER_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-bl-[6px] bg-msg-bg`;
 const COMPACT_OWN_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-r-[10px] bg-msg-own-bg`;
-const COMPACT_PEER_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-l-[10px] bg-bg-elevated`;
+const COMPACT_PEER_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-l-[10px] bg-msg-bg`;
 const JITSI_OWN_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-br-[6px] bg-msg-call-bg`;
 const JITSI_PEER_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-bl-[6px] bg-msg-call-bg`;
 const COMPACT_JITSI_OWN_BUBBLE_CLASS_NAME = `${BASE_BUBBLE_CLASS_NAME} rounded-r-[10px] bg-msg-call-bg`;
@@ -158,7 +160,7 @@ const WorkspaceMessageReactionRow = React.memo(function WorkspaceMessageReaction
             className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-lg border px-2 py-0.5 text-sm transition-colors ${
               reactedByMe
                 ? "border-accent/40 bg-accent/15 hover:border-accent/50 hover:bg-accent/25"
-                : "bg-bg-elevated/90 border-border-subtle hover:bg-bg-elevated"
+                : "border-border-subtle bg-card-bg hover:bg-card-bg-active"
             } ${
               onToggleMessageReaction == null
                 ? "cursor-default"
@@ -191,6 +193,7 @@ export const WorkspaceMessageBubble: React.FC<WorkspaceMessageBubbleProps> = Rea
     isSelected = false,
     selectionMode = false,
     resolveAuthorLabel,
+    topicLabel,
     resolveMention,
     actions,
   }): React.ReactElement {
@@ -225,6 +228,7 @@ export const WorkspaceMessageBubble: React.FC<WorkspaceMessageBubbleProps> = Rea
             resolveAuthorLabel?.(displayMessage.authorUuid),
           )
         : "";
+    const normalizedTopicLabel = isFirstInGroup ? (topicLabel?.trim() ?? "") : "";
     const authorLabel = resolvePeerAuthorLabel(
       displayMessage.authorUuid,
       resolveAuthorLabel?.(displayMessage.authorUuid),
@@ -382,22 +386,35 @@ export const WorkspaceMessageBubble: React.FC<WorkspaceMessageBubbleProps> = Rea
             {isSelected ? "✓" : ""}
           </button>
         ) : null}
-        {peerAuthorLabel.length > 0 ? (
-          actions?.onOpenAuthorProfile != null ? (
-            <button
-              type="button"
-              className="mb-1 rounded-sm text-xs font-medium text-text-muted transition-colors hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft"
-              data-peer-author-label="true"
-              aria-label={t("a11y.openUserProfile", { name: peerAuthorLabel })}
-              onClick={() => actions.onOpenAuthorProfile?.(displayMessage.authorUuid)}
-            >
-              {peerAuthorLabel}
-            </button>
-          ) : (
-            <div className="mb-1 text-xs font-medium text-text-muted" data-peer-author-label="true">
-              {peerAuthorLabel}
-            </div>
-          )
+        {peerAuthorLabel.length > 0 || normalizedTopicLabel.length > 0 ? (
+          <div className="mb-1 flex min-w-0 items-baseline gap-1.5 text-xs font-medium">
+            {peerAuthorLabel.length > 0 && actions?.onOpenAuthorProfile != null ? (
+              <button
+                type="button"
+                className="min-w-0 truncate rounded-sm text-text-muted transition-colors hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft"
+                data-peer-author-label="true"
+                aria-label={t("a11y.openUserProfile", { name: peerAuthorLabel })}
+                onClick={() => actions.onOpenAuthorProfile?.(displayMessage.authorUuid)}
+              >
+                {peerAuthorLabel}
+              </button>
+            ) : peerAuthorLabel.length > 0 ? (
+              <span className="min-w-0 truncate text-text-muted" data-peer-author-label="true">
+                {peerAuthorLabel}
+              </span>
+            ) : null}
+            {normalizedTopicLabel.length > 0 ? (
+              // accent (not accent-soft): soft is a wash bg and disappears on bubbles across palettes
+              <span className="min-w-0 truncate text-accent" data-topic-label="true">
+                <WorkspaceMessageTopicLink
+                  label={normalizedTopicLabel}
+                  streamUuid={displayMessage.streamUuid}
+                  topicUuid={displayMessage.topicUuid}
+                  onOpenWorkspaceReference={actions?.onOpenWorkspaceReference}
+                />
+              </span>
+            ) : null}
+          </div>
         ) : null}
         {isJitsiCall ? (
           <WorkspaceMessageBubbleJitsiCard

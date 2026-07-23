@@ -21,7 +21,8 @@ export const blueCold: ThemePalette = {
 
     "border-subtle": "#33384d",
 
-    "sidebar-bg": "#1a1e31",
+    // Same Surface as bg-elevated (token kept for theme-picker / future use)
+    "sidebar-bg": "#222328",
     // Same as card-bg-active — old value equaled card-bg (#282a32), so chat-list hover vanished
     "sidebar-item-hover": "#2c3747",
     "sidebar-sender": "#7087ff",
@@ -31,7 +32,8 @@ export const blueCold: ThemePalette = {
     "composer-send": "#7087ff",
     "composer-icon": "#707070",
 
-    "msg-bg": "#333333",
+    // Peer bubbles match Card base (not Surface chrome)
+    "msg-bg": "#282a32",
     "msg-own-bg": "#252942",
     "msg-time": "#999999",
     "msg-call-bg": "#1f4637",
@@ -62,53 +64,56 @@ export const blueCold: ThemePalette = {
   },
 
   light: {
-    bg: "#e0ecf0",
+    // Figma blueCold light V2: soft page, white chrome, tinted cards, white peer bubbles
+    bg: "#e4ecf3",
     "bg-elevated": "#ffffff",
-    "card-bg": "#ecf4f8",
-    "card-bg-active": "#c9e7ff",
-    "text-field-bg": "#eef5fd",
+    "card-bg": "#eef5fb",
+    "card-bg-active": "#cde6ff",
+    "text-field-bg": "#eef5fb",
 
     "text-primary": "#1b1b1d",
-    "text-secondary": "#707b88",
-    "text-muted": "#97a3b2",
+    "text-secondary": "#787878",
+    "text-muted": "#989898",
 
     accent: "#7087ff",
-    "accent-soft": "#d9eaff",
+    "accent-soft": "#cde6ff",
     "on-accent": "#1b1b1d",
 
     "border-subtle": "#d8e4ef",
 
     "sidebar-bg": "#ffffff",
-    "sidebar-item-hover": "#ecf4fc",
+    "sidebar-item-hover": "#cde6ff",
     "sidebar-sender": "#7087ff",
     "sidebar-unread": "#7087ff",
 
-    "composer-outer": "#ecf4f8",
+    // White chrome — same as sidebars / headers
+    "composer-outer": "#ffffff",
     "composer-send": "#7087ff",
-    "composer-icon": "#8f9bab",
+    "composer-icon": "#989898",
 
+    // Peer white on soft page; own #AED7FF; call #E2FFE9
     "msg-bg": "#ffffff",
-    "msg-own-bg": "#cce4fc",
-    "msg-time": "#97a3b2",
-    "msg-call-bg": "#cfe5d6",
-    "msg-selected": "#c9e7ff",
+    "msg-own-bg": "#aed7ff",
+    "msg-time": "#989898",
+    "msg-call-bg": "#e2ffe9",
+    "msg-selected": "#cde6ff",
 
-    "icon-base": "#97a3b2",
-    "icon-disable": "#b4bfcb",
-    "icon-hover": "#c9e7ff",
+    "icon-base": "#989898",
+    "icon-disable": "#474747",
+    "icon-hover": "#cde6ff",
     "icon-active": "#1b1b1d",
 
     "notice-base": "#7087ff",
-    "notice-disable": "#9ba6b4",
+    "notice-disable": "#989898",
     "badge-bg": "#7087ff",
     "badge-text": "#ffffff",
 
-    "call-bg": "#cfe5d6",
+    "call-bg": "#e2ffe9",
     "call-green": "#26c038",
-    "call-red": "#f04c4c",
+    "call-red": "#e43535",
 
-    "search-bg": "#eef5fd",
-    "search-hint": "#97a3b2",
+    "search-bg": "#eef5fb",
+    "search-hint": "#989898",
 
     "indicator-yellow": "#ffd633",
     "indicator-pink": "#f458d2",

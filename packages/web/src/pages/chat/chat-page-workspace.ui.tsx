@@ -44,6 +44,7 @@ import {
 import { useMessengerOutboxStore } from "~/entities/messenger/messenger-outbox.model";
 import type { MessengerOutgoingMessage } from "~/entities/messenger/messenger-outbox.types";
 import { buildMessengerRequestOptions } from "~/entities/messenger/messenger-request-options.lib";
+import { selectMessengerSidebarTopicsForStream } from "~/entities/messenger/messenger-sidebar.lib";
 import { useMessengerStreamBindingsForRoute } from "~/entities/messenger/messenger-stream-bindings-loader.lib";
 import { normalizeWorkspacePreviewBlob } from "~/entities/messenger/messenger-workspace-message-preview-blob.lib";
 import { useMessengerStore } from "~/entities/messenger/messenger.model";
@@ -119,6 +120,7 @@ import { ChatPageComposerSection } from "./chat-page-composer-section.ui";
 import { ChatPageDeleteConfirmBar } from "./chat-page-delete-confirm-bar.ui";
 import { ChatPageInlineAlerts } from "./chat-page-inline-alerts.ui";
 import { ChatPageSelectionBar } from "./chat-page-selection-bar.ui";
+import { ChatPageStreamTopicPrompt } from "./chat-page-stream-topic-prompt.ui";
 import { ChatPageWorkspaceMessageListSection } from "./chat-page-workspace-message-list-section.ui";
 import { useWorkspaceTransientRenderKeys } from "./chat-page-workspace-transient-render-keys.hook";
 import {
@@ -609,7 +611,47 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
     Object.keys(state.usersById).length > 0 ? state.usersById : EMPTY_USERS_BY_ID,
   );
   const topicsById = useMessengerStore((state) => state.topicsById);
+  const topicIds = useMessengerStore((state) => state.topicIds);
+  const allWorkspaceMessagesById = useWorkspaceMessageStore((state) => state.messagesById);
   const streamsById = useMessengerStore((state) => state.streamsById);
+  const streamPromptTopics = useMemo(() => {
+    if (
+      selection.status !== "conversation" ||
+      selection.kind !== "stream" ||
+      runtimeContext == null
+    ) {
+      return [];
+    }
+
+    return selectMessengerSidebarTopicsForStream({
+      organizationId: runtimeContext.organizationId,
+      projectId: runtimeContext.projectId,
+      state: { topicIds, topicsById },
+      streamUuid: selection.streamUuid,
+      messagesById: allWorkspaceMessagesById,
+      usersById,
+      currentUserUuid: runtimeContext.userUuid,
+    }).filter((topic) => topic.title.trim().length > 0);
+  }, [allWorkspaceMessagesById, runtimeContext, selection, topicIds, topicsById, usersById]);
+  const messageListPresentation = useMemo(() => {
+    if (selection.status !== "conversation" || selection.kind !== "stream") {
+      return undefined;
+    }
+
+    return { topicDividers: true, topicLabels: true } as const;
+  }, [selection]);
+  const resolveMessageTopicLabel = useMemo<
+    ((messageTopicUuid: MessengerUuid) => string | null) | undefined
+  >(() => {
+    if (messageListPresentation == null) {
+      return undefined;
+    }
+
+    return (messageTopicUuid: MessengerUuid) => {
+      const topicName = topicsById[messageTopicUuid]?.name.trim() ?? "";
+      return topicName.length > 0 ? topicName : null;
+    };
+  }, [messageListPresentation, topicsById]);
   const streamBindingsById = useMessengerStore((state) => state.streamBindingsById);
   const streamBindingIdsByStreamId = useMessengerStore((state) => state.streamBindingIdsByStreamId);
   const conversationsById = useMessengerStore((state) => state.conversationsById);
@@ -2217,6 +2259,20 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
     },
     [navigate, runtimeContext, topicsById],
   );
+  const handleSelectStreamPromptTopic = useCallback(
+    (topicUuid: MessengerUuid) => {
+      if (selection.status !== "conversation" || selection.kind !== "stream") {
+        return;
+      }
+
+      handleOpenWorkspaceReference({
+        kind: "topic",
+        streamUuid: selection.streamUuid,
+        topicUuid,
+      });
+    },
+    [handleOpenWorkspaceReference, selection],
+  );
 
   const headerProps = useMemo<ChatHeaderProps>(() => {
     if (headerView.kind === "directPrivate" && workspaceMeetUrl != null) {
@@ -2350,6 +2406,8 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
         onDismissBoundaryLoadFailed={noop}
         scrollToBottomAfterSendNonce={scrollToBottomAfterSendNonce}
         resolveAuthorLabel={resolveAuthorLabel}
+        resolveTopicLabel={resolveMessageTopicLabel}
+        presentation={messageListPresentation}
         resolveMention={resolveMention}
       />
     );
@@ -2399,46 +2457,53 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
             onCancel={handleCancelDeleteMessage}
           />
         ) : null}
-        <ChatPageComposerSection
-          isDmView={false}
-          activeDmUserIds={null}
-          activeStream={stream?.name ?? conversation?.title}
-          showTopicPrompt={false}
-          streamSlug={undefined}
-          onExpandStreamTopics={noop}
-          uploadProgress={uploadProgress}
-          onSend={handleSend}
-          optimisticClearOnSend
-          onCreateCallLink={undefined}
-          onCancelUpload={handleCancelUpload}
-          activeTopic={
-            selection.status === "conversation" && selection.kind === "topic" ? topicTitle : null
-          }
-          replyQuote={activeWorkspaceReplyQuote}
-          onClearReply={handleClearReply}
-          workspaceReplySession={workspaceReplySession}
-          onSelectWorkspaceReplyTab={handleSelectWorkspaceReplyTab}
-          onRemoveWorkspaceReplyTab={handleRemoveWorkspaceReplyTab}
-          onReorderWorkspaceReplyTab={handleReorderWorkspaceReplyTab}
-          outgoingBodyOverride={workspaceReplyOutgoingBody}
-          allowEmptyActiveValueSend={workspaceReplyHasAnswer ? true : undefined}
-          focusKey={
-            workspaceReplyTabFocusKeySuppressed ? null : (activeWorkspaceReplyTab?.id ?? null)
-          }
-          draftSessionKey={workspaceComposerDraftSessionKey}
-          draftInitialValue={activeWorkspaceReplyTab?.answer ?? workspaceComposerText}
-          onComposerValueChange={handleWorkspaceComposerValueChange}
-          onEditLastMessage={handleEditLastMessage}
-          editSession={effectiveComposerEditSession}
-          onSubmitEdit={handleSubmitEdit}
-          onCancelEdit={handleCancelEdit}
-          composerCapabilities={workspaceComposerCapabilities}
-          resolveMention={resolveMention}
-          onLoadWorkspaceFilePreview={handleLoadWorkspaceFilePreview}
-          aiMessagesContext={[]}
-          aiChatContext={undefined}
-          readOnlyReason={composerReadOnlyReason}
-        />
+        {selection.status === "conversation" && selection.kind === "stream" ? (
+          <ChatPageStreamTopicPrompt
+            topics={streamPromptTopics}
+            onSelectTopic={handleSelectStreamPromptTopic}
+          />
+        ) : (
+          <ChatPageComposerSection
+            isDmView={false}
+            activeDmUserIds={null}
+            activeStream={stream?.name ?? conversation?.title}
+            showTopicPrompt={false}
+            streamSlug={undefined}
+            onExpandStreamTopics={noop}
+            uploadProgress={uploadProgress}
+            onSend={handleSend}
+            optimisticClearOnSend
+            onCreateCallLink={undefined}
+            onCancelUpload={handleCancelUpload}
+            activeTopic={
+              selection.status === "conversation" && selection.kind === "topic" ? topicTitle : null
+            }
+            replyQuote={activeWorkspaceReplyQuote}
+            onClearReply={handleClearReply}
+            workspaceReplySession={workspaceReplySession}
+            onSelectWorkspaceReplyTab={handleSelectWorkspaceReplyTab}
+            onRemoveWorkspaceReplyTab={handleRemoveWorkspaceReplyTab}
+            onReorderWorkspaceReplyTab={handleReorderWorkspaceReplyTab}
+            outgoingBodyOverride={workspaceReplyOutgoingBody}
+            allowEmptyActiveValueSend={workspaceReplyHasAnswer ? true : undefined}
+            focusKey={
+              workspaceReplyTabFocusKeySuppressed ? null : (activeWorkspaceReplyTab?.id ?? null)
+            }
+            draftSessionKey={workspaceComposerDraftSessionKey}
+            draftInitialValue={activeWorkspaceReplyTab?.answer ?? workspaceComposerText}
+            onComposerValueChange={handleWorkspaceComposerValueChange}
+            onEditLastMessage={handleEditLastMessage}
+            editSession={effectiveComposerEditSession}
+            onSubmitEdit={handleSubmitEdit}
+            onCancelEdit={handleCancelEdit}
+            composerCapabilities={workspaceComposerCapabilities}
+            resolveMention={resolveMention}
+            onLoadWorkspaceFilePreview={handleLoadWorkspaceFilePreview}
+            aiMessagesContext={[]}
+            aiChatContext={undefined}
+            readOnlyReason={composerReadOnlyReason}
+          />
+        )}
       </section>
     </div>
   );

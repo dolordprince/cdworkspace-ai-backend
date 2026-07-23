@@ -92,6 +92,7 @@ export const TopBar: React.FC = () => {
         mode={searchModalMode}
       />
       <header
+        // Match left/right sidebars + chat header (Surface / bg-elevated)
         className="mb-1 flex w-full flex-col rounded-b-lg border-b border-border-subtle bg-bg-elevated"
         data-focus-zone="topbar"
         role="banner"

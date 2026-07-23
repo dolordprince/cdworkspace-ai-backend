@@ -12,6 +12,7 @@ import type { WorkspaceMessageFileReference } from "~/shared/lib/workspace-messa
 import { PresenceIndicator } from "~/shared/ui/presence-indicator";
 import { WorkspaceMessageBubble } from "./workspace-message-bubble.ui";
 import { formatWorkspaceMessageDayLabel } from "./workspace-message-day-label.lib";
+import { WorkspaceMessageDivider } from "./workspace-message-divider.ui";
 import {
   createWorkspaceMessageListOutgoingItem,
   createWorkspaceMessageListServerItem,
@@ -19,6 +20,7 @@ import {
 } from "./workspace-message-list-grouping.lib";
 import { collectWorkspaceMessageImageGallery } from "./workspace-message-list-media.lib";
 import { useWorkspaceMessageListScroll } from "./workspace-message-list-scroll.hook";
+import { WorkspaceMessageTopicLink } from "./workspace-message-topic-link.ui";
 import type { WorkspaceMessageAuthorGroup } from "./workspace-message-list-grouping.lib";
 import type {
   WorkspaceMessageListOutgoingItem,
@@ -55,16 +57,22 @@ function resolveWorkspaceAuthorLabel(
   return userLabel.length > 0 ? userLabel : null;
 }
 
+function formatWorkspaceTopicLabel(label: string | null | undefined): string | null {
+  const normalizedLabel = label?.trim() ?? "";
+  if (normalizedLabel.length === 0) {
+    return null;
+  }
+
+  return normalizedLabel.startsWith("#") ? normalizedLabel : `#${normalizedLabel}`;
+}
+
 const WorkspaceUnreadMessagesDivider: React.FC<{ label: string }> = ({ label }) => (
-  <div
-    className="flex items-center gap-2 px-4 py-1 text-xs text-notice-base"
+  <WorkspaceMessageDivider
+    label={label}
+    tone="notice"
     data-unread-divider="true"
     data-unread-divider-anchor="true"
-  >
-    <div className="bg-notice-base/30 h-px flex-1" />
-    <span>{label}</span>
-    <div className="bg-notice-base/30 h-px flex-1" />
-  </div>
+  />
 );
 
 interface WorkspaceMessageListRowProps {
@@ -76,6 +84,7 @@ interface WorkspaceMessageListRowProps {
   isSelected: boolean;
   selectionMode: boolean;
   resolveAuthorLabel?: (authorUuid: MessengerUuid) => string | null | undefined;
+  topicLabel?: string | null;
   resolveMention?: WorkspaceMessageListProps["resolveMention"];
   actions?: WorkspaceMessageListProps["actions"];
 }
@@ -89,6 +98,7 @@ const WorkspaceMessageListRow = React.memo(function WorkspaceMessageListRow({
   isSelected,
   selectionMode,
   resolveAuthorLabel,
+  topicLabel,
   resolveMention,
   actions,
 }: WorkspaceMessageListRowProps): React.ReactElement {
@@ -116,6 +126,7 @@ const WorkspaceMessageListRow = React.memo(function WorkspaceMessageListRow({
         isSelected={isSelected}
         selectionMode={selectionMode}
         resolveAuthorLabel={resolveAuthorLabel}
+        topicLabel={topicLabel}
         resolveMention={resolveMention}
         actions={actions}
       />
@@ -127,6 +138,8 @@ interface WorkspaceMessageAuthorGroupViewProps {
   group: WorkspaceMessageAuthorGroup;
   currentUserUuid: MessengerUuid;
   resolveAuthorLabel?: (authorUuid: MessengerUuid) => string | null | undefined;
+  resolveTopicLabel?: (topicUuid: MessengerUuid) => string | null | undefined;
+  showTopicLabels: boolean;
   resolveMention?: WorkspaceMessageListProps["resolveMention"];
   actions?: WorkspaceMessageListProps["actions"];
   selectedMessageUuids: ReadonlySet<MessengerUuid>;
@@ -138,6 +151,8 @@ const WorkspaceMessageAuthorGroupView = React.memo(function WorkspaceMessageAuth
   group,
   currentUserUuid,
   resolveAuthorLabel,
+  resolveTopicLabel,
+  showTopicLabels,
   resolveMention,
   actions,
   selectedMessageUuids,
@@ -167,6 +182,11 @@ const WorkspaceMessageAuthorGroupView = React.memo(function WorkspaceMessageAuth
       isSelected={message.kind === "server" && selectedMessageUuids.has(message.message.uuid)}
       selectionMode={selectionMode}
       resolveAuthorLabel={resolveAuthorLabel}
+      topicLabel={
+        showTopicLabels && messageIndex === 0
+          ? formatWorkspaceTopicLabel(resolveTopicLabel?.(message.message.topicUuid))
+          : null
+      }
       resolveMention={resolveMention}
       actions={actions}
     />
@@ -237,6 +257,8 @@ export const WorkspaceMessageList: React.FC<WorkspaceMessageListProps> = ({
   onUnreadMessagesVisible,
   onUnreadMessagesAtBottom,
   resolveAuthorLabel,
+  resolveTopicLabel,
+  presentation,
   resolveMention,
   actions,
 }) => {
@@ -457,16 +479,37 @@ export const WorkspaceMessageList: React.FC<WorkspaceMessageListProps> = ({
                 stableFirstUnreadUuid != null &&
                 authorGroup.messages.some((message) => message.key === stableFirstUnreadUuid);
               const authorGroupKey = `${dayGroup.dateKey}:${authorGroup.authorUuid}:${authorGroupIndex}`;
+              const dividerTopicLabel = formatWorkspaceTopicLabel(
+                resolveTopicLabel?.(authorGroup.topicUuid),
+              );
+              const dividerStreamUuid = authorGroup.messages[0]?.message.streamUuid;
 
               return (
                 <React.Fragment key={authorGroupKey}>
                   {showUnreadMarker && !isUnreadDividerDismissed && (
                     <WorkspaceUnreadMessagesDivider label={unreadMessagesLabel} />
                   )}
+                  {presentation?.topicDividers === true && authorGroup.startsTopicRun ? (
+                    <WorkspaceMessageDivider
+                      data-topic-divider="true"
+                      data-topic-uuid={authorGroup.topicUuid}
+                    >
+                      {dividerTopicLabel != null && dividerStreamUuid != null ? (
+                        <WorkspaceMessageTopicLink
+                          label={dividerTopicLabel}
+                          streamUuid={dividerStreamUuid}
+                          topicUuid={authorGroup.topicUuid}
+                          onOpenWorkspaceReference={messageActions?.onOpenWorkspaceReference}
+                        />
+                      ) : null}
+                    </WorkspaceMessageDivider>
+                  ) : null}
                   <WorkspaceMessageAuthorGroupView
                     group={authorGroup}
                     currentUserUuid={currentUserUuid}
                     resolveAuthorLabel={effectiveResolveAuthorLabel}
+                    resolveTopicLabel={resolveTopicLabel}
+                    showTopicLabels={presentation?.topicLabels === true}
                     resolveMention={resolveMention}
                     actions={messageActions}
                     selectedMessageUuids={selectedMessageUuids}
