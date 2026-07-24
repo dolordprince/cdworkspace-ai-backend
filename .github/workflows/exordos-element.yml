@@ -87,11 +87,11 @@ jobs:
       - name: Publish element
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
         env:
-          PUSH_CFG: ${{ secrets.PUSH_CFG }}
+          PUSH_CFG: ${{ secrets.PUSH_EXORDOS_CFG }}
         run: |
           set -euo pipefail
 
-          : "${PUSH_CFG:?Set secret PUSH_CFG to base64-encoded exordos.push.yaml content}"
+          : "${PUSH_CFG:?Set organization secret PUSH_EXORDOS_CFG to base64-encoded exordos.push.yaml content}"
           push_cfg_path="${RUNNER_TEMP}/exordos.push.yaml"
           printf "%s" "${PUSH_CFG}" | base64 -d > "${push_cfg_path}"
 
