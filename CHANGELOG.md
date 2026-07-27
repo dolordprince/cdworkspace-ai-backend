@@ -6,11 +6,28 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-07-27
+
+### Fixed
+
+- Draft deletion tombstones are persisted before the server delete begins, closing the reload window that could restore already-sent text (#245)
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.2.3`: Exordos Core `0.2.3` or newer and Workspace backend `0.1.18` or newer.
+- No API, persisted-data format, or migration changes are introduced by this patch release.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.2.4`.
+
+No client or server data migration is required.
+
 ## [0.2.3] — 2026-07-27
 
 ### Fixed
 
-- Successfully sent messages no longer reappear in the composer after a reload while their server draft deletion is still pending (#243)
+- Persisted deletion tombstones are excluded from composer restoration after reload (#243)
 
 ### Requirements and compatibility
 
