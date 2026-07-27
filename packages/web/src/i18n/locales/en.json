@@ -83,11 +83,15 @@
   },
   "configureExternalChats": {
     "action": "Configure chats",
+    "automaticAction": "Configure sync",
+    "compactAction": "Add chats",
     "title": "Zulip chat sync",
     "description": "Select the chats to transfer to Workspace.",
+    "automaticDescription": "Review synchronization settings and chat statuses. Chats are connected automatically.",
     "search": "Search chats",
     "loading": "Loading chats…",
     "empty": "No available chats found yet.",
+    "preparing": "Looking for available chats…",
     "noSearchResults": "No chats match your search.",
     "loadError": "Could not load chats.",
     "start": "Sync ({{count}})",
@@ -95,6 +99,27 @@
     "retryFailed": "Retry failed",
     "requestFailed": "Could not start",
     "ready": "{{ready}} of {{total}} chats ready",
+    "historyDepth": {
+      "title": "History depth",
+      "description": "This setting applies to all chats in this Zulip account.",
+      "options": {
+        "new": "New only",
+        "7_days": "7 days",
+        "30_days": "30 days",
+        "90_days": "90 days",
+        "all": "All history"
+      },
+      "save": "Save settings",
+      "saving": "Saving…",
+      "saved": "Settings saved.",
+      "saveError": "Could not save history settings. Try again.",
+      "conflict": "These settings changed elsewhere. Load the current version before saving again.",
+      "loadCurrent": "Load current",
+      "unsupportedMode": "This account uses an unsupported automatic selection mode. History settings cannot be changed here.",
+      "selectedWarning": "Saving will restart history loading for {{count}} connected chats shown here. They will temporarily return to syncing.",
+      "selectBlockedDirty": "Save the history setting before starting new chat syncs.",
+      "selectBlockedSaving": "Wait until the history setting is saved before starting new chat syncs."
+    },
     "status": {
       "available": "Not connected",
       "syncing": "Loading history…",
@@ -106,7 +131,7 @@
   "connectExternalAccount": {
     "title": "Connect external account",
     "reconnectTitle": "Reconnect external account",
-    "description": "Connect a Zulip account to this Workspace profile.",
+    "description": "Connect an external account to this Workspace profile.",
     "servicesTitle": "External integrations",
     "servicesHint": "Connect Zulip and import selected chats into Workspace.",
     "provider": "Provider",
@@ -130,12 +155,34 @@
     "manage": "View connection",
     "reenterCredentials": "Enter credentials again",
     "connectHint": "Link another service to this profile",
-    "connectedAccounts": "Connected external accounts",
     "noAccounts": "No external accounts connected yet.",
     "server": "Server",
     "checking": "Checking…",
+    "selectionMode": {
+      "title": "Which chats should be connected?",
+      "description": "Choose chats manually after connecting, or let Workspace connect them automatically.",
+      "options": {
+        "explicit": "Choose manually",
+        "all": "Available now and new chats automatically"
+      },
+      "allHint": "Chats will be connected automatically within the limit set by your administrator."
+    },
+    "historyDepth": {
+      "title": "How much history should be loaded?"
+    },
+    "chatsStep": {
+      "title": "Choose Zulip chats",
+      "description": "The account is connected. Now choose the chats to transfer to Workspace."
+    },
+    "done": {
+      "title": "Account connected",
+      "description": "Automatic chat synchronization is enabled.",
+      "message": "Available chats will be connected automatically within the limit set by your administrator.",
+      "action": "Done"
+    },
     "delete": {
       "action": "Delete connection",
+      "shortAction": "Delete",
       "title": "Delete Zulip connection?",
       "description": "This action permanently removes the external account from Workspace.",
       "warning": "If chat synchronization has already started, imported chats and their history will also be deleted.",
@@ -145,8 +192,8 @@
     },
     "errors": {
       "allFields": "Fill in all fields",
-      "alreadyConnected": "A Zulip account is already connected",
-      "alreadyConnectedHint": "Only one Zulip account can be connected to this Workspace profile.",
+      "alreadyConnected": "A {{provider}} account is already connected",
+      "alreadyConnectedHint": "Only one {{provider}} account can be connected to this Workspace profile.",
       "invalidCredentials": "The Zulip login or token is invalid",
       "invalidCredentialsShort": "Invalid credentials",
       "unavailable": "The Zulip server is unavailable",
@@ -162,7 +209,7 @@
     "status": {
       "sending": "Sending details…",
       "connecting": "Checking connection…",
-      "backfill": "Preparing chat history…",
+      "backfill": "Loading history…",
       "live": "Connection is active",
       "degraded": "Connection needs attention",
       "auth_required": "Zulip credentials need to be updated",
@@ -172,6 +219,134 @@
       "checking": "Checking…",
       "checkingShort": "Checking",
       "unsupportedProvider": "This provider is not supported yet"
+    }
+  },
+  "externalAccounts": {
+    "title": "External accounts",
+    "manageIntegrations": "Integration settings",
+    "manageIntegrationsHint": "Organization-wide external service settings"
+  },
+  "manageExternalProvider": {
+    "title": "External integration settings",
+    "description": "Organization-wide Zulip settings for all users.",
+    "provider": "Provider",
+    "loadingPolicy": "Loading integration settings…",
+    "policyLoadError": "Could not load the integration settings.",
+    "policyRefreshError": "Could not refresh the integration settings.",
+    "refresh": "Refresh",
+    "updatedAt": "Updated: {{value}}",
+    "saving": "Saving…",
+    "saveError": "Could not save the integration settings.",
+    "common": {
+      "notAvailable": "Not available"
+    },
+    "overview": {
+      "title": "Overview",
+      "health": "Technical status",
+      "policy": "Availability",
+      "emergency": "Emergency suspension"
+    },
+    "policy": {
+      "enabled": "Integration allowed",
+      "disabled": "Integration disabled"
+    },
+    "emergency": {
+      "active": "Not active",
+      "suspended": "Integration suspended"
+    },
+    "enabled": {
+      "label": "Allow the Zulip integration",
+      "description": "Allows users in this organization to connect Zulip accounts."
+    },
+    "limits": {
+      "title": "Availability and limits",
+      "description": "Limits apply to new accounts, selected chats, and transferred files.",
+      "maxAccounts": "Accounts per user",
+      "maxSelectedChats": "Chats per external account",
+      "maxFileSize": "Maximum file size",
+      "reductionHint": "Lowering these limits does not remove existing accounts or selected chats."
+    },
+    "units": {
+      "mib": "MiB"
+    },
+    "validation": {
+      "range": "Enter a value from 0 to {{maximum}}."
+    },
+    "ca": {
+      "title": "Custom certificate authority",
+      "notInstalled": "No custom certificate bundle is installed.",
+      "saveBlocked": "Availability and limits cannot be changed while a custom certificate bundle is installed. The backend cannot safely preserve it without receiving the certificates again.",
+      "certificates": "Certificates",
+      "generation": "Generation",
+      "sha256": "SHA-256 fingerprint"
+    },
+    "health": {
+      "title": "Technical status",
+      "healthy": "Operational",
+      "unavailable": "Unavailable",
+      "loading": "Loading technical status…",
+      "loadError": "Could not load the technical status.",
+      "refreshError": "Could not refresh the technical status.",
+      "noData": "No data",
+      "accounts": "Accounts",
+      "chats": "Chats",
+      "bridges": "Bridge instances",
+      "operations": "Operations",
+      "metrics": "Metrics",
+      "status": {
+        "account": {
+          "connecting": "Connecting",
+          "backfill": "Loading history",
+          "live": "Operational",
+          "degraded": "Degraded",
+          "auth_required": "Credentials required",
+          "disconnected": "Disconnected",
+          "suspended": "Suspended"
+        },
+        "chat": {
+          "available": "Available to connect",
+          "live": "Connected"
+        },
+        "bridge": {
+          "enrolling": "Enrolling",
+          "active": "Active",
+          "degraded": "Degraded",
+          "incompatible": "Incompatible",
+          "suspended": "Suspended",
+          "revoked": "Revoked"
+        },
+        "operation": {
+          "queued": "Queued",
+          "running": "Running",
+          "succeeded": "Succeeded",
+          "failed": "Failed",
+          "manual_reconciliation_required": "Manual reconciliation required",
+          "discarded": "Discarded"
+        },
+        "metric": {
+          "queue_depth": "Queued and running operations",
+          "selected_chats": "Selected chats",
+          "synchronized_messages": "Synchronized messages",
+          "synchronized_users": "Synchronized users"
+        }
+      }
+    },
+    "conflict": {
+      "message": "Another administrator changed these settings. Your draft is preserved in the form.",
+      "loadCurrent": "Load current settings",
+      "keepDraft": "Keep my draft"
+    },
+    "danger": {
+      "title": "Emergency controls",
+      "description": "These actions affect the Zulip integration for every user in the organization.",
+      "suspend": "Suspend integration",
+      "confirmTitle": "Suspend the Zulip integration?",
+      "confirmDescription": "Zulip connections will be suspended for every user in the organization.",
+      "confirmSuspend": "Suspend for everyone",
+      "suspending": "Suspending…",
+      "resume": "Resume integration",
+      "resuming": "Resuming…",
+      "actionError": "Could not complete the action. The form settings were not changed."
     }
   },
   "nav": {
@@ -962,6 +1137,7 @@
     "emptySearchHint": "Try a different chat or topic name.",
     "partialLoadError": "Some sidebar data could not be refreshed",
     "markAsRead": "Mark as read",
+    "markAllAsRead": "Mark all as read",
     "pin": "Pin",
     "unpin": "Unpin",
     "pinChat": "Pin",

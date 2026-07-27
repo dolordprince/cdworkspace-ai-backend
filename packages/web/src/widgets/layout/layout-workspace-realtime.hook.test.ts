@@ -1,13 +1,16 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useExternalChatsStore } from "~/entities/external-chat/external-chat.model";
 import { useWorkspaceMessageStore } from "~/entities/message/message.model";
 import { useMessengerBackgroundProjectionStore } from "~/entities/messenger/messenger-background-projection.model";
 import { useMessengerStore } from "~/entities/messenger/messenger.model";
 import { useUsersStore } from "~/entities/user/user.model";
 import type { WorkspaceAuthSession } from "~/entities/workspace-auth/workspace-auth.model";
 import { useWorkspaceAuthStore } from "~/entities/workspace-auth/workspace-auth.model";
+import { workspaceRuntimeOwnerKey } from "~/entities/workspace-runtime/workspace-runtime.lib";
 import { useWorkspaceJitsiSettingsStore } from "~/features/jitsi-call/jitsi-call-settings.model";
 import { useJitsiCallStore } from "~/features/jitsi-call/jitsi-call.model";
+import type * as WorkspaceExternalAccountCacheDb from "~/shared/lib/workspace-external-account-cache-db";
 import { createWorkspaceRealtimeCursorStorage } from "~/shared/lib/workspace-realtime/workspace-realtime-cursor.lib";
 import type { WorkspaceRealtimeCursorStorageLike } from "~/shared/lib/workspace-realtime/workspace-realtime-cursor.lib";
 import { createWorkspaceRealtimeNoopApplier } from "~/shared/lib/workspace-realtime/workspace-realtime-runtime.lib";
@@ -23,6 +26,11 @@ import {
 import type { LayoutWorkspaceRealtimeRuntimeFactory } from "./layout-workspace-realtime.hook";
 
 const ensureFreshWorkspaceSessionMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const bootstrapMessengerStoreMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const deleteExternalAccountOwnerCacheMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+const loadExternalAccountsMock = vi.hoisted(() =>
+  vi.fn(() => Promise.resolve({ status: "applied" as const, ownerKey: "owner-a" })),
+);
 const workspaceRealtimeRuntimeOptions = vi.hoisted(() => [] as unknown[]);
 const createWorkspaceRealtimeTransportCoreMock = vi.hoisted(() =>
   vi.fn((options: unknown): WorkspaceRealtimeTransportCore => {
@@ -47,11 +55,30 @@ const CALLER_UUID = "99999999-9999-4999-8999-999999999999";
 const STREAM_UUID = "75309057-419c-4b12-a7c1-3932429ec4a6";
 const TOPIC_UUID = "4ec0b996-b778-45f8-8ef4-ef863be0c047";
 const MESSAGE_UUID = "a93dca35-3061-4748-bda4-7f6f8c660ea5";
+const BACKFILL_MESSAGE_UUID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const EXTERNAL_ACCOUNT_UUID = "88888888-8888-4888-8888-888888888888";
+const EXTERNAL_CHAT_UUID = "77777777-7777-4777-8777-777777777777";
 const DATE = "2026-06-22T10:10:00Z";
 
 vi.mock("~/entities/workspace-auth/workspace-auth.lib", () => ({
   ensureFreshWorkspaceSession: ensureFreshWorkspaceSessionMock,
 }));
+
+vi.mock("~/entities/messenger/messenger-bootstrap.lib", () => ({
+  bootstrapMessengerStore: bootstrapMessengerStoreMock,
+}));
+
+vi.mock("~/entities/external-account/external-account-loader.lib", () => ({
+  loadExternalAccounts: loadExternalAccountsMock,
+}));
+
+vi.mock("~/shared/lib/workspace-external-account-cache-db", async (importOriginal) => {
+  const actual = await importOriginal<typeof WorkspaceExternalAccountCacheDb>();
+  return {
+    ...actual,
+    deleteWorkspaceExternalAccountOwnerCache: deleteExternalAccountOwnerCacheMock,
+  };
+});
 
 vi.mock("~/entities/user/user-workspace-presence-reporter.lib", () => ({
   startWorkspacePresenceReporter: startWorkspacePresenceReporterMock,
@@ -152,11 +179,15 @@ describe("useLayoutWorkspaceRealtime", () => {
     localStorage.removeItem(WORKSPACE_AUTH_STORAGE_KEY);
     localStorage.removeItem(WORKSPACE_AUTH_CURRENT_ACCOUNT_KEY);
     ensureFreshWorkspaceSessionMock.mockClear();
+    bootstrapMessengerStoreMock.mockClear();
+    deleteExternalAccountOwnerCacheMock.mockClear();
+    loadExternalAccountsMock.mockClear();
     createWorkspaceRealtimeTransportCoreMock.mockClear();
     workspaceRealtimeRuntimeOptions.length = 0;
     startWorkspacePresenceReporterMock.mockClear();
     useWorkspaceAuthStore.setState({ sessions: [], currentAccountId: null, runtimeGeneration: 0 });
     useMessengerStore.getState().clear();
+    useExternalChatsStore.getState().clear();
     useWorkspaceMessageStore.getState().clear();
     useMessengerBackgroundProjectionStore.getState().clear();
     useUsersStore.getState().clear();
@@ -170,6 +201,7 @@ describe("useLayoutWorkspaceRealtime", () => {
     workspaceRealtimeRuntimeOptions.length = 0;
     useWorkspaceAuthStore.setState({ sessions: [], currentAccountId: null, runtimeGeneration: 0 });
     useMessengerStore.getState().clear();
+    useExternalChatsStore.getState().clear();
     useWorkspaceMessageStore.getState().clear();
     useMessengerBackgroundProjectionStore.getState().clear();
     useUsersStore.getState().clear();
@@ -246,6 +278,128 @@ describe("useLayoutWorkspaceRealtime", () => {
     } finally {
       (import.meta.env as Record<string, unknown>).DEV = originalDev;
     }
+  });
+
+  it("reloads the authoritative external account snapshot during cursor recovery", async () => {
+    const session = createSession();
+    setWorkspaceSession(session);
+    const cursorStorage = createWorkspaceRealtimeCursorStorage(new MemoryStorage());
+
+    renderHook(() =>
+      useLayoutWorkspaceRealtime({
+        enabled: true,
+        pathname: "/org/org-a/project/project-a/messenger",
+        cursorStorageFactory: () => cursorStorage,
+        presenceReporterFactory: noopPresenceReporterFactory,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(workspaceRealtimeRuntimeOptions).toHaveLength(1);
+    });
+    const runtimeOptions = workspaceRealtimeRuntimeOptions[0] as WorkspaceRealtimeRuntimeOptions;
+    const resetAuthoritativeSnapshots = runtimeOptions.resetAuthoritativeSnapshots;
+    expect(resetAuthoritativeSnapshots).toBeTypeOf("function");
+    useExternalChatsStore.getState().start("stale-external-chat-scope", EXTERNAL_ACCOUNT_UUID);
+
+    await resetAuthoritativeSnapshots?.(
+      {
+        owner: {
+          accountId: session.accountId,
+          instanceId: session.instanceId,
+          organizationId: session.organizationId,
+          projectId: session.projectId,
+          userUuid: session.userUuid,
+          runtimeGeneration: session.runtimeGeneration,
+        },
+        ownerKey:
+          "account:org-a%3Aproject-a%3Auser-a:instance:instance-a:organization:org-a:project:project-a:user:user-a",
+        surface: "active",
+      },
+      {
+        type: "EventsCursorExpiredError",
+        code: 410,
+        error: "epoch_pruned",
+        message: "expired",
+        reason: "epoch_generation_changed",
+        epoch_generation: "generation-b",
+        current_epoch_version: 10,
+        minimum_epoch_version: 10,
+      },
+    );
+
+    expect(deleteExternalAccountOwnerCacheMock).toHaveBeenCalledOnce();
+    expect(useExternalChatsStore.getState().scopeKey).toBeNull();
+    expect(loadExternalAccountsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtimeContext: expect.objectContaining({ projectId: "project-a" }),
+      }),
+    );
+  });
+
+  it("routes external chat events through the default active applier", async () => {
+    const session = createSession();
+    setWorkspaceSession(session);
+    const cursorStorage = createWorkspaceRealtimeCursorStorage(new MemoryStorage());
+
+    renderHook(() =>
+      useLayoutWorkspaceRealtime({
+        enabled: true,
+        pathname: "/org/org-a/project/project-a/messenger",
+        cursorStorageFactory: () => cursorStorage,
+        presenceReporterFactory: noopPresenceReporterFactory,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(workspaceRealtimeRuntimeOptions).toHaveLength(1);
+    });
+    const ownerKey = workspaceRuntimeOwnerKey(session);
+    const scopeKey = `${ownerKey}:external-account:${EXTERNAL_ACCOUNT_UUID}`;
+    useExternalChatsStore.getState().start(scopeKey, EXTERNAL_ACCOUNT_UUID);
+    const runtimeOptions = workspaceRealtimeRuntimeOptions[0] as WorkspaceRealtimeRuntimeOptions;
+
+    runtimeOptions.applier.applyEvent(
+      {
+        epoch_version: 1,
+        type: "external_chat",
+        kind: "external_chat.created",
+        external_chat: {
+          uuid: EXTERNAL_CHAT_UUID,
+          external_account_uuid: EXTERNAL_ACCOUNT_UUID,
+          source: { kind: "zulip", chat_type: "channel" },
+          display_name: "Support",
+          selected: true,
+          project_id: session.projectId,
+          history_depth: "30_days",
+          projection_stream_uuid: null,
+          status: "syncing",
+          capabilities: {},
+          safe_error: null,
+          transition_pending: false,
+          revision: 1,
+          created_at: DATE,
+          updated_at: DATE,
+        },
+      },
+      {
+        owner: {
+          accountId: session.accountId,
+          instanceId: session.instanceId,
+          organizationId: session.organizationId,
+          projectId: session.projectId,
+          userUuid: session.userUuid,
+          runtimeGeneration: session.runtimeGeneration,
+        },
+        ownerKey,
+        surface: "active",
+        source: "websocket",
+      },
+    );
+
+    expect(useExternalChatsStore.getState().chats).toEqual([
+      expect.objectContaining({ uuid: EXTERNAL_CHAT_UUID, revision: 1 }),
+    ]);
   });
 
   it("starts and cleans up Workspace presence reporter on active route", async () => {
@@ -596,6 +750,44 @@ describe("useLayoutWorkspaceRealtime", () => {
     factoryOptions[0]!.applier.applyEvent(
       {
         epoch_version: 9,
+        type: "message",
+        message: {
+          uuid: BACKFILL_MESSAGE_UUID,
+          project_id: PROJECT_UUID,
+          stream_uuid: STREAM_UUID,
+          topic_uuid: TOPIC_UUID,
+          author_uuid: CALLER_UUID,
+          payload: {
+            kind: "markdown",
+            content: "https://meet.workspace.example.com/old-workspace-room",
+          },
+          user_uuid: USER_UUID,
+          read: false,
+          pinned: false,
+          starred: false,
+          is_own: false,
+          provider: {
+            kind: "zulip",
+            account_uuid: EXTERNAL_ACCOUNT_UUID,
+            external_id: "old-call-invite",
+            capabilities: {},
+            delivery_class: "backfill",
+            notification_eligible: false,
+          },
+          reactions: {},
+          created_at: DATE,
+          updated_at: DATE,
+        },
+      },
+      { ...context, source: "websocket", notificationsEnabled: true },
+    );
+
+    expect(useJitsiCallStore.getState().incomingInvite).toBeNull();
+    expect(useWorkspaceMessageStore.getState().messagesById[BACKFILL_MESSAGE_UUID]).toBeDefined();
+
+    factoryOptions[0]!.applier.applyEvent(
+      {
+        epoch_version: 10,
         type: "message",
         message: {
           uuid: MESSAGE_UUID,

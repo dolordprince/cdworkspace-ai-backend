@@ -27,7 +27,11 @@ import type { ExternalAccountsStoreState } from "./external-account.model";
 export interface ExternalAccountsStoreApi {
   getState: () => Pick<
     ExternalAccountsStoreState,
-    "ownerKey" | "startOwnerSync" | "replaceAccountsForOwner" | "setLoadStatusForOwner"
+    | "ownerKey"
+    | "loadGeneration"
+    | "startOwnerSync"
+    | "replaceAccountsForOwner"
+    | "setLoadStatusForOwner"
   >;
 }
 
@@ -62,6 +66,10 @@ function normalizeExternalAccountsError(error: unknown): string {
   return "External accounts loading failed";
 }
 
+function invalidatedRequestReason(signal?: AbortSignal): "aborted" | "stale-owner" {
+  return signal?.aborted === true ? "aborted" : "stale-owner";
+}
+
 export async function loadExternalAccounts({
   runtimeContext,
   getRuntimeContext = () => runtimeContext,
@@ -77,19 +85,24 @@ export async function loadExternalAccounts({
 
   const ownerKey = workspaceRuntimeOwnerKey(requestContext);
   if (isWorkspaceRuntimeRequestInvalidated(requestContext, getRuntimeContext, signal)) {
-    return { status: "skipped", ownerKey, reason: signal?.aborted ? "aborted" : "stale-owner" };
+    return { status: "skipped", ownerKey, reason: invalidatedRequestReason(signal) };
   }
 
-  store.getState().startOwnerSync(ownerKey);
+  const loadGeneration = store.getState().startOwnerSync(ownerKey);
   const cachedAccounts = await readWorkspaceExternalAccountCache(ownerKey);
   if (isWorkspaceRuntimeRequestInvalidated(requestContext, getRuntimeContext, signal)) {
-    return { status: "skipped", ownerKey, reason: signal?.aborted ? "aborted" : "stale-owner" };
+    return { status: "skipped", ownerKey, reason: invalidatedRequestReason(signal) };
   }
   if (cachedAccounts.length > 0) {
     if (
       !store
         .getState()
-        .replaceAccountsForOwner(ownerKey, cachedAccounts.map(adaptCachedExternalAccount))
+        .replaceAccountsForOwner(
+          ownerKey,
+          cachedAccounts.map(adaptCachedExternalAccount),
+          Date.now(),
+          loadGeneration,
+        )
     ) {
       return { status: "skipped", ownerKey, reason: "stale-owner" };
     }
@@ -100,17 +113,21 @@ export async function loadExternalAccounts({
   try {
     const dtos = await (client.getExternalAccounts ?? defaultGetExternalAccounts)(requestOptions);
     if (isWorkspaceRuntimeRequestInvalidated(requestContext, getRuntimeContext, signal)) {
-      return { status: "skipped", ownerKey, reason: signal?.aborted ? "aborted" : "stale-owner" };
+      return { status: "skipped", ownerKey, reason: invalidatedRequestReason(signal) };
     }
 
-    const accounts = dtos.map(adaptWorkspaceExternalAccountDto);
-    if (!store.getState().replaceAccountsForOwner(ownerKey, accounts)) {
+    const accounts = dtos.map((dto) => adaptWorkspaceExternalAccountDto(dto));
+    if (!store.getState().replaceAccountsForOwner(ownerKey, accounts, Date.now(), loadGeneration)) {
       return { status: "skipped", ownerKey, reason: "stale-owner" };
     }
     if (store.getState().ownerKey === ownerKey) {
       await replaceWorkspaceExternalAccountCache(
         ownerKey,
         accounts.map(toWorkspaceExternalAccountCacheProfile),
+        () =>
+          store.getState().ownerKey === ownerKey &&
+          store.getState().loadGeneration === loadGeneration &&
+          !isWorkspaceRuntimeRequestInvalidated(requestContext, getRuntimeContext, signal),
       );
     }
     return { status: "applied", ownerKey };
