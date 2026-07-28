@@ -6,6 +6,34 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-28
+
+### Added
+
+- External-chat setup can select or clear all available chats visible through the current search, including an indeterminate state for partial selections (#251)
+
+### Changed
+
+- Activity, Feed, and Inbox now use the full available content width (#251)
+- External synchronization actions use shorter, clearer labels (#251)
+
+### Fixed
+
+- Clearing local application data preserves Workspace authentication sessions and the selected account (#251)
+- Sent draft deletion retries stale-ETag conflicts when the server content still matches, preventing already-sent text from returning as a conflicted draft after navigation (#250)
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.2.4`: Exordos Core `0.2.3` or newer and Workspace backend `0.1.18` or newer.
+- Zulip external-account synchronization requires `workspace_zulip_bridge` `0.0.11` or newer.
+- No API, persisted-data format, or server migration changes are introduced by this release.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.3.0`.
+
+No client or server data migration is required.
+
 ## [0.2.4] — 2026-07-27
 
 ### Fixed
