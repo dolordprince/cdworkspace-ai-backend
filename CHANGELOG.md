@@ -6,10 +6,68 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-29
+
+### Added
+
+- External-account synchronization settings can switch a Zulip account between
+  manual chat selection and automatic connection of current and new chats
+  within the administrator-defined limit. Selection mode and history depth are
+  saved together with conflict handling (#255).
+- Workspace-native message references render as quote cards, resolve the source
+  message from the active store, durable cache, or server, and show a safe
+  unavailable state when the source can no longer be loaded (#255).
+- The user profile panel now exposes richer profile details and actions. The
+  current user can edit supported fields and change or remove the avatar from
+  the same save flow (#255).
+- Channel and direct-message chats have dedicated headers. Channel headers show
+  topic and member presence details, while direct-message headers show the
+  partner avatar, presence, typing or custom status, profile action, and call
+  action when available (#255).
+
 ### Changed
 
-- The desktop application identifies itself as Exordos Workspace instead of Electron: window class, taskbar entry, Linux desktop entry and package name now use `exordos-workspace`, and application data moves from `~/.config/Electron` to `~/.config/exordos-workspace`. An existing profile is carried over on first start, so accounts and sessions survive the rename.
+- The desktop application identifies itself as Exordos Workspace instead of
+  Electron: window class, taskbar entry, Linux desktop entry, package name, and
+  application-data directory now use `exordos-workspace`. Existing packaged
+  profiles named `Exordos Workspace` or `electron-app` are carried over on
+  first start, so accounts and sessions survive the rename. The shared
+  unpackaged `Electron` profile is deliberately left untouched.
 - The menu bar is hidden on Windows and Linux, where it only repeated the tray menu and the window controls. Keyboard shortcuts (copy/paste, reload, developer tools, zoom, full screen, quit) are unchanged, and the macOS menu bar is untouched.
+- External-account onboarding and synchronization controls use clearer manual
+  and automatic-mode descriptions, save-state feedback, and selection
+  safeguards while settings are being changed (#255).
+- Profile, sidebar, message metadata, quote, reply, and forward layouts were
+  refined with updated icons and more consistent selected-state highlighting
+  (#255).
+
+### Fixed
+
+- Draft deletion is persisted before the remote request, consumed drafts cannot
+  be restored into the composer, and failed remote deletions remain visible
+  with an explicit retry action instead of reviving sent text (#255).
+- Avatar changes are included in the profile save transaction and remain
+  visible after the profile is refreshed (#255).
+- Reply and edit restoration preserve Workspace-native quote references instead
+  of degrading them to stale rendered text (#255).
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.3.0`: Exordos Core `0.2.3` or newer and
+  Workspace backend `0.1.18` or newer.
+- Zulip external-account synchronization requires `workspace_zulip_bridge`
+  `0.0.11` or newer.
+- No Workspace API, server-side persisted-data format, or server migration
+  changes are introduced by this release.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.4.0`.
+- On the first packaged desktop start, an existing application-specific profile
+  is moved to the `exordos-workspace` profile automatically. No manual account
+  or session migration is required.
+
+No browser, PWA, or server data migration is required.
 
 ## [0.3.0] — 2026-07-28
 
