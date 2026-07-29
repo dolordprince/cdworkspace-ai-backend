@@ -62,12 +62,13 @@ import {
   useWorkspaceAuthStore,
 } from "~/entities/workspace-auth/workspace-auth.model";
 import { workspaceRuntimeOwnerKey } from "~/entities/workspace-runtime/workspace-runtime.lib";
+import { useChatDmCallBridgeStore } from "~/features/chat-dm-call-bridge/chat-dm-call-bridge.model";
 import { useWorkspaceJitsiSettingsStore } from "~/features/jitsi-call/jitsi-call-settings.model";
 import { createJitsiCallKey, useJitsiCallStore } from "~/features/jitsi-call/jitsi-call.model";
 import { buildWorkspaceJitsiMeetingUrl } from "~/features/jitsi-call/workspace-jitsi-call.lib";
 import { useWorkspaceMediaViewer } from "~/features/media-viewer/workspace-media-viewer.hook";
 import { useWorkspaceForwardMessageStore } from "~/features/workspace-forward-message/workspace-forward-message.model";
-import { restoreWorkspaceReplySessionFromMarkdown } from "~/features/workspace-reply/workspace-reply-restore.lib";
+import { createWorkspaceReplyEditRestoreController } from "~/features/workspace-reply/workspace-reply-edit-restore.lib";
 import {
   addWorkspaceReplyTab,
   buildWorkspaceReplyMarkdown,
@@ -98,13 +99,15 @@ import type {
   WorkspaceMessageMentionResolution,
 } from "~/shared/lib/workspace-message-render/workspace-message-document.types";
 import {
+  workspaceMessengerMessageRoute,
   workspaceMessengerStreamRoute,
   workspaceMessengerTopicRoute,
   type WorkspaceMessengerRouteMatch,
 } from "~/shared/lib/workspace-messenger-route.lib";
 import { Spinner } from "~/shared/ui/spinner.ui";
-import type { ChatHeaderProps } from "~/widgets/chat-view/chat-header.types";
-import { ChatHeader } from "~/widgets/chat-view/chat-header.ui";
+import { ChatChannelHeader } from "~/widgets/chat-view/chat-header-channel.ui";
+import { ChatDirectHeader } from "~/widgets/chat-view/chat-header-direct.ui";
+import type { ChatHeaderCommonProps } from "~/widgets/chat-view/chat-header.types";
 import type {
   ComposerEditSession,
   MessageComposerCapabilities,
@@ -156,6 +159,7 @@ const EMPTY_USERS_BY_ID: UsersById = {};
 const READ_BATCH_DELAY_MS = 250;
 const WORKSPACE_COMPOSER_EDIT_SESSION_ID = 1;
 const workspacePreviewLoaderLog = createLogger("chat-page:workspace-preview-loader");
+const workspaceComposerDraftLog = createLogger("chat-page:workspace-composer-draft");
 
 const noop = () => undefined;
 
@@ -277,6 +281,10 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
     content: WorkspaceComposerDraftContent;
   } | null>(null);
   const workspaceReplyTabSequenceRef = useRef(0);
+  const workspaceReplyEditRestoreController = useMemo(
+    () => createWorkspaceReplyEditRestoreController(),
+    [],
+  );
   const workspaceFileResourceCache = useMemo<WorkspaceFileResourceCache>(
     () => createWorkspaceFileResourceCache(),
     [],
@@ -343,7 +351,17 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
   const workspaceMeetUrl = useWorkspaceJitsiSettingsStore((state) =>
     ownerKey == null ? null : (state.meetUrlsByOwnerKey[ownerKey] ?? null),
   );
+  // Подписка нужна: если уже в этом ЛС, pending меняется без смены route/headerView.
+  const pendingDmCallPartnerUserUuid = useChatDmCallBridgeStore(
+    (state) => state.pendingDmCallPartnerUserUuid,
+  );
   const conversationId = selection.status === "conversation" ? selection.conversationId : null;
+  useEffect(
+    () => () => {
+      workspaceReplyEditRestoreController.cancel();
+    },
+    [conversationId, runtimeContext, workspaceReplyEditRestoreController],
+  );
   const workspaceComposerDraftScopeKey =
     ownerKey == null || conversationId == null
       ? null
@@ -407,11 +425,18 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
         // recorded a conflict. Removing it here would lose the ETag needed
         // after an in-flight POST/PUT.
         if (runtimeContext != null) {
-          void deleteWorkspaceComposerDraftFromServer({
+          const deletionQueued = deleteWorkspaceComposerDraftFromServer({
             runtimeContext,
             getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
             draft: currentDraft,
           });
+          if (!deletionQueued) {
+            workspaceComposerDraftLog.warn("Draft deletion was rejected after composer clear", {
+              draftUuid: currentDraft.draftUuid,
+              syncStatus: currentDraft.syncStatus,
+              disposition: currentDraft.disposition,
+            });
+          }
           useWorkspaceComposerDraftStore
             .getState()
             .completeDraftVisit(ownerKey, conversationId, currentDraft.draftUuid);
@@ -572,11 +597,13 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
           usersById,
           fallbackTitle: t("nav.messenger"),
           missingDirectUserTitle: t("workspaceMessenger.directPrivateUserUnavailable"),
+          currentUserUuid: runtimeContext?.userUuid ?? null,
         },
       ),
     [
       conversationsById,
       route,
+      runtimeContext?.userUuid,
       streamBindingIdsByStreamId,
       streamBindingsById,
       streamsById,
@@ -584,25 +611,6 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
       usersById,
     ],
   );
-  const chatHeaderContentProps = useMemo<ChatHeaderProps>(() => {
-    if (headerView.kind === "directPrivate") {
-      return {
-        channelName: headerView.dmPartner.name,
-        hideTopic: true,
-        hideParticipants: true,
-        dmPartner: headerView.dmPartner,
-        rightPanelLabel: t("info.partnerInfo"),
-      };
-    }
-
-    return {
-      channelName: headerView.channelName,
-      topic: headerView.topic,
-      hideTopic: headerView.hideTopic,
-      participantsCount: headerView.participantsCount,
-      onlineCount: headerView.onlineCount,
-    };
-  }, [headerView]);
   const retry = useCallback(() => setRetryNonce((value) => value + 1), []);
   const resolveAuthorLabel = useCallback(
     (authorUuid: string): string | null => {
@@ -1160,14 +1168,25 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
           // The message is already sent. Deleting its draft must not delay
           // clearing the composer and must wait for an in-flight POST/PUT.
           // The queue retains conflict data if the DELETE receives 412.
-          void deleteWorkspaceComposerDraftFromServer({
+          const deletionQueued = deleteWorkspaceComposerDraftFromServer({
             runtimeContext,
             getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
             draft: currentDraft,
           });
+          if (!deletionQueued) {
+            workspaceComposerDraftLog.warn("Draft deletion was rejected after message send", {
+              draftUuid: currentDraft.draftUuid,
+              syncStatus: currentDraft.syncStatus,
+              disposition: currentDraft.disposition,
+            });
+          }
           useWorkspaceComposerDraftStore
             .getState()
             .completeDraftVisit(sendOwnerKey, conversationId, currentDraft.draftUuid);
+        } else if (content.trim().length > 0) {
+          workspaceComposerDraftLog.warn("Message was sent without an active draft", {
+            reason: "draft-delete-not-queued",
+          });
         }
       });
     },
@@ -1291,6 +1310,21 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
     workspaceMeetUrl,
   ]);
 
+  // Звонок из чужого профиля: pending uuid → ждём активный DM → стартуем как из хедера.
+  useEffect(() => {
+    if (headerView.kind !== "directPrivate") return;
+    if (workspaceMeetUrl == null) return;
+    if (
+      pendingDmCallPartnerUserUuid == null ||
+      pendingDmCallPartnerUserUuid !== headerView.directUserUuid
+    ) {
+      return;
+    }
+
+    useChatDmCallBridgeStore.getState().clearPendingDmCallPartner();
+    handleStartWorkspaceHeaderCall();
+  }, [handleStartWorkspaceHeaderCall, headerView, pendingDmCallPartnerUserUuid, workspaceMeetUrl]);
+
   const handleCancelUpload = useCallback(() => {
     const controller = uploadAbortControllerRef.current;
     if (controller == null || controller.signal.aborted) return;
@@ -1370,24 +1404,31 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
         return;
       }
 
-      const restoredReplySession = restoreWorkspaceReplySessionFromMarkdown(
-        message.payload.content,
-        () => createWorkspaceReplyTabIdentity(),
-      );
-      setRestoredWorkspaceReplySession(restoredReplySession?.session ?? null);
-      setComposerEditMessageUuid(message.uuid);
-      setComposerEditSession({
-        messageId: WORKSPACE_COMPOSER_EDIT_SESSION_ID,
-        initialMarkdown: restoredReplySession?.activeAnswer ?? message.payload.content,
-        ...(restoredReplySession == null
-          ? {}
-          : {
-              preserveWorkspaceReplyContext: true,
-              sessionKey: `reply:${restoredReplySession.session.activeTabId ?? ""}`,
-            }),
-      });
+      void workspaceReplyEditRestoreController
+        .restore({
+          markdown: message.payload.content,
+          runtimeContext,
+          createIdentity: () => createWorkspaceReplyTabIdentity(),
+        })
+        .then((result) => {
+          if (result.status === "stale") return;
+
+          const restoredReplySession = result.restored;
+          setRestoredWorkspaceReplySession(restoredReplySession?.session ?? null);
+          setComposerEditMessageUuid(message.uuid);
+          setComposerEditSession({
+            messageId: WORKSPACE_COMPOSER_EDIT_SESSION_ID,
+            initialMarkdown: restoredReplySession?.activeAnswer ?? message.payload.content,
+            ...(restoredReplySession == null
+              ? {}
+              : {
+                  preserveWorkspaceReplyContext: true,
+                  sessionKey: `reply:${restoredReplySession.session.activeTabId ?? ""}`,
+                }),
+          });
+        });
     },
-    [createWorkspaceReplyTabIdentity],
+    [createWorkspaceReplyTabIdentity, runtimeContext, workspaceReplyEditRestoreController],
   );
 
   const handleRequestDeleteMessage = useCallback((messageUuid: string) => {
@@ -1458,11 +1499,9 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
         return null;
       }
 
-      const normalizedSelectedText = selectedText?.trim();
-      const quoteSource =
-        normalizedSelectedText != null && normalizedSelectedText.length > 0
-          ? normalizedSelectedText
-          : message.payload.content.trim();
+      const selectedQuoteText =
+        selectedText != null && selectedText.trim().length > 0 ? selectedText : undefined;
+      const quoteSource = selectedQuoteText ?? message.payload.content.trim();
       if (quoteSource.length === 0) return null;
       const authorLabel = resolveAuthorLabel(message.authorUuid) ?? t("message.replyTo");
       return {
@@ -1470,9 +1509,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
         senderUuid: message.authorUuid,
         senderName: authorLabel,
         quotedContent: message.payload.content.trim(),
-        ...(normalizedSelectedText == null || normalizedSelectedText.length === 0
-          ? {}
-          : { selectedText: normalizedSelectedText }),
+        ...(selectedQuoteText == null ? {} : { selectedText: selectedQuoteText }),
       };
     },
     [effectiveRoute, resolveAuthorLabel, selection.status],
@@ -2023,6 +2060,20 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
     },
     [openWorkspaceUserProfile],
   );
+  const handleOpenMessageInChat = useCallback(
+    (messageUuid: MessengerUuid) => {
+      if (runtimeContext == null) return;
+
+      void navigate(
+        workspaceMessengerMessageRoute({
+          orgId: runtimeContext.organizationId,
+          projectId: runtimeContext.projectId,
+          messageUuid,
+        }),
+      );
+    },
+    [navigate, runtimeContext],
+  );
   const handleOpenWorkspaceReference = useCallback(
     (reference: WorkspaceMessageConversationReference) => {
       if (runtimeContext == null) {
@@ -2074,16 +2125,21 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
     [handleOpenWorkspaceReference, selection],
   );
 
-  const headerProps = useMemo<ChatHeaderProps>(() => {
-    if (headerView.kind === "directPrivate" && workspaceMeetUrl != null) {
-      return {
-        ...chatHeaderContentProps,
-        onCallClick: handleStartWorkspaceHeaderCall,
-      };
-    }
+  const directPartnerUuid = headerView.kind === "directPrivate" ? headerView.directUserUuid : null;
+  // A direct header click opens the same profile as a message author avatar.
+  const handleOpenDirectPartnerProfile = useCallback(() => {
+    if (directPartnerUuid == null) return;
+    openWorkspaceUserProfile?.(directPartnerUuid);
+  }, [directPartnerUuid, openWorkspaceUserProfile]);
 
-    return chatHeaderContentProps;
-  }, [chatHeaderContentProps, handleStartWorkspaceHeaderCall, headerView.kind, workspaceMeetUrl]);
+  const commonHeaderProps = useMemo<ChatHeaderCommonProps>(
+    () => ({
+      onOpenSearch: openSearch ?? undefined,
+      onToggleRightPanel: rightDrawer == null ? undefined : handleToggleRightPanel,
+      rightPanelOpen: rightDrawer?.open ?? false,
+    }),
+    [handleToggleRightPanel, openSearch, rightDrawer],
+  );
 
   const activeWorkspaceReplyTab = workspaceReplySession.tabs.find(
     (tab) => tab.id === workspaceReplySession.activeTabId,
@@ -2122,6 +2178,30 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
   const workspaceReplyHasAnswer = workspaceReplySession.tabs.some(
     (tab) => tab.answer.trim().length > 0,
   );
+
+  // Direct chats omit member counters and open the partner profile from the header.
+  const header =
+    headerView.kind === "directPrivate" ? (
+      <ChatDirectHeader
+        {...commonHeaderProps}
+        partner={headerView.dmPartner}
+        rightPanelLabel={t("info.partnerInfo")}
+        onOpenPartnerProfile={
+          openWorkspaceUserProfile == null ? undefined : handleOpenDirectPartnerProfile
+        }
+        onCallClick={workspaceMeetUrl == null ? undefined : handleStartWorkspaceHeaderCall}
+      />
+    ) : (
+      <ChatChannelHeader
+        {...commonHeaderProps}
+        channelName={headerView.channelName}
+        topic={headerView.topic}
+        hideTopic={headerView.hideTopic}
+        participantsCount={headerView.participantsCount}
+        onlineCount={headerView.onlineCount}
+        onOpenRightPanel={rightDrawer == null ? undefined : handleOpenRightPanel}
+      />
+    );
 
   let body: React.ReactNode;
   if (selection.status === "invalid-route") {
@@ -2184,6 +2264,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
           workspaceReplySession.tabs.length === 0 ? undefined : handleAddReplyMessage
         }
         onForwardMessage={handleForwardMessage}
+        onOpenMessageInChat={handleOpenMessageInChat}
         onOpenMentionUser={openWorkspaceUserProfile == null ? undefined : handleOpenMentionUser}
         onOpenWorkspaceReference={handleOpenWorkspaceReference}
         onToggleMessageSelection={handleToggleMessageSelection}
@@ -2225,13 +2306,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
       className="flex max-h-full min-h-0 min-w-chat-page flex-1 flex-col overflow-hidden"
       data-testid="chat-page"
     >
-      <ChatHeader
-        {...headerProps}
-        onOpenSearch={openSearch ?? undefined}
-        onToggleRightPanel={rightDrawer == null ? undefined : handleToggleRightPanel}
-        onOpenRightPanel={rightDrawer == null ? undefined : handleOpenRightPanel}
-        rightPanelOpen={rightDrawer?.open ?? false}
-      />
+      {header}
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {body}
         <ChatPageSelectionBar

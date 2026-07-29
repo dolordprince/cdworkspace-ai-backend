@@ -35,7 +35,10 @@ import {
 } from "~/shared/lib/workspace-messenger-cache-db";
 import { createUser } from "~/test/factories";
 import { renderWithProviders } from "~/test/render";
-import type { ChatHeaderProps } from "~/widgets/chat-view/chat-header.types";
+import type {
+  ChatChannelHeaderProps,
+  ChatDirectHeaderProps,
+} from "~/widgets/chat-view/chat-header.types";
 import { ChatPage } from "./chat-page.ui";
 import type { ChatPageComposerSectionProps } from "./chat-page-composer-section.types";
 import type { ChatPageWorkspaceMessageListSectionProps } from "./chat-page-workspace-message-list-section.types";
@@ -53,7 +56,8 @@ const STREAM_BINDING_B_UUID = "77777777-7777-4777-8777-777777777777";
 
 const captured = vi.hoisted(() => ({
   composerProps: null as ChatPageComposerSectionProps | null,
-  headerProps: null as ChatHeaderProps | null,
+  channelHeaderProps: null as ChatChannelHeaderProps | null,
+  directHeaderProps: null as ChatDirectHeaderProps | null,
   messageListProps: null as ChatPageWorkspaceMessageListSectionProps | null,
   loadWorkspaceMessages: vi.fn().mockResolvedValue({ status: "applied" }),
   loadWorkspaceMessageWindowAroundMessage: vi.fn().mockResolvedValue({
@@ -76,6 +80,7 @@ const captured = vi.hoisted(() => ({
     nextPageMarker: null,
     pageLimit: 50,
   }),
+  loadMessengerQuoteMessage: vi.fn().mockResolvedValue({ status: "unavailable" }),
   loadWorkspaceFile: vi.fn(),
   downloadWorkspaceFile: vi.fn(),
   uploadWorkspaceFile: vi.fn(),
@@ -83,7 +88,7 @@ const captured = vi.hoisted(() => ({
   markMessengerMessagesReadUpTo: vi.fn(),
   streamBindingsForRoute: vi.fn(),
   syncWorkspaceComposerDraft: vi.fn().mockResolvedValue(undefined),
-  deleteWorkspaceComposerDraftFromServer: vi.fn().mockResolvedValue(true),
+  deleteWorkspaceComposerDraftFromServer: vi.fn().mockReturnValue(true),
 }));
 
 function createTestWorkspaceFileResourceCache() {
@@ -167,6 +172,10 @@ vi.mock("~/entities/messenger/messenger-messages-loader.lib", async (importOrigi
   };
 });
 
+vi.mock("~/entities/messenger/messenger-quote-loader.lib", () => ({
+  loadMessengerQuoteMessage: captured.loadMessengerQuoteMessage,
+}));
+
 vi.mock("~/shared/api/messenger-files.api", () => ({
   downloadWorkspaceFile: captured.downloadWorkspaceFile,
   uploadWorkspaceFile: captured.uploadWorkspaceFile,
@@ -196,13 +205,24 @@ vi.mock("~/entities/composer-draft/composer-draft-sync.lib", () => ({
   deleteWorkspaceComposerDraftFromServer: captured.deleteWorkspaceComposerDraftFromServer,
 }));
 
-vi.mock("~/widgets/chat-view/chat-header.ui", () => ({
-  ChatHeader: (props: ChatHeaderProps) => {
-    captured.headerProps = props;
+vi.mock("~/widgets/chat-view/chat-header-channel.ui", () => ({
+  ChatChannelHeader: (props: ChatChannelHeaderProps) => {
+    captured.channelHeaderProps = props;
     return (
       <header data-testid="chat-header">
         <span>{props.channelName}</span>
         {props.topic != null ? <span>{props.topic}</span> : null}
+      </header>
+    );
+  },
+}));
+
+vi.mock("~/widgets/chat-view/chat-header-direct.ui", () => ({
+  ChatDirectHeader: (props: ChatDirectHeaderProps) => {
+    captured.directHeaderProps = props;
+    return (
+      <header data-testid="chat-header">
+        <span>{props.partner.name}</span>
       </header>
     );
   },
@@ -492,7 +512,8 @@ describe("ChatPage Workspace route", () => {
     await useWorkspaceComposerDraftStore.getState().clear();
     useJitsiCallStore.getState().clear();
     captured.composerProps = null;
-    captured.headerProps = null;
+    captured.channelHeaderProps = null;
+    captured.directHeaderProps = null;
     captured.messageListProps = null;
     captured.loadWorkspaceMessages.mockClear();
     captured.loadWorkspaceMessageWindowAroundMessage.mockReset();
@@ -515,6 +536,8 @@ describe("ChatPage Workspace route", () => {
       nextPageMarker: null,
       pageLimit: 50,
     });
+    captured.loadMessengerQuoteMessage.mockReset();
+    captured.loadMessengerQuoteMessage.mockResolvedValue({ status: "unavailable" });
     captured.downloadWorkspaceFile.mockReset();
     captured.downloadWorkspaceFile.mockResolvedValue({
       blob: new Blob(["workspace file"], { type: "text/plain" }),
@@ -555,7 +578,7 @@ describe("ChatPage Workspace route", () => {
         useWorkspaceComposerDraftStore
           .getState()
           .removeDraftByUuid(params.draft.ownerKey, params.draft.draftUuid);
-        return Promise.resolve(true);
+        return true;
       },
     );
     useWorkspaceForwardMessageStore.getState().reset();
@@ -602,7 +625,7 @@ describe("ChatPage Workspace route", () => {
     expect(screen.getByText("workspace message")).toBeInTheDocument();
     expect(screen.getByText("#general")).toBeInTheDocument();
     expect(screen.getByText("Roadmap")).toBeInTheDocument();
-    expect(captured.headerProps).toMatchObject({
+    expect(captured.channelHeaderProps).toMatchObject({
       channelName: "#general",
       topic: "Roadmap",
       hideTopic: false,
@@ -610,10 +633,11 @@ describe("ChatPage Workspace route", () => {
       onlineCount: 1,
       rightPanelOpen: false,
     });
-    expect(captured.headerProps?.onOpenSearch).toEqual(expect.any(Function));
-    expect(captured.headerProps?.onToggleRightPanel).toEqual(expect.any(Function));
-    expect(captured.headerProps?.onOpenRightPanel).toEqual(expect.any(Function));
-    expect(captured.headerProps?.onCallClick).toBeUndefined();
+    expect(captured.directHeaderProps).toBeNull();
+    expect(captured.channelHeaderProps?.onOpenSearch).toEqual(expect.any(Function));
+    expect(captured.channelHeaderProps?.onToggleRightPanel).toEqual(expect.any(Function));
+    expect(captured.channelHeaderProps?.onOpenRightPanel).toEqual(expect.any(Function));
+    expect(captured.channelHeaderProps?.onCallClick).toBeUndefined();
     expect(captured.messageListProps?.conversationId).toBe(`topic:${STREAM_UUID}:${TOPIC_UUID}`);
     expect(captured.messageListProps?.presentation).toBeUndefined();
     expect(captured.messageListProps?.resolveTopicLabel).toBeUndefined();
@@ -636,7 +660,7 @@ describe("ChatPage Workspace route", () => {
     expect(captured.messageListProps?.onEditMessage).toEqual(expect.any(Function));
     expect(captured.messageListProps?.onRequestDeleteMessage).toEqual(expect.any(Function));
     expect(captured.messageListProps?.onCopyMessageText).toEqual(expect.any(Function));
-    expect(captured.messageListProps?.onOpenMessageInChat).toBeUndefined();
+    expect(captured.messageListProps?.onOpenMessageInChat).toEqual(expect.any(Function));
     expect(captured.messageListProps?.onOpenMentionUser).toEqual(expect.any(Function));
     expect(captured.messageListProps?.onToggleMessageReaction).toEqual(expect.any(Function));
     expect(captured.messageListProps?.onDownloadFile).toEqual(expect.any(Function));
@@ -1007,7 +1031,9 @@ describe("ChatPage Workspace route", () => {
         `/org/org-a/project/project-a/stream/${DIRECT_STREAM_UUID}`,
       );
 
-      await waitFor(() => expect(captured.headerProps?.onCallClick).toEqual(expect.any(Function)));
+      await waitFor(() =>
+        expect(captured.directHeaderProps?.onCallClick).toEqual(expect.any(Function)),
+      );
       expect(captured.composerProps?.onCreateCallLink).toBeUndefined();
       expect(screen.queryByTestId("old-composer-section")).not.toBeInTheDocument();
       expect(screen.getByTestId("stream-topic-prompt")).toBeInTheDocument();
@@ -1018,7 +1044,7 @@ describe("ChatPage Workspace route", () => {
       expect(captured.messageListProps?.resolveTopicLabel?.(DIRECT_TOPIC_UUID)).toBe("private");
 
       act(() => {
-        captured.headerProps?.onCallClick?.();
+        captured.directHeaderProps?.onCallClick?.();
       });
 
       const expectedUrl = `https://meet.workspace.example.com/workspace-org-a-project-a-${DIRECT_STREAM_UUID}-${DIRECT_TOPIC_UUID}-123`;
@@ -1071,9 +1097,11 @@ describe("ChatPage Workspace route", () => {
       `/org/org-a/project/project-a/stream/${DIRECT_STREAM_UUID}`,
     );
 
-    await waitFor(() => expect(captured.headerProps?.onCallClick).toEqual(expect.any(Function)));
+    await waitFor(() =>
+      expect(captured.directHeaderProps?.onCallClick).toEqual(expect.any(Function)),
+    );
     act(() => {
-      captured.headerProps?.onCallClick?.();
+      captured.directHeaderProps?.onCallClick?.();
     });
 
     expect(captured.sendMessengerMessage).not.toHaveBeenCalled();
@@ -1104,10 +1132,12 @@ describe("ChatPage Workspace route", () => {
         `/org/org-a/project/project-a/stream/${DIRECT_STREAM_UUID}`,
       );
 
-      await waitFor(() => expect(captured.headerProps?.onCallClick).toEqual(expect.any(Function)));
+      await waitFor(() =>
+        expect(captured.directHeaderProps?.onCallClick).toEqual(expect.any(Function)),
+      );
       act(() => {
-        captured.headerProps?.onCallClick?.();
-        captured.headerProps?.onCallClick?.();
+        captured.directHeaderProps?.onCallClick?.();
+        captured.directHeaderProps?.onCallClick?.();
       });
 
       expect(captured.sendMessengerMessage).toHaveBeenCalledTimes(1);
@@ -1158,9 +1188,11 @@ describe("ChatPage Workspace route", () => {
       `/org/org-a/project/project-a/stream/${DIRECT_STREAM_UUID}`,
     );
 
-    await waitFor(() => expect(captured.headerProps?.onCallClick).toEqual(expect.any(Function)));
+    await waitFor(() =>
+      expect(captured.directHeaderProps?.onCallClick).toEqual(expect.any(Function)),
+    );
     act(() => {
-      captured.headerProps?.onCallClick?.();
+      captured.directHeaderProps?.onCallClick?.();
     });
     await waitFor(() => {
       expect(captured.sendMessengerMessage).toHaveBeenCalledTimes(1);
@@ -1385,6 +1417,23 @@ describe("ChatPage Workspace route", () => {
     });
   });
 
+  it("opens a quoted Workspace message through the UUID-native message route", async () => {
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+
+    act(() => {
+      captured.messageListProps?.onOpenMessageInChat?.(SECOND_MESSAGE_UUID);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("workspace-location")).toHaveTextContent(
+        `/org/org-a/project/project-a/message/${SECOND_MESSAGE_UUID}`,
+      );
+    });
+  });
+
   it("opens Workspace reply mode as a tab without injecting quote into the draft", async () => {
     renderWorkspaceChatPageWithShellContexts(
       `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
@@ -1395,7 +1444,7 @@ describe("ChatPage Workspace route", () => {
     act(() => {
       captured.messageListProps?.onReplyMessage?.(
         "55555555-5555-4555-8555-555555555555",
-        "selected excerpt",
+        "  selected excerpt  ",
       );
     });
 
@@ -1407,7 +1456,7 @@ describe("ChatPage Workspace route", () => {
             messageUuid: MESSAGE_UUID,
             senderUuid: USER_B_UUID,
             senderName: "Bob Reed",
-            selectedText: "selected excerpt",
+            selectedText: "  selected excerpt  ",
             answer: "",
           },
         ],
@@ -1417,7 +1466,7 @@ describe("ChatPage Workspace route", () => {
     expect(captured.messageListProps?.onAddReplyMessage).toEqual(expect.any(Function));
     expect(captured.composerProps?.replyQuote).toMatchObject({
       id: captured.composerProps?.workspaceReplySession?.activeTabId,
-      content: "selected excerpt",
+      content: "  selected excerpt  ",
       sender_full_name: "Bob Reed",
       sender_uuid: USER_B_UUID,
       quoteFormat: "workspace",
@@ -1433,6 +1482,22 @@ describe("ChatPage Workspace route", () => {
 
     await waitFor(() => {
       expect(captured.composerProps?.replyQuote).toBeNull();
+    });
+  });
+
+  it("treats a whitespace-only reply selection as a whole-message quote", async () => {
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+
+    act(() => {
+      captured.messageListProps?.onReplyMessage?.(MESSAGE_UUID, "   ");
+    });
+
+    await waitFor(() => {
+      expect(captured.composerProps?.workspaceReplySession?.tabs[0]?.selectedText).toBeUndefined();
+      expect(captured.composerProps?.replyQuote?.content).toBe("workspace message");
     });
   });
 
@@ -1701,6 +1766,38 @@ describe("ChatPage Workspace route", () => {
       }),
     );
     await waitFor(() => expect(captured.composerProps?.draftInitialValue).toBe(""));
+  });
+
+  it("queues deletion for a second draft created without leaving the conversation", async () => {
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+    const onSend = captured.composerProps?.onSend;
+    if (onSend == null) throw new Error("Workspace composer send handler is missing");
+
+    act(() => {
+      captured.composerProps?.onComposerValueChange("first draft");
+    });
+    await act(async () => {
+      await expect(onSend("first draft", "")).resolves.toBeUndefined();
+    });
+
+    act(() => {
+      captured.composerProps?.onComposerValueChange("second draft");
+    });
+    await act(async () => {
+      await expect(onSend("second draft", "")).resolves.toBeUndefined();
+    });
+
+    expect(captured.deleteWorkspaceComposerDraftFromServer).toHaveBeenCalledTimes(2);
+    expect(captured.deleteWorkspaceComposerDraftFromServer).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        draft: expect.objectContaining({
+          content: expect.objectContaining({ text: "second draft" }),
+        }),
+      }),
+    );
   });
 
   it("keeps a newer draft when an earlier send succeeds", async () => {
@@ -2050,6 +2147,175 @@ describe("ChatPage Workspace route", () => {
         preserveWorkspaceReplyContext: true,
         initialMarkdown: "answer B",
         sessionKey: `reply:${secondTabId}`,
+      });
+    });
+  });
+
+  it("restores a new quote reference from the source message and author stores", async () => {
+    const restoredMarkdown = [
+      `[Stale author](urn:quote:${SECOND_MESSAGE_UUID}?text=%20%20selected%20fragment%20%20)`,
+      "",
+      "reference answer",
+    ].join("\n");
+    useWorkspaceMessageStore
+      .getState()
+      .replaceOrMergeConversationMessagesPage(`topic:${STREAM_UUID}:${TOPIC_UUID}`, [
+        {
+          ...createMessage(),
+          isOwn: true,
+          payload: { kind: "markdown", content: restoredMarkdown },
+        },
+        createSecondMessage(),
+      ]);
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+
+    act(() => {
+      captured.messageListProps?.onEditMessage?.(MESSAGE_UUID);
+    });
+
+    await waitFor(() => {
+      expect(captured.composerProps?.editSession).toMatchObject({
+        preserveWorkspaceReplyContext: true,
+        initialMarkdown: "reference answer",
+      });
+      expect(captured.composerProps?.workspaceReplySession?.tabs).toEqual([
+        expect.objectContaining({
+          messageUuid: SECOND_MESSAGE_UUID,
+          senderUuid: USER_B_UUID,
+          senderName: "Bob Reed",
+          quotedContent: "second workspace message",
+          selectedText: "  selected fragment  ",
+          answer: "reference answer",
+        }),
+      ]);
+    });
+  });
+
+  it.each(["cache", "server"] as const)(
+    "restores a new quote reference when its source is resolved from %s",
+    async (source) => {
+      const restoredMarkdown = [
+        `[Bob](urn:quote:${SECOND_MESSAGE_UUID})`,
+        "",
+        "loaded reference answer",
+      ].join("\n");
+      useWorkspaceMessageStore
+        .getState()
+        .replaceOrMergeConversationMessagesPage(`topic:${STREAM_UUID}:${TOPIC_UUID}`, [
+          {
+            ...createMessage(),
+            isOwn: true,
+            payload: { kind: "markdown", content: restoredMarkdown },
+          },
+        ]);
+      captured.loadMessengerQuoteMessage.mockResolvedValue({
+        status: "resolved",
+        message: createSecondMessage(),
+        source,
+      });
+
+      renderWorkspaceChatPageWithShellContexts(
+        `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+      );
+      await screen.findByTestId("workspace-message-list-section");
+
+      act(() => {
+        captured.messageListProps?.onEditMessage?.(MESSAGE_UUID);
+      });
+
+      await waitFor(() => {
+        expect(captured.loadMessengerQuoteMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            messageUuid: SECOND_MESSAGE_UUID,
+            signal: expect.any(AbortSignal),
+          }),
+        );
+        expect(captured.composerProps?.workspaceReplySession?.tabs).toEqual([
+          expect.objectContaining({
+            messageUuid: SECOND_MESSAGE_UUID,
+            senderUuid: USER_B_UUID,
+            senderName: "Bob Reed",
+            quotedContent: "second workspace message",
+            answer: "loaded reference answer",
+          }),
+        ]);
+      });
+    },
+  );
+
+  it("treats whitespace-only selected quote text as absent during edit restore", async () => {
+    const restoredMarkdown = [
+      `[Bob](urn:quote:${SECOND_MESSAGE_UUID}?text=%20%20%20)`,
+      "",
+      "reference answer",
+    ].join("\n");
+    useWorkspaceMessageStore
+      .getState()
+      .replaceOrMergeConversationMessagesPage(`topic:${STREAM_UUID}:${TOPIC_UUID}`, [
+        {
+          ...createMessage(),
+          isOwn: true,
+          payload: { kind: "markdown", content: restoredMarkdown },
+        },
+        createSecondMessage(),
+      ]);
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+
+    act(() => {
+      captured.messageListProps?.onEditMessage?.(MESSAGE_UUID);
+    });
+
+    await waitFor(() => {
+      const restoredTab = captured.composerProps?.workspaceReplySession?.tabs[0];
+      expect(restoredTab).toMatchObject({
+        messageUuid: SECOND_MESSAGE_UUID,
+        quotedContent: "second workspace message",
+      });
+      expect(restoredTab?.selectedText).toBeUndefined();
+    });
+  });
+
+  it("keeps raw quote reference Markdown when the source message is missing", async () => {
+    const restoredMarkdown = [
+      `[Bob](urn:quote:${SECOND_MESSAGE_UUID})`,
+      "",
+      "reference answer",
+    ].join("\n");
+    useWorkspaceMessageStore
+      .getState()
+      .replaceOrMergeConversationMessagesPage(`topic:${STREAM_UUID}:${TOPIC_UUID}`, [
+        {
+          ...createMessage(),
+          isOwn: true,
+          payload: { kind: "markdown", content: restoredMarkdown },
+        },
+      ]);
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+
+    act(() => {
+      captured.messageListProps?.onEditMessage?.(MESSAGE_UUID);
+    });
+
+    await waitFor(() => {
+      expect(captured.composerProps?.editSession).toMatchObject({
+        initialMarkdown: restoredMarkdown,
+      });
+      expect(captured.composerProps?.editSession?.preserveWorkspaceReplyContext).toBeUndefined();
+      expect(captured.composerProps?.workspaceReplySession).toEqual({
+        tabs: [],
+        activeTabId: null,
       });
     });
   });
@@ -3583,7 +3849,7 @@ describe("ChatPage Workspace route", () => {
     expect(captured.downloadWorkspaceFile).not.toHaveBeenCalled();
   });
 
-  it("maps Workspace direct private header view to old dmPartner header props", async () => {
+  it("maps Workspace direct private header view to the direct header props", async () => {
     const session = createSession();
     const ownerKey = workspaceRuntimeOwnerKey(session);
     useMessengerStore.getState().clear();
@@ -3597,15 +3863,59 @@ describe("ChatPage Workspace route", () => {
     );
 
     expect(await screen.findByTestId("chat-header")).toBeInTheDocument();
-    expect(captured.headerProps?.dmPartner).toEqual({
+    expect(captured.channelHeaderProps).toBeNull();
+    expect(captured.directHeaderProps?.partner).toEqual({
       name: "Bob Reed",
       avatarUrl: null,
       presenceState: "idle",
     });
-    expect(captured.headerProps?.rightPanelLabel).toBe(t("info.partnerInfo"));
-    expect(captured.headerProps?.hideParticipants).toBe(true);
-    expect(captured.headerProps).not.toHaveProperty("participantsCount");
-    expect(captured.headerProps).not.toHaveProperty("onlineCount");
+    expect(captured.directHeaderProps?.rightPanelLabel).toBe(t("info.partnerInfo"));
+    expect(captured.directHeaderProps?.onOpenPartnerProfile).toEqual(expect.any(Function));
+    expect(captured.directHeaderProps).not.toHaveProperty("participantsCount");
+    expect(captured.directHeaderProps).not.toHaveProperty("onlineCount");
+  });
+
+  it("shows the direct header for a private two-member stream without a direct user", async () => {
+    const session = createSession();
+    const ownerKey = workspaceRuntimeOwnerKey(session);
+    const payload = createBootstrapPayload();
+    const stream = payload.streams[0]!;
+    useMessengerStore.getState().clear();
+    useMessengerStore.getState().startBootstrap(ownerKey);
+    useMessengerStore.getState().replaceBootstrapState(ownerKey, {
+      ...payload,
+      streams: [{ ...stream, audience: "private", isPrivate: true, directUserUuid: null }],
+    });
+
+    renderWorkspaceChatPageWithShellContexts(`/org/org-a/project/project-a/stream/${STREAM_UUID}`);
+
+    expect(await screen.findByTestId("chat-header")).toBeInTheDocument();
+    expect(captured.channelHeaderProps).toBeNull();
+    expect(captured.directHeaderProps?.partner).toMatchObject({ name: "Bob Reed" });
+  });
+
+  it("opens the partner profile in the right panel from the direct header", async () => {
+    const session = createSession();
+    const ownerKey = workspaceRuntimeOwnerKey(session);
+    const openWorkspaceUserProfile = vi.fn();
+    useMessengerStore.getState().clear();
+    useMessengerStore.getState().startBootstrap(ownerKey);
+    useMessengerStore
+      .getState()
+      .replaceBootstrapState(ownerKey, createDirectPrivateBootstrapPayload());
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${DIRECT_STREAM_UUID}`,
+      { openWorkspaceUserProfile },
+    );
+
+    expect(await screen.findByTestId("chat-header")).toBeInTheDocument();
+
+    act(() => {
+      captured.directHeaderProps?.onOpenPartnerProfile?.();
+    });
+
+    expect(openWorkspaceUserProfile).toHaveBeenCalledWith(USER_B_UUID);
   });
 
   it("keeps old chat routes in a controlled Workspace state", () => {

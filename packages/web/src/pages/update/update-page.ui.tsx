@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import { t } from "~/i18n/i18n";
 import { useAppUpdate, type UpdateState } from "~/shared/lib/updater";
-import { ChatHeader } from "~/widgets/chat-view/chat-header.ui";
+import { ChatChannelHeader } from "~/widgets/chat-view/chat-header-channel.ui";
 import type { UpdatePageProps } from "./update-page.types";
 
 const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? "dev";
@@ -44,8 +44,8 @@ export const UpdatePage: React.FC<UpdatePageProps> = ({ forceMode = false }) => 
   }, [update, forceMode]);
 
   return (
-    <div className="flex max-h-full min-h-0 min-w-0 max-w-narrow-page flex-1 flex-col overflow-hidden">
-      <ChatHeader
+    <div className="flex max-h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+      <ChatChannelHeader
         channelName={forceMode ? t("update.forceRequiredTitle") : t("settings.selectBuild")}
         hideTopic
         hideParticipants
