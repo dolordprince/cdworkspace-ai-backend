@@ -6,6 +6,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-07-29
+
+### Fixed
+
+- Stable `.deb` packages are now published from the internal self-hosted runner, so apt repository updates no longer depend on exposing the repository host to GitHub-hosted runners.
+- Apt publication clears persistent runner workspaces before downloading artifacts and uploads only the `.deb` files selected for the current release, preventing stale packages or unrelated files from entering the release batch.
+- Temporary SSH material used by apt publication is stored in the runner's per-job temporary directory and removed after the job.
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.4.1`: Exordos Core `0.2.3` or newer and Workspace backend `0.1.18` or newer.
+- No application, Workspace API, persisted-data, server, or client runtime changes are introduced by this release.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.4.2`.
+
+No client or server data migration is required.
+
 ## [0.4.1] — 2026-07-29
 
 ### Added
