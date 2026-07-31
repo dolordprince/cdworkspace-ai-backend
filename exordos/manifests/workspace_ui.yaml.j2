@@ -28,6 +28,31 @@ resources:
         disk_size: 10
         nodes_number: 1
 
+  $core.config.configs:
+    workspace_ui_lb_default_site:
+      project_id: "12345678-c625-4fee-81d5-f691897b8142"
+      path: /etc/nginx/sites-enabled/default
+      mode: "0644"
+      owner: root
+      target:
+        kind: node_set
+        node_set: $core.network.lb.$workspace_ui_lb:uuid
+      on_change:
+        kind: shell
+        command: nginx -t && systemctl reload nginx
+      body:
+        kind: text
+        content: |
+          server {
+              listen 80 default_server reuseport;
+              listen [::]:80 default_server;
+              server_name _;
+
+              location / {
+                  return 444;
+              }
+          }
+
   $core.network.lb.$workspace_ui_lb.backend_pools:
     workspace_backend_http:
       name: workspace-backend-http

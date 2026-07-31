@@ -51,3 +51,8 @@ the Workspace origin to port 80 of the load balancer reported by the deployed
 load balancer. The element sets the backend `Host` and `X-Forwarded-Proto`
 headers from `forwarded_host` and `forwarded_proto` so realm URLs remain
 canonical behind an external TLS or port-forwarding layer.
+
+The element also replaces the load-balancer image's packaged default site with
+an HTTP-only port 80 catch-all. This keeps TLS certificates and the public 443
+listener at the site-specific edge instead of exposing an unconfigured fallback
+TLS listener on the internal Workspace load balancer.
