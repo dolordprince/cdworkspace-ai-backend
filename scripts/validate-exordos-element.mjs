@@ -43,6 +43,31 @@ for (const [name, route] of Object.entries(routes)) {
   }
 }
 
+const defaultSite = manifest.resources["$core.config.configs"]?.workspace_ui_lb_default_site;
+if (!defaultSite) {
+  throw new Error("Workspace UI manifest must own the load-balancer default site");
+}
+if (
+  defaultSite.target?.kind !== "node_set" ||
+  defaultSite.target.node_set !== "$core.network.lb.$workspace_ui_lb:uuid"
+) {
+  throw new Error("Workspace UI load-balancer default site must target its node set");
+}
+if (defaultSite.path !== "/etc/nginx/sites-enabled/default") {
+  throw new Error("Workspace UI load-balancer default site must replace the packaged site");
+}
+if (defaultSite.on_change?.command !== "nginx -t && systemctl reload nginx") {
+  throw new Error("Workspace UI load-balancer default site must validate and reload nginx");
+}
+
+const defaultSiteContent = defaultSite.body?.content ?? "";
+if (!defaultSiteContent.includes("listen 80 default_server")) {
+  throw new Error("Workspace UI load-balancer default site must keep the port 80 catch-all");
+}
+if (/listen\s+(?:\[::\]:)?443\b|ssl_certificate/.test(defaultSiteContent)) {
+  throw new Error("Workspace UI load-balancer default site must not configure TLS");
+}
+
 const webAction = routes.workspace_web?.condition?.actions?.[0];
 if (webAction?.kind !== "local_dir_download" || !webAction.url.endsWith("/workspace-ui.tar.zst")) {
   throw new Error("workspace_web must download the workspace-ui.tar.zst artifact");
