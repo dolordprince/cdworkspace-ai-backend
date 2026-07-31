@@ -6,6 +6,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-07-31
+
+### Fixed
+
+- The Workspace UI load balancer now owns an HTTP-only default site, so its
+  internal nodes no longer expose a fallback TLS listener without a configured
+  certificate. The site-specific public TLS layer continues to forward traffic
+  to the Workspace load balancer on port 80.
+- Message-route links render their anchor before surrounding context finishes
+  loading, preventing valid deep links from appearing unavailable temporarily.
+- URL-shaped URNs in message content are rendered as links.
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.4.2`: Exordos Core `0.2.3` or newer and
+  Workspace backend `0.1.18` or newer.
+- No Workspace API, persisted-data format, or client data migration changes are
+  introduced by this release.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.4.3`.
+
+No client or server data migration is required.
+
 ## [0.4.2] — 2026-07-29
 
 ### Fixed
