@@ -6,6 +6,43 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-08-04
+
+### Added
+
+- Activity now includes a dedicated Mentions view for messages that mention the
+  current user.
+- Favorites opens a personal self-chat for saved messages and notes.
+
+### Changed
+
+- Workspace message bodies have richer formatting and file-reference rendering,
+  with message metadata kept next to the trailing content.
+- The messenger sidebar highlights personal mentions, exposes notification modes,
+  and groups muted conversations after active conversations.
+- Settings, external-account controls, message actions, icons, date dividers, and
+  chat-list states have been refined for more consistent navigation.
+
+### Fixed
+
+- Authoritative topic data and completed network bootstraps can no longer be
+  replaced by stale cached names or delayed IndexedDB hydration.
+- Reply composition preserves the existing draft and scroll position, then clears
+  the reply context after the message is sent.
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.4.3`: Exordos Core `0.2.3` or newer and
+  Workspace backend `0.1.18` or newer.
+- No Workspace API, persisted-data format, or client data migration changes are
+  introduced by this release.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.4.4`.
+
+No client or server data migration is required.
+
 ## [0.4.3] — 2026-07-31
 
 ### Fixed
