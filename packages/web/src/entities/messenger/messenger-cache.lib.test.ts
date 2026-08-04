@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  applyMessengerMessagePointerCache,
   createMessengerCatalogCacheReconcileFence,
   deleteMessengerStreamBindingCatalogCache,
   deleteWorkspaceMessengerCacheDatabase,
@@ -11,6 +12,7 @@ import {
 } from "~/shared/lib/workspace-messenger-cache-db";
 import {
   deleteMessengerStreamCache,
+  patchMessengerCachedMessage,
   readMessengerMessageBodyCache,
   readMessengerCatalogPayloadCache,
   writeMessengerMessageBodyCache,
@@ -22,6 +24,7 @@ import type {
   MessengerMessage,
   MessengerStream,
   MessengerStreamBinding,
+  MessengerTopic,
 } from "./messenger.types";
 
 const OWNER_KEY = "account:a:org:o:project:p:user:u";
@@ -56,7 +59,7 @@ function createStreamBinding(): MessengerStreamBinding {
   };
 }
 
-function createStream(): MessengerStream {
+function createStream(overrides: Partial<MessengerStream> = {}): MessengerStream {
   return {
     uuid: STREAM_UUID,
     projectId: "project-a",
@@ -79,6 +82,52 @@ function createStream(): MessengerStream {
     lastMessageUuid: null,
     createdAt: DATE,
     updatedAt: DATE,
+    ...overrides,
+  };
+}
+
+function createTopic(overrides: Partial<MessengerTopic> = {}): MessengerTopic {
+  return {
+    uuid: TOPIC_UUID,
+    projectId: "project-a",
+    streamUuid: STREAM_UUID,
+    userUuid: USER_UUID,
+    name: "general chat",
+    unreadCount: 0,
+    isDefault: false,
+    isDone: false,
+    notificationMode: "default",
+    lastMessageUuid: null,
+    createdAt: DATE,
+    updatedAt: DATE,
+    ...overrides,
+  };
+}
+
+function createMessage(overrides: Partial<MessengerMessage> = {}): MessengerMessage {
+  return {
+    uuid: MESSAGE_UUID,
+    conversationId: `topic:${STREAM_UUID}:${TOPIC_UUID}`,
+    projectId: "project-a",
+    streamUuid: STREAM_UUID,
+    topicUuid: TOPIC_UUID,
+    authorUuid: USER_UUID,
+    userUuid: USER_UUID,
+    payload: { kind: "markdown", content: "Message" },
+    read: false,
+    pinned: false,
+    starred: false,
+    isOwn: false,
+    mentioned: false,
+    sourceName: "native",
+    source: { kind: "native" },
+    provider: null,
+    delivery: null,
+    reactions: {},
+    ownReactionUuidsByEmojiName: {},
+    createdAt: DATE,
+    updatedAt: DATE,
+    ...overrides,
   };
 }
 
@@ -119,6 +168,124 @@ describe("messenger cache", () => {
 
     const snapshot = await readMessengerCatalogCache(OWNER_KEY);
     expect(snapshot.streamBindings.map((binding) => binding.uuid)).toEqual([BINDING_UUID]);
+  });
+
+  it("reconciles a fresh topic name after a newer message pointer touched stale cache", async () => {
+    const staleTopic = createTopic();
+    await writeMessengerCatalogPayloadCache(OWNER_KEY, {
+      ...createEmptyPayload(),
+      streams: [createStream()],
+      topics: [staleTopic],
+    });
+    await applyMessengerMessagePointerCache(OWNER_KEY, {
+      uuid: MESSAGE_UUID,
+      conversationId: `topic:${STREAM_UUID}:${TOPIC_UUID}`,
+      streamUuid: STREAM_UUID,
+      topicUuid: TOPIC_UUID,
+      payload: { kind: "markdown", content: "New activity" },
+      createdAt: "2026-07-01T08:20:00.000Z",
+    });
+
+    const touchedByMessage = await readMessengerCatalogPayloadCache(OWNER_KEY);
+    expect(touchedByMessage?.payload.topics[0]).toMatchObject({
+      name: "general chat",
+      lastMessageUuid: MESSAGE_UUID,
+      updatedAt: DATE,
+    });
+
+    const reconcileFence = createMessengerCatalogCacheReconcileFence();
+    await writeMessengerCatalogPayloadCache(
+      OWNER_KEY,
+      {
+        ...createEmptyPayload(),
+        streams: [createStream()],
+        topics: [createTopic({ name: "UI", updatedAt: "2026-07-01T08:10:00.000Z" })],
+      },
+      { mode: "reconcile", reconcileFence },
+    );
+
+    const cached = await readMessengerCatalogPayloadCache(OWNER_KEY);
+    expect(cached?.payload.topics[0]?.name).toBe("UI");
+  });
+
+  it("keeps a topic update written after catalog reconciliation started", async () => {
+    await writeMessengerCatalogPayloadCache(OWNER_KEY, {
+      ...createEmptyPayload(),
+      streams: [createStream()],
+      topics: [createTopic()],
+    });
+    const reconcileFence = createMessengerCatalogCacheReconcileFence();
+
+    await writeMessengerCatalogPayloadCache(OWNER_KEY, {
+      ...createEmptyPayload(),
+      streams: [createStream()],
+      topics: [createTopic({ name: "UI", updatedAt: "2026-07-01T08:10:00.000Z" })],
+    });
+    await writeMessengerCatalogPayloadCache(
+      OWNER_KEY,
+      {
+        ...createEmptyPayload(),
+        streams: [createStream()],
+        topics: [createTopic()],
+      },
+      { mode: "reconcile", reconcileFence },
+    );
+
+    const cached = await readMessengerCatalogPayloadCache(OWNER_KEY);
+    expect(cached?.payload.topics[0]?.name).toBe("UI");
+  });
+
+  it("applies a newer authoritative topic after a post-fence cache write", async () => {
+    await writeMessengerCatalogPayloadCache(OWNER_KEY, {
+      ...createEmptyPayload(),
+      streams: [createStream()],
+      topics: [createTopic()],
+    });
+    const reconcileFence = createMessengerCatalogCacheReconcileFence();
+
+    await writeMessengerCatalogPayloadCache(OWNER_KEY, {
+      ...createEmptyPayload(),
+      streams: [createStream()],
+      topics: [createTopic({ name: "UI", updatedAt: "2026-07-01T08:10:00.000Z" })],
+    });
+    await writeMessengerCatalogPayloadCache(
+      OWNER_KEY,
+      {
+        ...createEmptyPayload(),
+        streams: [createStream()],
+        topics: [createTopic({ name: "Platform", updatedAt: "2026-07-01T08:20:00.000Z" })],
+      },
+      { mode: "reconcile", reconcileFence },
+    );
+
+    const cached = await readMessengerCatalogPayloadCache(OWNER_KEY);
+    expect(cached?.payload.topics[0]?.name).toBe("Platform");
+  });
+
+  it("does not move catalog pointers when an older cached message is edited", async () => {
+    const latestMessageUuid = "66666666-6666-4666-8666-666666666666";
+    await writeMessengerCatalogPayloadCache(OWNER_KEY, {
+      ...createEmptyPayload(),
+      streams: [createStream({ lastMessageUuid: latestMessageUuid })],
+      topics: [
+        createTopic({
+          lastMessageUuid: latestMessageUuid,
+          updatedAt: "2026-07-01T08:10:00.000Z",
+        }),
+      ],
+    });
+
+    await patchMessengerCachedMessage(
+      OWNER_KEY,
+      createMessage({
+        createdAt: "2026-07-01T08:15:00.000Z",
+        updatedAt: "2026-07-01T08:30:00.000Z",
+      }),
+    );
+
+    const cached = await readMessengerCatalogPayloadCache(OWNER_KEY);
+    expect(cached?.payload.streams[0]?.lastMessageUuid).toBe(latestMessageUuid);
+    expect(cached?.payload.topics[0]?.lastMessageUuid).toBe(latestMessageUuid);
   });
 
   it("removes a realtime-deleted stream binding without touching other catalog rows", async () => {
