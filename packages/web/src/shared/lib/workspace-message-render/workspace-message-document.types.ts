@@ -1,4 +1,5 @@
 import type { WorkspaceUrnReference } from "../workspace-reference-urn.lib";
+import type { TokensList } from "marked";
 
 export type WorkspaceMessageContentKind =
   | "plain"
@@ -8,6 +9,12 @@ export type WorkspaceMessageContentKind =
   | "attachment";
 
 export type WorkspaceMessageMetaPlacement = "inline" | "row";
+
+/**
+ * Kind of the last renderable top-level block.
+ * Inline meta needs a text paragraph at the tail, everything else keeps the row footer.
+ */
+export type WorkspaceMessageLastBlockKind = "paragraph" | "quote-reference" | "block" | "none";
 
 export interface WorkspaceMessageRenderOptions {
   enableMarkdown: boolean;
@@ -178,6 +185,11 @@ export type WorkspaceMessageBlock =
 
 export interface WorkspaceMessageDocument {
   sourceMarkdown: string;
+  /**
+   * Full Marked token list. Parsing preserves its reference-definition `links`
+   * map, while rendering consumes the already resolved inline link tokens.
+   */
+  markdownTokens: TokensList;
   blocks: readonly WorkspaceMessageBlock[];
   metadata: WorkspaceMessageBodyMetadata;
   safeTextPreview: string;

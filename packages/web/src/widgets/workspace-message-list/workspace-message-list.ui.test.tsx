@@ -780,6 +780,37 @@ describe("WorkspaceMessageList", () => {
     expect(divider).not.toHaveTextContent("2026-07-03");
   });
 
+  it("keeps day dividers sticky at the top of the scroll container", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 3, 12, 0, 0, 0));
+
+    const { container } = render(
+      <WorkspaceMessageList
+        messages={[
+          createWorkspaceMessage({
+            uuid: "day-one-message",
+            createdAt: "2026-07-02T09:00:00.000Z",
+          }),
+          createWorkspaceMessage({
+            uuid: "day-two-message",
+            createdAt: "2026-07-03T09:00:00.000Z",
+          }),
+        ]}
+        currentUserUuid="current-user-uuid"
+        conversationId="topic:stream-uuid-1:topic-uuid-1"
+      />,
+    );
+
+    const stickyWrappers = Array.from(container.querySelectorAll("[data-day-divider]")).map(
+      (divider) => divider.parentElement,
+    );
+
+    expect(stickyWrappers).toHaveLength(2);
+    for (const wrapper of stickyWrappers) {
+      expect(wrapper).toHaveClass("sticky", "top-0", "z-sticky");
+    }
+  });
+
   it("renders one unread divider before the author group containing the anchor", () => {
     const { container } = render(
       <WorkspaceMessageList
@@ -3006,7 +3037,9 @@ describe("WorkspaceMessageList", () => {
 
     const body = container.querySelector("[data-message-body='true']");
     const orderedList = body?.querySelector("ol");
-    const outroParagraph = orderedList?.nextElementSibling;
+    const preservedGap = orderedList?.nextElementSibling;
+    const outroParagraph = preservedGap?.nextElementSibling;
+    const time = container.querySelector("[data-message-time='true']");
 
     expect(body).toHaveClass("message-body");
     expect(body).toHaveClass("[&_ol]:list-decimal");
@@ -3016,8 +3049,11 @@ describe("WorkspaceMessageList", () => {
     expect(body).toHaveClass("[&_ol+p]:mt-1");
     expect(orderedList).toBeTruthy();
     expect(body?.querySelector("ol li ul")).toBeTruthy();
+    expect(preservedGap).toHaveClass("workspace-message-gap", "workspace-message-gap--1");
     expect(outroParagraph?.tagName.toLowerCase()).toBe("p");
     expect(outroParagraph).toHaveTextContent("Outro paragraph");
+    expect(outroParagraph).toHaveAttribute("data-workspace-message-meta-anchor", "true");
+    expect(time).toHaveAttribute("data-message-meta-placement", "inline");
   });
 
   it("renders nested Workspace quote blocks without legacy message anchors", () => {
@@ -3201,14 +3237,15 @@ describe("WorkspaceMessageList", () => {
 
     expect(time).toHaveAttribute("data-message-meta-placement", "inline");
     expect(body).toHaveClass("workspace-message-bubble-inline-text");
+    expect(body?.querySelector("[data-workspace-message-meta-anchor='true']")?.tagName).toBe("P");
   });
 
-  it("renders multiline message time as a row fallback", () => {
+  it("renders multiline plain message time inline inside the Workspace bubble", () => {
     const { container } = render(
       <WorkspaceMessageList
         messages={[
           createWorkspaceMessage({
-            uuid: "multiline-row-message",
+            uuid: "multiline-inline-message",
             markdown: "First line\nSecond line",
           }),
         ]}
@@ -3217,13 +3254,107 @@ describe("WorkspaceMessageList", () => {
       />,
     );
 
-    const article = container.querySelector("[data-message-uuid='multiline-row-message']");
+    const article = container.querySelector("[data-message-uuid='multiline-inline-message']");
     const body = article?.querySelector("[data-message-body='true']");
     const time = article?.querySelector("[data-message-time='true']");
 
-    expect(time).toHaveAttribute("data-message-meta-placement", "row");
-    expect(body).not.toHaveClass("workspace-message-bubble-inline-text");
+    expect(time).toHaveAttribute("data-message-meta-placement", "inline");
+    expect(body).toHaveClass("workspace-message-bubble-inline-text");
     expect(body?.textContent).toBe("First lineSecond line");
+  });
+
+  it("keeps inline meta for the paragraph that follows a quote card", () => {
+    const quotedMessageUuid = "11111111-1111-4111-8111-111111111111";
+    const { container } = render(
+      <WorkspaceMessageList
+        messages={[
+          createWorkspaceMessage({
+            uuid: "quote-then-text-message",
+            markdown: [
+              `[Old Bob](urn:quote:${quotedMessageUuid})`,
+              "",
+              "это нормально. сервер закрыл сокет на своей стороне",
+            ].join("\n"),
+          }),
+        ]}
+        currentUserUuid="current-user-uuid"
+        conversationId="topic:stream-uuid-1:topic-uuid-1"
+      />,
+    );
+
+    const article = container.querySelector("[data-message-uuid='quote-then-text-message']");
+    const body = article?.querySelector("[data-message-body='true']");
+    const anchor = body?.querySelector("[data-workspace-message-meta-anchor='true']");
+
+    expect(article?.querySelector("[data-message-time='true']")).toHaveAttribute(
+      "data-message-meta-placement",
+      "inline",
+    );
+    expect(body).toHaveClass("workspace-message-bubble-inline-text");
+    expect(anchor?.tagName.toLowerCase()).toBe("p");
+    expect(anchor).toHaveTextContent("сервер закрыл сокет");
+    expect(article?.querySelector("[data-workspace-message-reaction-footer='true']")).toBeNull();
+  });
+
+  it("moves the inline meta anchor when an edit adds or removes a leading quote", () => {
+    const quotedMessageUuid = "33333333-3333-4333-8333-333333333333";
+    const renderList = (markdown: string): React.ReactElement => (
+      <WorkspaceMessageList
+        messages={[createWorkspaceMessage({ uuid: "edited-quote-message", markdown })]}
+        currentUserUuid="current-user-uuid"
+        conversationId="topic:stream-uuid-1:topic-uuid-1"
+      />
+    );
+    const readAnchors = (): HTMLElement[] => [
+      ...container.querySelectorAll<HTMLElement>("[data-workspace-message-meta-anchor='true']"),
+    ];
+
+    // The tail HTML stays `<p>Same tail</p>` in both variants, so only the segment
+    // structure tells the bubble that React swapped the paragraph node.
+    const { container, rerender } = render(renderList("Same tail"));
+
+    expect(readAnchors()).toHaveLength(1);
+
+    rerender(renderList(`[Old Bob](urn:quote:${quotedMessageUuid})\n\nSame tail`));
+
+    const quotedAnchors = readAnchors();
+    const body = container.querySelector("[data-message-body='true']");
+
+    expect(quotedAnchors).toHaveLength(1);
+    expect(quotedAnchors[0]).toHaveTextContent("Same tail");
+    expect(body).toContainElement(quotedAnchors[0] ?? null);
+    expect(body?.querySelectorAll("p")).toHaveLength(1);
+
+    rerender(renderList("Same tail"));
+
+    const restoredAnchors = readAnchors();
+
+    expect(restoredAnchors).toHaveLength(1);
+    expect(restoredAnchors[0]).toHaveTextContent("Same tail");
+  });
+
+  it("falls back to row meta when the message ends with a quote card", () => {
+    const quotedMessageUuid = "22222222-2222-4222-8222-222222222222";
+    const { container } = render(
+      <WorkspaceMessageList
+        messages={[
+          createWorkspaceMessage({
+            uuid: "text-then-quote-message",
+            markdown: ["смотри тут", "", `[Old Bob](urn:quote:${quotedMessageUuid})`].join("\n"),
+          }),
+        ]}
+        currentUserUuid="current-user-uuid"
+        conversationId="topic:stream-uuid-1:topic-uuid-1"
+      />,
+    );
+
+    const article = container.querySelector("[data-message-uuid='text-then-quote-message']");
+
+    expect(article?.querySelector("[data-message-time='true']")).toHaveAttribute(
+      "data-message-meta-placement",
+      "row",
+    );
+    expect(article?.querySelector("[data-workspace-message-meta-anchor='true']")).toBeNull();
   });
 
   it("uses render metadata for long plain message meta placement", () => {
@@ -3272,6 +3403,7 @@ describe("WorkspaceMessageList", () => {
   });
 
   // Regression: empty reaction row returned null, so justify-between left the lone meta at the start.
+  // The last block must not be a paragraph, otherwise placement switches to inline.
   it("keeps row meta right-aligned when the message has no reaction chips", () => {
     const { container } = render(
       <WorkspaceMessageList
@@ -3281,14 +3413,14 @@ describe("WorkspaceMessageList", () => {
             authorUuid: "current-user-uuid",
             userUuid: "current-user-uuid",
             isOwn: true,
-            markdown: "First line\nSecond line",
+            markdown: "- first item\n- second item",
           }),
           createWorkspaceMessage({
             uuid: "peer-row-meta-no-reactions",
             authorUuid: "peer-user-uuid",
             userUuid: "peer-user-uuid",
             isOwn: false,
-            markdown: "> quoted reply\n\nand a follow-up",
+            markdown: "a follow-up\n\n> quoted tail",
           }),
         ]}
         currentUserUuid="current-user-uuid"
@@ -3601,11 +3733,11 @@ describe("WorkspaceMessageList", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Forward" }));
     expect(onForwardMessage).toHaveBeenCalledWith("uuid-callback-message", undefined);
 
+    // In-chat bubble menu must not offer "Open in chat" — the message is already here.
+    // onOpenMessageInChat stays wired for quotes and in-body message links only.
     openWorkspaceMessageMenu();
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Open in chat" }));
-    expect(onOpenMessageInChat).toHaveBeenCalledWith("uuid-callback-message");
-
-    openWorkspaceMessageMenu();
+    expect(screen.queryByRole("menuitem", { name: "Open in chat" })).not.toBeInTheDocument();
+    expect(onOpenMessageInChat).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("menuitem", { name: "Copy text" }));
     expect(onCopyMessageText).toHaveBeenCalledWith("uuid-callback-message", "Callback body");
 

@@ -63,6 +63,8 @@ export const blueMist: ThemePalette = {
     "indicator-purple": "#8d6dff",
     "indicator-green": "#26c038",
     "indicator-orange": "#ff8900",
+    "indicator-blue": "#4b98e6",
+    "indicator-red": "#f04c4c",
   },
 
   light: {
@@ -89,7 +91,8 @@ export const blueMist: ThemePalette = {
     "sidebar-sender": "#6f90d8",
     "sidebar-unread": "#6f90d8",
 
-    "composer-outer": "#eff5fb",
+    // Same white chrome as sidebar/header (bg-elevated), not soft-blue card underlay
+    "composer-outer": "#ffffff",
     "composer-send": "#6f90d8",
     "composer-icon": "#8fa0b6",
 
@@ -121,5 +124,7 @@ export const blueMist: ThemePalette = {
     "indicator-purple": "#8d6dff",
     "indicator-green": "#26c038",
     "indicator-orange": "#ff8900",
+    "indicator-blue": "#4b98e6",
+    "indicator-red": "#f04c4c",
   },
 };

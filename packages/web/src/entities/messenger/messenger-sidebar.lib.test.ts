@@ -286,6 +286,7 @@ describe("messenger sidebar selectors", () => {
       title: "Engineering",
       isPrivate: false,
       uiKind: "channel",
+      notificationMode: "all_messages",
       unreadCount: 3,
       color: null,
       preview: null,
@@ -295,6 +296,7 @@ describe("messenger sidebar selectors", () => {
       topicUuid: TOPIC_A,
       unreadCount: 2,
       isDefault: false,
+      notificationMode: "default",
       color: null,
       preview: null,
     });
@@ -303,6 +305,7 @@ describe("messenger sidebar selectors", () => {
       title: "Alice",
       isPrivate: true,
       uiKind: "directPrivate",
+      notificationMode: "all_messages",
       unreadCount: 4,
       presence: "active",
       avatarUrl: "/direct-alice.png",
@@ -333,6 +336,59 @@ describe("messenger sidebar selectors", () => {
     });
   });
 
+  it("projects known unread personal mentions to their topic and stream", () => {
+    const rows = selectMessengerSidebarStreams(state(), {
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      usersById: createUsersById(),
+      messagesById: {
+        [MESSAGE_A]: message({
+          mentioned: true,
+          read: false,
+          streamUuid: STREAM_A,
+          topicUuid: TOPIC_A,
+        }),
+        [MESSAGE_B]: message({
+          uuid: MESSAGE_B,
+          projectId: "another-project",
+          mentioned: true,
+          read: false,
+          streamUuid: STREAM_B,
+          topicUuid: TOPIC_B,
+        }),
+      },
+    });
+
+    expect(rows.find((row) => row.streamUuid === STREAM_A)?.hasUnreadPersonalMention).toBe(true);
+    expect(
+      rows.find((row) => row.streamUuid === STREAM_A)?.topics[0]?.hasUnreadPersonalMention,
+    ).toBe(true);
+    expect(rows.find((row) => row.streamUuid === STREAM_B)?.hasUnreadPersonalMention).toBe(false);
+  });
+
+  it("ignores read messages and messages without a personal mention", () => {
+    const rows = selectMessengerSidebarStreams(state(), {
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      usersById: createUsersById(),
+      messagesById: {
+        [MESSAGE_A]: message({ mentioned: true, read: true }),
+        [MESSAGE_B]: message({
+          uuid: MESSAGE_B,
+          mentioned: false,
+          read: false,
+          streamUuid: STREAM_A,
+          topicUuid: TOPIC_A,
+        }),
+      },
+    });
+
+    expect(rows.find((row) => row.streamUuid === STREAM_A)?.hasUnreadPersonalMention).toBe(false);
+    expect(
+      rows.find((row) => row.streamUuid === STREAM_A)?.topics[0]?.hasUnreadPersonalMention,
+    ).toBe(false);
+  });
+
   it("uses folder item unread and pinned order for selected folders", () => {
     const rows = selectMessengerSidebarStreams(state(), {
       organizationId: ORGANIZATION_ID,
@@ -354,6 +410,26 @@ describe("messenger sidebar selectors", () => {
       orderIndex: 20,
       unreadCount: 5,
     });
+  });
+
+  it("keeps the current user's self chat out of general and folder projections", () => {
+    const base = state();
+    const commonOptions = {
+      organizationId: ORGANIZATION_ID,
+      projectId: PROJECT_ID,
+      currentUserUuid: "alice",
+      usersById: createUsersById(),
+    };
+
+    expect(selectMessengerSidebarStreams(base, commonOptions).map((row) => row.streamUuid)).toEqual(
+      [STREAM_A],
+    );
+    expect(
+      selectMessengerSidebarStreams(base, {
+        ...commonOptions,
+        selectedFolderUuid: FOLDER_A,
+      }).map((row) => row.streamUuid),
+    ).toEqual([STREAM_A]);
   });
 
   it("sorts folder rows by cached last message time instead of stream updatedAt", () => {
@@ -820,6 +896,7 @@ describe("messenger sidebar selectors", () => {
       title: "Alice",
       isPrivate: true,
       uiKind: "directPrivate",
+      notificationMode: "mentions_only",
       unreadCount: 1,
       preview: {
         messageUuid: MESSAGE_A,

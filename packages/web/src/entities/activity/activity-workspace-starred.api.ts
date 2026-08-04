@@ -34,6 +34,8 @@ export interface FetchWorkspaceStarredMessagesOptions {
         pageLimit?: number;
         pageMarker?: string;
         starred?: boolean;
+        sortKey?: "created_at";
+        sortDir?: "asc" | "desc";
       },
     ) => Promise<MessengerCollectionPage<WorkspaceMessengerMessageDto>>;
   };
@@ -54,6 +56,8 @@ export async function fetchWorkspaceStarredMessages({
       ...(pageLimit == null ? {} : { pageLimit }),
       ...(pageMarker == null ? {} : { pageMarker }),
       starred: true,
+      sortKey: "created_at",
+      sortDir: "desc",
     });
     const durationMs = Math.round(performance.now() - start);
     logApiCall("GET", "workspace-messages-starred", {

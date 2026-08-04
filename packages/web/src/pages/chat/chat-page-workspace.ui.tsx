@@ -45,6 +45,7 @@ import {
 import { useMessengerOutboxStore } from "~/entities/messenger/messenger-outbox.model";
 import type { MessengerOutgoingMessage } from "~/entities/messenger/messenger-outbox.types";
 import { buildMessengerRequestOptions } from "~/entities/messenger/messenger-request-options.lib";
+import { isWorkspaceSelfChat } from "~/entities/messenger/messenger-self-chat.lib";
 import { selectMessengerSidebarTopicsForStream } from "~/entities/messenger/messenger-sidebar.lib";
 import { useMessengerStreamBindingsForRoute } from "~/entities/messenger/messenger-stream-bindings-loader.lib";
 import { normalizeWorkspacePreviewBlob } from "~/entities/messenger/messenger-workspace-message-preview-blob.lib";
@@ -52,6 +53,7 @@ import { useMessengerStore } from "~/entities/messenger/messenger.model";
 import type {
   MessengerConversationId,
   MessengerMessage,
+  MessengerStream,
   MessengerTopic,
   MessengerUuid,
 } from "~/entities/messenger/messenger.types";
@@ -83,6 +85,7 @@ import { EMPTY_WORKSPACE_REPLY_SESSION } from "~/features/workspace-reply/worksp
 import type {
   WorkspaceReplyQuote,
   WorkspaceReplySession,
+  WorkspaceReplyTab,
 } from "~/features/workspace-reply/workspace-reply.types";
 import type { WorkspaceReplyTabSelectSource } from "~/features/workspace-reply/workspace-reply.ui";
 import { t } from "~/i18n/i18n";
@@ -108,10 +111,12 @@ import {
 import { Spinner } from "~/shared/ui/spinner.ui";
 import { ChatChannelHeader } from "~/widgets/chat-view/chat-header-channel.ui";
 import { ChatDirectHeader } from "~/widgets/chat-view/chat-header-direct.ui";
+import { ChatFavoritesHeader } from "~/widgets/chat-view/chat-header-favorites.ui";
 import type { ChatHeaderCommonProps } from "~/widgets/chat-view/chat-header.types";
 import type {
   ComposerEditSession,
   MessageComposerCapabilities,
+  MessageComposerReplyClearReason,
   MessageComposerSendResult,
   ReplyQuote,
 } from "~/widgets/message-composer/message-composer.types";
@@ -138,6 +143,7 @@ import type { WorkspaceChatMessagesLoadErrorKind } from "./chat-page-workspace-m
 
 interface WorkspaceChatPageProps {
   route: WorkspaceMessengerRouteMatch | null;
+  presentation?: "default" | "favorites";
 }
 
 interface WorkspaceFilePreviewResource {
@@ -238,7 +244,82 @@ function WorkspaceChatBlockingLoader(): React.ReactElement {
   );
 }
 
-export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) => {
+function shouldPresentWorkspaceFavorites({
+  presentation,
+  selection,
+  streamsById,
+  currentUserUuid,
+}: {
+  presentation: WorkspaceChatPageProps["presentation"];
+  selection: ReturnType<typeof selectMessengerConversationFromWorkspaceRoute>;
+  streamsById: Readonly<Record<string, MessengerStream>>;
+  currentUserUuid: string | undefined;
+}): boolean {
+  if (presentation === "favorites") return true;
+  if (selection.status !== "conversation") return false;
+
+  return isWorkspaceSelfChat(streamsById[selection.streamUuid], currentUserUuid);
+}
+
+type WorkspaceConversationHeaderProps = Readonly<{
+  isFavoritesConversation: boolean;
+  headerView: ReturnType<typeof selectWorkspaceChatHeaderView>;
+  commonHeaderProps: ChatHeaderCommonProps;
+  onOpenPartnerProfile?: () => void;
+  onCallClick?: () => void;
+  onOpenRightPanel?: () => void;
+}>;
+
+function WorkspaceConversationHeader({
+  isFavoritesConversation,
+  headerView,
+  commonHeaderProps,
+  onOpenPartnerProfile,
+  onCallClick,
+  onOpenRightPanel,
+}: WorkspaceConversationHeaderProps): React.ReactElement {
+  if (isFavoritesConversation) return <ChatFavoritesHeader />;
+
+  if (headerView.kind === "directPrivate") {
+    return (
+      <ChatDirectHeader
+        {...commonHeaderProps}
+        partner={headerView.dmPartner}
+        rightPanelLabel={t("info.partnerInfo")}
+        onOpenPartnerProfile={onOpenPartnerProfile}
+        onCallClick={onCallClick}
+      />
+    );
+  }
+
+  return (
+    <ChatChannelHeader
+      {...commonHeaderProps}
+      channelName={headerView.channelName}
+      topic={headerView.topic}
+      hideTopic={headerView.hideTopic}
+      participantsCount={headerView.participantsCount}
+      onlineCount={headerView.onlineCount}
+      onOpenRightPanel={onOpenRightPanel}
+    />
+  );
+}
+
+function useCloseFavoritesRightDrawer(
+  isFavoritesConversation: boolean,
+  setOpen: ((open: boolean) => void) | undefined,
+): void {
+  useEffect(() => {
+    if (isFavoritesConversation) {
+      setOpen?.(false);
+    }
+  }, [isFavoritesConversation, setOpen]);
+}
+
+export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
+  route,
+  presentation = "default",
+}) => {
   // This page is not a new chat layout: it assembles old sections and swaps only the data source.
   const [retryNonce, setRetryNonce] = useState(0);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -542,6 +623,13 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
   const topicIds = useMessengerStore((state) => state.topicIds);
   const allWorkspaceMessagesById = useWorkspaceMessageStore((state) => state.messagesById);
   const streamsById = useMessengerStore((state) => state.streamsById);
+  const isFavoritesConversation = shouldPresentWorkspaceFavorites({
+    presentation,
+    selection,
+    streamsById,
+    currentUserUuid: runtimeContext?.userUuid,
+  });
+  useCloseFavoritesRightDrawer(isFavoritesConversation, rightDrawer?.setOpen);
   const streamPromptTopics = useMemo(() => {
     if (
       selection.status !== "conversation" ||
@@ -1315,6 +1403,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
 
   // Звонок из чужого профиля: pending uuid → ждём активный DM → стартуем как из хедера.
   useEffect(() => {
+    if (isFavoritesConversation) return;
     if (headerView.kind !== "directPrivate") return;
     if (workspaceMeetUrl == null) return;
     if (
@@ -1326,7 +1415,13 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
 
     useChatDmCallBridgeStore.getState().clearPendingDmCallPartner();
     handleStartWorkspaceHeaderCall();
-  }, [handleStartWorkspaceHeaderCall, headerView, pendingDmCallPartnerUserUuid, workspaceMeetUrl]);
+  }, [
+    handleStartWorkspaceHeaderCall,
+    headerView,
+    pendingDmCallPartnerUserUuid,
+    isFavoritesConversation,
+    workspaceMeetUrl,
+  ]);
 
   const handleCancelUpload = useCallback(() => {
     const controller = uploadAbortControllerRef.current;
@@ -1522,16 +1617,29 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
     (messageUuid: string, selectedText?: string) => {
       const quote = resolveWorkspaceReplyQuote(messageUuid, selectedText);
       if (quote == null) return;
+      const identity = createWorkspaceReplyTabIdentity();
 
       setComposerEditMessageUuid(null);
       setComposerEditSession(null);
       setRestoredWorkspaceReplySession(null);
       setWorkspaceReplyTabFocusKeySuppressed(false);
-      setWorkspaceReplySession((current) =>
-        replyToWorkspaceReply(current, quote, createWorkspaceReplyTabIdentity()),
-      );
+      updateWorkspaceComposerDraft((content) => {
+        const nextReplySession = replyToWorkspaceReply(
+          content.replySession,
+          quote,
+          identity,
+          content.text,
+        );
+        const startedReply =
+          content.replySession.tabs.length === 0 && nextReplySession.tabs.length > 0;
+        return {
+          ...content,
+          text: startedReply ? "" : content.text,
+          replySession: nextReplySession,
+        };
+      });
     },
-    [createWorkspaceReplyTabIdentity, resolveWorkspaceReplyQuote, setWorkspaceReplySession],
+    [createWorkspaceReplyTabIdentity, resolveWorkspaceReplyQuote, updateWorkspaceComposerDraft],
   );
 
   const handleAddReplyMessage = useCallback(
@@ -1550,27 +1658,54 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
     [createWorkspaceReplyTabIdentity, resolveWorkspaceReplyQuote, setWorkspaceReplySession],
   );
 
-  const handleClearReply = useCallback(() => {
-    if (isRestoredWorkspaceReplyEdit) {
-      setRestoredWorkspaceReplySession(null);
-      setWorkspaceReplyTabFocusKeySuppressed(false);
-      return;
-    }
-    const pendingCleanup = workspaceComposerSendCleanupRef.current;
-    if (
-      pendingCleanup?.ownerKey === ownerKey &&
-      pendingCleanup.conversationId === conversationId &&
-      pendingCleanup.ignoresReplyClear
-    ) {
-      pendingCleanup.ignoresReplyClear = false;
-      if (!pendingCleanup.ignoresValueClear) {
-        workspaceComposerSendCleanupRef.current = null;
+  const handleClearReply = useCallback(
+    (reason: MessageComposerReplyClearReason = "manual") => {
+      if (isRestoredWorkspaceReplyEdit) {
+        setRestoredWorkspaceReplySession(null);
+        setWorkspaceReplyTabFocusKeySuppressed(false);
+        return;
       }
-      return;
-    }
-    setWorkspaceReplySession(EMPTY_WORKSPACE_REPLY_SESSION);
-    setWorkspaceReplyTabFocusKeySuppressed(false);
-  }, [conversationId, isRestoredWorkspaceReplyEdit, ownerKey, setWorkspaceReplySession]);
+      if (reason === "submit") {
+        updateWorkspaceComposerDraft(() => EMPTY_WORKSPACE_COMPOSER_DRAFT_CONTENT);
+        setWorkspaceReplyTabFocusKeySuppressed(false);
+        return;
+      }
+      const pendingCleanup = workspaceComposerSendCleanupRef.current;
+      if (
+        pendingCleanup?.ownerKey === ownerKey &&
+        pendingCleanup.conversationId === conversationId &&
+        pendingCleanup.ignoresReplyClear
+      ) {
+        pendingCleanup.ignoresReplyClear = false;
+        if (!pendingCleanup.ignoresValueClear) {
+          workspaceComposerSendCleanupRef.current = null;
+        }
+        return;
+      }
+      updateWorkspaceComposerDraft((content) => {
+        const initialTab = content.replySession.tabs.reduce<WorkspaceReplyTab | undefined>(
+          (earliest, tab) => {
+            if (earliest == null || tab.createdAt < earliest.createdAt) return tab;
+            if (
+              tab.createdAt === earliest.createdAt &&
+              tab.id.localeCompare(earliest.id, undefined, { numeric: true }) < 0
+            ) {
+              return tab;
+            }
+            return earliest;
+          },
+          undefined,
+        );
+        return {
+          ...content,
+          text: content.text.length > 0 ? content.text : (initialTab?.answer ?? ""),
+          replySession: EMPTY_WORKSPACE_REPLY_SESSION,
+        };
+      });
+      setWorkspaceReplyTabFocusKeySuppressed(false);
+    },
+    [conversationId, isRestoredWorkspaceReplyEdit, ownerKey, updateWorkspaceComposerDraft],
+  );
 
   const handleSelectWorkspaceReplyTab = useCallback(
     (tabId: string, source?: WorkspaceReplyTabSelectSource) => {
@@ -1594,9 +1729,22 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
         );
         return;
       }
-      setWorkspaceReplySession((current) => removeWorkspaceReplyTab(current, tabId));
+      updateWorkspaceComposerDraft((content) => {
+        const removedTab = content.replySession.tabs.find((tab) => tab.id === tabId);
+        const nextReplySession = removeWorkspaceReplyTab(content.replySession, tabId);
+        return {
+          ...content,
+          text:
+            nextReplySession.tabs.length === 0
+              ? content.text.length > 0
+                ? content.text
+                : (removedTab?.answer ?? "")
+              : content.text,
+          replySession: nextReplySession,
+        };
+      });
     },
-    [isRestoredWorkspaceReplyEdit, setWorkspaceReplySession],
+    [isRestoredWorkspaceReplyEdit, updateWorkspaceComposerDraft],
   );
 
   const handleReorderWorkspaceReplyTab = useCallback(
@@ -2183,28 +2331,18 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({ route }) =
   );
 
   // Direct chats omit member counters and open the partner profile from the header.
-  const header =
-    headerView.kind === "directPrivate" ? (
-      <ChatDirectHeader
-        {...commonHeaderProps}
-        partner={headerView.dmPartner}
-        rightPanelLabel={t("info.partnerInfo")}
-        onOpenPartnerProfile={
-          openWorkspaceUserProfile == null ? undefined : handleOpenDirectPartnerProfile
-        }
-        onCallClick={workspaceMeetUrl == null ? undefined : handleStartWorkspaceHeaderCall}
-      />
-    ) : (
-      <ChatChannelHeader
-        {...commonHeaderProps}
-        channelName={headerView.channelName}
-        topic={headerView.topic}
-        hideTopic={headerView.hideTopic}
-        participantsCount={headerView.participantsCount}
-        onlineCount={headerView.onlineCount}
-        onOpenRightPanel={rightDrawer == null ? undefined : handleOpenRightPanel}
-      />
-    );
+  const header = (
+    <WorkspaceConversationHeader
+      isFavoritesConversation={isFavoritesConversation}
+      headerView={headerView}
+      commonHeaderProps={commonHeaderProps}
+      onOpenPartnerProfile={
+        openWorkspaceUserProfile == null ? undefined : handleOpenDirectPartnerProfile
+      }
+      onCallClick={workspaceMeetUrl == null ? undefined : handleStartWorkspaceHeaderCall}
+      onOpenRightPanel={rightDrawer == null ? undefined : handleOpenRightPanel}
+    />
+  );
 
   let body: React.ReactNode;
   if (selection.status === "invalid-route") {

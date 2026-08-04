@@ -234,8 +234,11 @@ export interface MessengerSidebarTopicItem {
   topicUuid: MessengerUuid;
   title: string;
   unreadCount: number;
+  /** Best-effort flag computed from unread messages currently known to the client. */
+  hasUnreadPersonalMention?: boolean;
   isDefault: boolean;
   isDone: boolean;
+  notificationMode: WorkspaceMessengerTopicNotificationMode;
   color: number | null;
   route: string;
   preview: MessengerSidebarMessagePreview | null;
@@ -251,7 +254,10 @@ export interface MessengerSidebarStreamItem {
   audience: MessengerAudience;
   isPrivate: boolean;
   uiKind: WorkspaceConversationUiKind;
+  notificationMode: WorkspaceMessengerStreamNotificationMode | null;
   unreadCount: number;
+  /** Best-effort flag computed from unread messages currently known to the client. */
+  hasUnreadPersonalMention?: boolean;
   pinnedAt: string | null;
   orderIndex: number | null;
   route: string;

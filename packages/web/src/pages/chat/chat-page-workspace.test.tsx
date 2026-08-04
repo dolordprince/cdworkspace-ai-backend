@@ -39,7 +39,7 @@ import type {
   ChatChannelHeaderProps,
   ChatDirectHeaderProps,
 } from "~/widgets/chat-view/chat-header.types";
-import { ChatPage } from "./chat-page.ui";
+import { ChatPage, FavoritesPage } from "./chat-page.ui";
 import type { ChatPageComposerSectionProps } from "./chat-page-composer-section.types";
 import type { ChatPageWorkspaceMessageListSectionProps } from "./chat-page-workspace-message-list-section.types";
 
@@ -378,6 +378,20 @@ function createDirectPrivateBootstrapPayload(): MessengerBootstrapPayload {
   };
 }
 
+function createSelfChatBootstrapPayload(): MessengerBootstrapPayload {
+  const payload = createDirectPrivateBootstrapPayload();
+  return {
+    ...payload,
+    streams: payload.streams.map((stream) => ({
+      ...stream,
+      name: "Personal notes",
+      ownerUuid: USER_UUID,
+      userUuid: USER_UUID,
+      directUserUuid: USER_UUID,
+    })),
+  };
+}
+
 function createMessage(): MessengerMessage {
   return {
     uuid: MESSAGE_UUID,
@@ -448,6 +462,7 @@ function WorkspaceNavigationProbe() {
 function renderWorkspaceChatPageWithShellContexts(
   route: string,
   rightDrawerOverrides: Partial<RightDrawerContextValue> = {},
+  page: "chat" | "favorites" = "chat",
 ) {
   return render(
     <MemoryRouter initialEntries={[route]}>
@@ -464,7 +479,7 @@ function renderWorkspaceChatPageWithShellContexts(
             ...rightDrawerOverrides,
           }}
         >
-          <ChatPage />
+          {page === "favorites" ? <FavoritesPage /> : <ChatPage />}
         </RightDrawerContext.Provider>
       </OpenSearchContext.Provider>
     </MemoryRouter>,
@@ -688,6 +703,49 @@ describe("ChatPage Workspace route", () => {
       },
     });
     await waitFor(() => expect(captured.loadWorkspaceMessages).toHaveBeenCalledTimes(1));
+  });
+
+  it("renders Favorites as the self chat with a title-only header", async () => {
+    const session = createSession();
+    useMessengerStore
+      .getState()
+      .replaceBootstrapState(workspaceRuntimeOwnerKey(session), createSelfChatBootstrapPayload());
+
+    renderWorkspaceChatPageWithShellContexts(
+      "/org/org-a/project/project-a/activity/favorites",
+      {},
+      "favorites",
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: t("activity.favorites") }),
+    ).toBeInTheDocument();
+    expect(await screen.findByTestId("workspace-message-list-section")).toBeInTheDocument();
+    expect(screen.getByTestId("old-composer-section")).toBeInTheDocument();
+    expect(captured.channelHeaderProps).toBeNull();
+    expect(captured.directHeaderProps).toBeNull();
+    expect(captured.messageListProps?.conversationId).toBe(
+      `topic:${DIRECT_STREAM_UUID}:${DIRECT_TOPIC_UUID}`,
+    );
+  });
+
+  it("uses the Favorites presentation for a direct self-chat route", async () => {
+    const session = createSession();
+    const setRightDrawerOpen = vi.fn();
+    useMessengerStore
+      .getState()
+      .replaceBootstrapState(workspaceRuntimeOwnerKey(session), createSelfChatBootstrapPayload());
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${DIRECT_STREAM_UUID}/topic/${DIRECT_TOPIC_UUID}`,
+      { open: true, setOpen: setRightDrawerOpen },
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: t("activity.favorites") }),
+    ).toBeInTheDocument();
+    expect(captured.directHeaderProps).toBeNull();
+    expect(setRightDrawerOpen).toHaveBeenCalledWith(false);
   });
 
   it("drops a pending auto-read when the Workspace window loses focus", async () => {
@@ -1613,7 +1671,8 @@ describe("ChatPage Workspace route", () => {
     });
   });
 
-  it("opens Workspace reply mode as a tab without injecting quote into the draft", async () => {
+  it("moves existing composer text into the first Workspace reply tab", async () => {
+    seedSecondMessage();
     renderWorkspaceChatPageWithShellContexts(
       `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
     );
@@ -1621,6 +1680,7 @@ describe("ChatPage Workspace route", () => {
     await screen.findByTestId("workspace-message-list-section");
 
     act(() => {
+      captured.composerProps?.onComposerValueChange("draft before reply");
       captured.messageListProps?.onReplyMessage?.(
         "55555555-5555-4555-8555-555555555555",
         "  selected excerpt  ",
@@ -1636,7 +1696,7 @@ describe("ChatPage Workspace route", () => {
             senderUuid: USER_B_UUID,
             senderName: "Bob Reed",
             selectedText: "  selected excerpt  ",
-            answer: "",
+            answer: "draft before reply",
           },
         ],
       });
@@ -1650,10 +1710,25 @@ describe("ChatPage Workspace route", () => {
       sender_uuid: USER_B_UUID,
       quoteFormat: "workspace",
     });
-    expect(captured.composerProps?.draftInitialValue).toBe("");
+    expect(captured.composerProps?.draftInitialValue).toBe("draft before reply");
     expect(captured.composerProps?.focusKey).toBe(
       captured.composerProps?.workspaceReplySession?.activeTabId,
     );
+    expect(
+      selectWorkspaceComposerDraft(
+        useWorkspaceComposerDraftStore.getState(),
+        workspaceRuntimeOwnerKey(createSession()),
+        `topic:${STREAM_UUID}:${TOPIC_UUID}`,
+      )?.content.text,
+    ).toBe("");
+
+    act(() => {
+      captured.messageListProps?.onAddReplyMessage?.(SECOND_MESSAGE_UUID);
+    });
+    await waitFor(() => {
+      expect(captured.composerProps?.workspaceReplySession?.tabs).toHaveLength(2);
+      expect(captured.composerProps?.draftInitialValue).toBe("");
+    });
 
     act(() => {
       captured.composerProps?.onClearReply();
@@ -1661,7 +1736,79 @@ describe("ChatPage Workspace route", () => {
 
     await waitFor(() => {
       expect(captured.composerProps?.replyQuote).toBeNull();
+      expect(captured.composerProps?.draftInitialValue).toBe("draft before reply");
     });
+  });
+
+  it("preserves ordinary text from a saved draft when clearing its reply session", async () => {
+    const ownerKey = workspaceRuntimeOwnerKey(createSession());
+    const conversationId = `topic:${STREAM_UUID}:${TOPIC_UUID}`;
+    useWorkspaceComposerDraftStore.getState().setDraft(ownerKey, conversationId, {
+      text: "existing ordinary draft",
+      replySession: {
+        activeTabId: "reply-tab-a",
+        tabs: [
+          {
+            id: "reply-tab-a",
+            messageUuid: MESSAGE_UUID,
+            senderUuid: USER_B_UUID,
+            senderName: "Bob Reed",
+            quotedContent: "workspace message",
+            createdAt: "2026-07-15T12:00:00.000Z",
+            answer: "",
+          },
+        ],
+      },
+    });
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await waitFor(() =>
+      expect(captured.composerProps?.workspaceReplySession?.activeTabId).toBe("reply-tab-a"),
+    );
+
+    act(() => {
+      captured.composerProps?.onClearReply();
+    });
+
+    await waitFor(() => {
+      expect(captured.composerProps?.workspaceReplySession).toEqual({
+        tabs: [],
+        activeTabId: null,
+      });
+      expect(captured.composerProps?.draftInitialValue).toBe("existing ordinary draft");
+    });
+  });
+
+  it("does not restore submitted reply text when reply cleanup arrives first", async () => {
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+
+    act(() => {
+      captured.messageListProps?.onReplyMessage?.(MESSAGE_UUID);
+    });
+    act(() => {
+      captured.composerProps?.onComposerValueChange("sent reply");
+    });
+    act(() => {
+      captured.composerProps?.onClearReply("submit");
+    });
+
+    await waitFor(() => {
+      expect(captured.composerProps?.workspaceReplySession).toEqual({
+        tabs: [],
+        activeTabId: null,
+      });
+      expect(captured.composerProps?.draftInitialValue).toBe("");
+    });
+
+    act(() => {
+      captured.composerProps?.onComposerValueChange("");
+    });
+    expect(captured.composerProps?.draftInitialValue).toBe("");
   });
 
   it("treats a whitespace-only reply selection as a whole-message quote", async () => {
@@ -2744,6 +2891,7 @@ describe("ChatPage Workspace route", () => {
 
     await screen.findByTestId("workspace-message-list-section");
     act(() => {
+      captured.composerProps?.onComposerValueChange("draft before removing reply");
       captured.messageListProps?.onReplyMessage?.(MESSAGE_UUID);
     });
     const tabId = captured.composerProps?.workspaceReplySession?.activeTabId;
@@ -2757,6 +2905,7 @@ describe("ChatPage Workspace route", () => {
         activeTabId: null,
       });
       expect(captured.composerProps?.outgoingBodyOverride).toBeUndefined();
+      expect(captured.composerProps?.draftInitialValue).toBe("draft before removing reply");
     });
   });
 

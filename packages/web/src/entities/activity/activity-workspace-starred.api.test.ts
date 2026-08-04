@@ -63,6 +63,8 @@ describe("fetchWorkspaceStarredMessages", () => {
         pageLimit: 50,
         pageMarker: "cursor",
         starred: true,
+        sortKey: "created_at",
+        sortDir: "desc",
       },
     );
   });
@@ -86,6 +88,8 @@ describe("fetchWorkspaceStarredMessages", () => {
       }),
       {
         starred: true,
+        sortKey: "created_at",
+        sortDir: "desc",
       },
     );
   });

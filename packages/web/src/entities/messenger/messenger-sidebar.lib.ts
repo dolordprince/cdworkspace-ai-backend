@@ -13,6 +13,7 @@ import {
   selectWorkspaceConversationUiKind,
   selectWorkspaceStreamConversationUiKind,
 } from "./messenger-conversation-ui-kind.lib";
+import { isWorkspaceSelfChat } from "./messenger-self-chat.lib";
 import type { MessengerStoreState } from "./messenger.model";
 import type {
   MessengerFolder,
@@ -83,6 +84,11 @@ interface SidebarActivityCountsCacheEntry {
 export interface MessengerSidebarActivityCounts {
   inboxCount: number | null;
   mentionsCount: number | null;
+}
+
+export interface MessengerSidebarUnreadMentionIndex {
+  streamUuids: ReadonlySet<MessengerUuid>;
+  topicUuids: ReadonlySet<MessengerUuid>;
 }
 
 let sidebarStreamsCache: SidebarStreamsCacheEntry | null = null;
@@ -193,6 +199,27 @@ function latestMessageCreatedAt(
   return latest;
 }
 
+// The messenger does not hydrate every conversation at startup. Keep this projection
+// explicitly best-effort: only unread messages currently held by the client participate.
+export function createMessengerSidebarUnreadMentionIndex(input: {
+  projectId: string;
+  messagesById: Record<MessengerUuid, MessengerMessage>;
+}): MessengerSidebarUnreadMentionIndex {
+  const streamUuids = new Set<MessengerUuid>();
+  const topicUuids = new Set<MessengerUuid>();
+
+  for (const message of Object.values(input.messagesById)) {
+    if (message.projectId !== input.projectId || message.read || message.mentioned !== true) {
+      continue;
+    }
+
+    streamUuids.add(message.streamUuid);
+    topicUuids.add(message.topicUuid);
+  }
+
+  return { streamUuids, topicUuids };
+}
+
 function topicItemFromTopic(input: {
   organizationId: string;
   projectId: string;
@@ -200,6 +227,7 @@ function topicItemFromTopic(input: {
   messagesById: Record<MessengerUuid, MessengerMessage>;
   usersById: UsersById;
   currentUserUuid: MessengerUuid | null;
+  unreadMentionIndex: MessengerSidebarUnreadMentionIndex;
 }): MessengerSidebarTopicItem {
   // topic:<streamUuid>:<topicUuid> is a temporary frontend key for row selection.
   // The API has no separate "conversation" entity; real ids remain streamUuid and topicUuid.
@@ -209,9 +237,11 @@ function topicItemFromTopic(input: {
     topicUuid: input.topic.uuid,
     title: input.topic.name,
     unreadCount: input.topic.unreadCount,
+    hasUnreadPersonalMention: input.unreadMentionIndex.topicUuids.has(input.topic.uuid),
     // Default/general is still tracked for other UX; the sidebar strip has no special case.
     isDefault: input.topic.isDefault,
     isDone: input.topic.isDone,
+    notificationMode: input.topic.notificationMode,
     color: input.topic.color ?? null,
     route: workspaceMessengerTopicRoute({
       orgId: input.organizationId,
@@ -240,6 +270,7 @@ function streamItemFromStream(input: {
   messagesById: Record<MessengerUuid, MessengerMessage>;
   usersById: UsersById;
   currentUserUuid: MessengerUuid | null;
+  unreadMentionIndex: MessengerSidebarUnreadMentionIndex;
   unreadCount?: number;
   pinnedAt?: string | null;
   orderIndex?: number | null;
@@ -264,7 +295,9 @@ function streamItemFromStream(input: {
     audience: input.stream.audience,
     isPrivate: input.stream.isPrivate,
     uiKind,
+    notificationMode: input.stream.notificationMode,
     unreadCount: input.unreadCount ?? input.stream.unreadCount,
+    hasUnreadPersonalMention: input.unreadMentionIndex.streamUuids.has(input.stream.uuid),
     pinnedAt: input.pinnedAt ?? null,
     orderIndex: input.orderIndex ?? null,
     route: workspaceMessengerStreamRoute({
@@ -302,6 +335,7 @@ function streamItemFromConversation(input: {
   messagesById: Record<MessengerUuid, MessengerMessage>;
   usersById: UsersById;
   currentUserUuid: MessengerUuid | null;
+  unreadMentionIndex: MessengerSidebarUnreadMentionIndex;
   unreadCount?: number;
   pinnedAt?: string | null;
   orderIndex?: number | null;
@@ -324,7 +358,16 @@ function streamItemFromConversation(input: {
     audience: input.conversation.audience,
     isPrivate: input.conversation.isPrivate,
     uiKind,
+    notificationMode:
+      input.conversation.notificationMode === "all_messages" ||
+      input.conversation.notificationMode === "mentions_only" ||
+      input.conversation.notificationMode === "muted"
+        ? input.conversation.notificationMode
+        : null,
     unreadCount: input.unreadCount ?? input.conversation.unreadCount,
+    hasUnreadPersonalMention: input.unreadMentionIndex.streamUuids.has(
+      input.conversation.streamUuid,
+    ),
     pinnedAt: input.pinnedAt ?? null,
     orderIndex: input.orderIndex ?? null,
     route: workspaceMessengerStreamRoute({
@@ -359,7 +402,14 @@ export function selectMessengerSidebarTopicsForStream(input: {
   messagesById: Record<MessengerUuid, MessengerMessage>;
   usersById: UsersById;
   currentUserUuid: MessengerUuid | null;
+  unreadMentionIndex?: MessengerSidebarUnreadMentionIndex;
 }): MessengerSidebarTopicItem[] {
+  const unreadMentionIndex =
+    input.unreadMentionIndex ??
+    createMessengerSidebarUnreadMentionIndex({
+      projectId: input.projectId,
+      messagesById: input.messagesById,
+    });
   // Topics currently live in a flat store list, so this links them to the relevant stream.
   const topics = input.state.topicIds
     .map((topicId) => input.state.topicsById[topicId])
@@ -372,6 +422,7 @@ export function selectMessengerSidebarTopicsForStream(input: {
         messagesById: input.messagesById,
         usersById: input.usersById,
         currentUserUuid: input.currentUserUuid,
+        unreadMentionIndex,
       }),
     );
 
@@ -403,6 +454,11 @@ export function selectMessengerSidebarStreams(
     return sidebarStreamsCache.result;
   }
 
+  const unreadMentionIndex = createMessengerSidebarUnreadMentionIndex({
+    projectId: options.projectId,
+    messagesById,
+  });
+
   const selectedFolder = selectedFolderUuid != null ? state.foldersById[selectedFolderUuid] : null;
   // If a folder is selected, order and counters come from folder.items.
   // If no folder is selected, all streams are shown as a general list.
@@ -411,6 +467,7 @@ export function selectMessengerSidebarStreams(
         .map((item) => {
           const stream = state.streamsById[item.streamUuid];
           if (stream != null) {
+            if (isWorkspaceSelfChat(stream, currentUserUuid)) return null;
             return streamItemFromStream({
               organizationId: options.organizationId,
               projectId: options.projectId,
@@ -418,6 +475,7 @@ export function selectMessengerSidebarStreams(
               messagesById,
               usersById,
               currentUserUuid,
+              unreadMentionIndex,
               unreadCount: item.unreadCount,
               pinnedAt: item.pinnedAt,
               orderIndex: item.orderIndex,
@@ -429,12 +487,14 @@ export function selectMessengerSidebarStreams(
                 messagesById,
                 usersById,
                 currentUserUuid,
+                unreadMentionIndex,
               }),
             });
           }
 
           const conversation = state.conversationsById[item.conversationId];
           if (conversation == null) return null;
+          if (isWorkspaceSelfChat(conversation, currentUserUuid)) return null;
           return streamItemFromConversation({
             organizationId: options.organizationId,
             projectId: options.projectId,
@@ -442,6 +502,7 @@ export function selectMessengerSidebarStreams(
             messagesById,
             usersById,
             currentUserUuid,
+            unreadMentionIndex,
             unreadCount: item.unreadCount,
             pinnedAt: item.pinnedAt,
             orderIndex: item.orderIndex,
@@ -452,7 +513,10 @@ export function selectMessengerSidebarStreams(
         .sort(compareSidebarStreams)
     : state.streamIds
         .map((streamId) => state.streamsById[streamId])
-        .filter((stream): stream is MessengerStream => stream != null)
+        .filter(
+          (stream): stream is MessengerStream =>
+            stream != null && !isWorkspaceSelfChat(stream, currentUserUuid),
+        )
         .map((stream) =>
           streamItemFromStream({
             organizationId: options.organizationId,
@@ -461,6 +525,7 @@ export function selectMessengerSidebarStreams(
             messagesById,
             usersById,
             currentUserUuid,
+            unreadMentionIndex,
             topics: selectMessengerSidebarTopicsForStream({
               organizationId: options.organizationId,
               projectId: options.projectId,
@@ -469,6 +534,7 @@ export function selectMessengerSidebarStreams(
               messagesById,
               usersById,
               currentUserUuid,
+              unreadMentionIndex,
             }),
           }),
         );
