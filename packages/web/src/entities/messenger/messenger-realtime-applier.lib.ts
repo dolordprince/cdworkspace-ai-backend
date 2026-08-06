@@ -6,6 +6,7 @@ import { invalidateWorkspaceFileResourceCache } from "~/shared/lib/workspace-fil
 import type {
   WorkspaceRealtimeEventApplier,
   WorkspaceRealtimeEventContext,
+  WorkspaceRealtimeRuntimeContext,
   WorkspaceRealtimeRuntimeOwner,
   WorkspaceRealtimeSkipReason,
   WorkspaceRealtimeSkippedEvent,
@@ -18,9 +19,18 @@ import {
   adaptMessengerTopic,
 } from "./messenger-adapters.lib";
 import { useMessengerBackgroundProjectionStore } from "./messenger-background-projection.model";
-import { messengerRealtimeActiveCache, restoreMessengerStreamCache } from "./messenger-cache.lib";
+import {
+  messengerRealtimeActiveCache,
+  messengerRealtimeBackgroundCache,
+  restoreMessengerStreamCache,
+} from "./messenger-cache.lib";
 import { conversationIdForStream, conversationIdForTopic } from "./messenger-ids.lib";
 import { resolveMessengerMessageLiveEffectPolicy } from "./messenger-live-effects.lib";
+import {
+  advanceMessengerReadBoundary,
+  applyMessengerReadBoundary,
+  type MessengerReadBoundary,
+} from "./messenger-read-boundary.lib";
 import { removeMessengerStreamProjection } from "./messenger-stream-projection-cleanup.lib";
 import { restoreMessengerStream, useMessengerStore } from "./messenger.model";
 import type {
@@ -36,6 +46,7 @@ import type {
 
 type MessengerRealtimeEvent = Exclude<WorkspaceRealtimeEvent, { type: "user" }>;
 type MessengerMessageRealtimeEvent = Extract<MessengerRealtimeEvent, { type: "message" }>;
+type MessengerMessagesRealtimeEvent = Extract<MessengerRealtimeEvent, { type: "messages" }>;
 type MessengerStreamRealtimeEvent = Extract<MessengerRealtimeEvent, { type: "stream" }>;
 type MessengerStreamBindingRealtimeEvent = Extract<
   MessengerRealtimeEvent,
@@ -52,6 +63,11 @@ export interface MessengerRealtimeCacheConversationPage {
 }
 
 export interface MessengerRealtimeActiveCacheWriter {
+  advanceReadBoundary?: (boundary: MessengerReadBoundary) => Promise<void> | void;
+  markCachedMessagesRead?: (
+    ownerKey: string,
+    messageUuids: readonly MessengerUuid[],
+  ) => Promise<void> | void;
   patchCachedMessage?: (ownerKey: string, message: MessengerMessage) => Promise<void> | void;
   deleteCachedMessage?: (
     ownerKey: string,
@@ -111,12 +127,21 @@ export interface MessengerRealtimeActiveApplierOptions {
 export interface MessengerRealtimeBackgroundApplierOptions {
   isOwnerCurrent?: (owner: WorkspaceRealtimeRuntimeOwner) => boolean;
   removeProjection?: typeof removeMessengerStreamProjection;
+  cache?: MessengerRealtimeBackgroundCacheWriter;
+}
+
+export interface MessengerRealtimeBackgroundCacheWriter {
+  advanceReadBoundary?: (boundary: MessengerReadBoundary) => Promise<void> | void;
+  markCachedMessagesRead?: (
+    ownerKey: string,
+    messageUuids: readonly MessengerUuid[],
+  ) => Promise<void> | void;
 }
 
 const log = createLogger("realtime:workspace-messenger");
 
 function isActiveCurrentOwner(
-  context: WorkspaceRealtimeEventContext,
+  context: WorkspaceRealtimeRuntimeContext,
   options: MessengerRealtimeActiveApplierOptions,
 ): boolean {
   if (context.surface !== "active") return false;
@@ -149,6 +174,7 @@ function isSupportedRealtimeEvent(event: WorkspaceRealtimeEvent): event is Messe
   const eventType = (event as { type?: unknown }).type;
   return (
     eventType === "message" ||
+    eventType === "messages" ||
     eventType === "stream" ||
     eventType === "stream_binding" ||
     eventType === "topic" ||
@@ -286,7 +312,7 @@ function applyMessageRealtimeEvent(
   context: WorkspaceRealtimeEventContext,
   activeCache: MessengerRealtimeActiveCacheWriter,
   options: MessengerRealtimeActiveApplierOptions,
-): void {
+): Promise<void> | void {
   const store = useMessengerStore.getState();
   const messageStore = useWorkspaceMessageStore.getState();
 
@@ -306,10 +332,30 @@ function applyMessageRealtimeEvent(
     return;
   }
 
-  const message = adaptMessengerMessage(event.message);
+  const message = applyMessengerReadBoundary(adaptMessengerMessage(event.message), ownerKey);
   const stream = store.streamsById[message.streamUuid] ?? null;
   const previousMessage = messageStore.messagesById[message.uuid];
   messageStore.upsertMessage(message);
+  if (event.kind === "message.read") {
+    const boundary = advanceMessengerReadBoundary({
+      ownerKey,
+      streamUuid: message.streamUuid,
+      topicUuid: message.topicUuid,
+      createdAt: message.createdAt,
+      messageUuid: message.uuid,
+      epochVersion: event.epoch_version,
+    });
+    messageStore.markMessagesReadUpTo(message.uuid, {
+      conversationIds: conversationIdsForRealtimeMessage(message),
+    });
+    const boundaryWrite = activeCache.advanceReadBoundary?.(boundary);
+    if (activeCache.patchCachedMessage != null) {
+      writeRealtimeCacheBestEffort(() =>
+        activeCache.patchCachedMessage?.(ownerKey, { ...message, read: true }),
+      );
+    }
+    return boundaryWrite;
+  }
   if (event.kind === "message.updated") {
     if (activeCache.patchCachedMessage != null) {
       writeRealtimeCacheBestEffort(() => activeCache.patchCachedMessage?.(ownerKey, message));
@@ -337,6 +383,15 @@ function applyMessageRealtimeEvent(
       options.onMessageCreated?.(ownerKey, message, stream, context),
     );
   }
+}
+
+function applyMessagesRealtimeEvent(
+  event: MessengerMessagesRealtimeEvent,
+  ownerKey: string,
+  activeCache: MessengerRealtimeActiveCacheWriter,
+): Promise<void> | void {
+  useWorkspaceMessageStore.getState().markMessagesRead(event.messageUuids);
+  return activeCache.markCachedMessagesRead?.(ownerKey, event.messageUuids);
 }
 
 function applyStreamRealtimeEvent(
@@ -502,11 +557,12 @@ function applySupportedRealtimeEvent(
   context: WorkspaceRealtimeEventContext,
   activeCache: MessengerRealtimeActiveCacheWriter,
   options: MessengerRealtimeActiveApplierOptions,
-): void {
+): Promise<void> | void {
   switch (event.type) {
     case "message":
-      applyMessageRealtimeEvent(event, ownerKey, context, activeCache, options);
-      break;
+      return applyMessageRealtimeEvent(event, ownerKey, context, activeCache, options);
+    case "messages":
+      return applyMessagesRealtimeEvent(event, ownerKey, activeCache);
     case "stream":
       applyStreamRealtimeEvent(event, ownerKey, activeCache);
       break;
@@ -562,11 +618,22 @@ export function createMessengerRealtimeActiveApplier(
         return;
       }
 
-      applySupportedRealtimeEvent(event, context.ownerKey, context, activeCache, options);
-      applyLightweightProjectionEvent(event, context);
-
-      store.setRealtimeCursor(context.ownerKey, event.epoch_version);
-      writeRealtimeCursorCache(activeCache, context.ownerKey, event.epoch_version);
+      const finishApplication = (): void => {
+        applyLightweightProjectionEvent(event, context);
+        store.setRealtimeCursor(context.ownerKey, event.epoch_version);
+        writeRealtimeCursorCache(activeCache, context.ownerKey, event.epoch_version);
+      };
+      const cacheWrite = applySupportedRealtimeEvent(
+        event,
+        context.ownerKey,
+        context,
+        activeCache,
+        options,
+      );
+      if (cacheWrite instanceof Promise) {
+        return cacheWrite.then(finishApplication);
+      }
+      finishApplication();
     },
 
     skipEvent(event, reason: WorkspaceRealtimeSkipReason, context) {
@@ -584,8 +651,31 @@ export function createMessengerRealtimeActiveApplier(
         .markRealtimeEventSkipped(context.ownerKey, skippedEpoch(event), reason);
     },
 
-    onTransportStateChange() {
-      // The active apply path does not store diagnostics in messengerStore yet.
+    onTransportStateChange(state, context) {
+      if (!isActiveCurrentOwner(context, options)) return;
+
+      if (
+        state.mode === "starting" ||
+        state.mode === "catching_up" ||
+        state.mode === "connecting" ||
+        state.mode === "auth_refreshing" ||
+        state.mode === "disconnecting" ||
+        state.mode === "stopped" ||
+        (state.mode === "reconnecting" && state.reason !== "catch_up_failed")
+      ) {
+        useMessengerStore
+          .getState()
+          .setRealtimeInitialSyncReady(context.ownerKey, context.owner.runtimeGeneration, false);
+        return;
+      }
+
+      if (state.mode === "connected" || state.mode === "failed") {
+        // "connected" starts only after the socket has applied events up to its ready frame.
+        // A failed catch-up stays fail-open during its backoff, then blocks again when retry starts.
+        useMessengerStore
+          .getState()
+          .setRealtimeInitialSyncReady(context.ownerKey, context.owner.runtimeGeneration, true);
+      }
     },
   };
 }
@@ -593,6 +683,7 @@ export function createMessengerRealtimeActiveApplier(
 export function createMessengerRealtimeBackgroundApplier(
   options: MessengerRealtimeBackgroundApplierOptions = {},
 ): WorkspaceRealtimeEventApplier {
+  const backgroundCache = options.cache ?? messengerRealtimeBackgroundCache;
   return {
     applyEvent(event, context) {
       if (!isBackgroundCurrentOwner(context, options)) return;
@@ -602,6 +693,29 @@ export function createMessengerRealtimeBackgroundApplier(
       if (!isSupportedRealtimeEvent(event)) {
         store.recordSkippedEvent(context.ownerKey, event, "unsupported_event", context);
         return;
+      }
+
+      if (event.type === "messages") {
+        const cacheWrite = backgroundCache.markCachedMessagesRead?.(
+          context.ownerKey,
+          event.messageUuids,
+        );
+        store.recordAppliedEvent(context.ownerKey, event, context);
+        return cacheWrite;
+      }
+
+      let requiredCacheWrite: Promise<void> | void = undefined;
+      if (event.type === "message" && event.kind === "message.read") {
+        const message = adaptMessengerMessage(event.message);
+        const boundary = advanceMessengerReadBoundary({
+          ownerKey: context.ownerKey,
+          streamUuid: message.streamUuid,
+          topicUuid: message.topicUuid,
+          createdAt: message.createdAt,
+          messageUuid: message.uuid,
+          epochVersion: event.epoch_version,
+        });
+        requiredCacheWrite = backgroundCache.advanceReadBoundary?.(boundary);
       }
 
       // Background projection хранит только легкие снимки, compact preview и route-данные.
@@ -621,10 +735,11 @@ export function createMessengerRealtimeBackgroundApplier(
           }).catch(() => undefined);
         }
         store.recordAppliedEvent(context.ownerKey, event, context);
-        return;
+        return requiredCacheWrite;
       }
 
       store.recordSkippedEvent(context.ownerKey, event, "background_apply_deferred", context);
+      return requiredCacheWrite;
     },
 
     skipEvent(event, reason, context) {

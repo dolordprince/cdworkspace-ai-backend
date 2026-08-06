@@ -89,6 +89,12 @@ export interface WorkspaceMessengerTopicDto {
   notification_mode: WorkspaceMessengerTopicNotificationMode;
   color?: number | null;
   last_message_uuid?: WorkspaceMessengerUuid | null;
+  summary?: string | null;
+  summary_last_message_uuid?: WorkspaceMessengerUuid | null;
+  summary_has_new_messages?: boolean | null;
+  summary_enabled?: boolean;
+  summary_system_prompt?: string | null;
+  summary_reasoning_effort?: "minimal" | "low" | "medium" | "high" | null;
   created_at: WorkspaceMessengerDateTime;
   updated_at: WorkspaceMessengerDateTime;
 }
@@ -551,12 +557,18 @@ export interface WorkspaceMessengerServerSettingsDto {
 // Это уже не REST-модель, а нормализованное realtime-событие.
 // Его получают и из REST-догонки, и из WebSocket, чтобы дальше использовать один applier.
 export type WorkspaceRealtimeEvent =
-  | ({
+  | {
       epoch_version: WorkspaceMessengerEpochVersion;
       type: "message";
-      kind?: "message.updated";
+      kind?: "message.created" | "message.updated" | "message.read";
       message: WorkspaceMessengerMessageDto;
-    } & Record<string, unknown>)
+    }
+  | {
+      epoch_version: WorkspaceMessengerEpochVersion;
+      type: "messages";
+      kind: "messages.read";
+      messageUuids: WorkspaceMessengerUuid[];
+    }
   | {
       epoch_version: WorkspaceMessengerEpochVersion;
       type: "message";
@@ -1103,6 +1115,22 @@ export function isWorkspaceMessengerTopicDto(value: unknown): value is Workspace
       value.color === null ||
       (isNonNegativeInteger(value.color) && value.color <= 0xffffff)) &&
     (value.last_message_uuid === undefined || isNullableUuid(value.last_message_uuid)) &&
+    (value.summary === undefined || value.summary === null || typeof value.summary === "string") &&
+    (value.summary_last_message_uuid === undefined ||
+      isNullableUuid(value.summary_last_message_uuid)) &&
+    (value.summary_has_new_messages === undefined ||
+      value.summary_has_new_messages === null ||
+      typeof value.summary_has_new_messages === "boolean") &&
+    (value.summary_enabled === undefined || typeof value.summary_enabled === "boolean") &&
+    (value.summary_system_prompt === undefined ||
+      value.summary_system_prompt === null ||
+      typeof value.summary_system_prompt === "string") &&
+    (value.summary_reasoning_effort === undefined ||
+      value.summary_reasoning_effort === null ||
+      value.summary_reasoning_effort === "minimal" ||
+      value.summary_reasoning_effort === "low" ||
+      value.summary_reasoning_effort === "medium" ||
+      value.summary_reasoning_effort === "high") &&
     isDateTime(value.created_at) &&
     isDateTime(value.updated_at)
   );
@@ -1450,8 +1478,19 @@ function isWorkspaceRealtimeMessageEvent(value: Record<string, unknown>): boolea
     return isMessageDeleteDto(value.message);
   }
   return (
-    (value.kind === undefined || value.kind === "message.updated") &&
+    (value.kind === undefined ||
+      value.kind === "message.created" ||
+      value.kind === "message.updated" ||
+      value.kind === "message.read") &&
     isWorkspaceMessengerMessageDto(value.message)
+  );
+}
+
+function isWorkspaceRealtimeMessagesEvent(value: Record<string, unknown>): boolean {
+  return (
+    value.kind === "messages.read" &&
+    Array.isArray(value.messageUuids) &&
+    value.messageUuids.every(isUuid)
   );
 }
 
@@ -1525,6 +1564,8 @@ export function isWorkspaceRealtimeEvent(value: unknown): value is WorkspaceReal
   switch (value.type) {
     case "message":
       return isWorkspaceRealtimeMessageEvent(value);
+    case "messages":
+      return isWorkspaceRealtimeMessagesEvent(value);
     case "stream":
       return isWorkspaceRealtimeStreamEvent(value);
     case "stream_binding":
