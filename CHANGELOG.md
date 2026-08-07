@@ -6,6 +6,56 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.7] — 2026-08-07
+
+### Added
+
+- Mentions now has a realtime unread counter that is bootstrapped from unread
+  mention messages and stays synchronized as messages are read, created,
+  updated, or deleted.
+- Reaction chips show participant avatars when reaction-user data is available,
+  and the current user's add/remove action is reflected optimistically while
+  the server request completes.
+- Messenger settings can order streams and topics either by the latest message
+  or with unread conversations first.
+
+### Changed
+
+- Activity message lists show the newest items first and paginate in the
+  matching direction, while anchored message navigation and visible-message
+  read boundaries keep the viewport and unread state stable as pages and
+  realtime events arrive.
+- The composer displays readable person names for mentions and converts them
+  back to canonical Workspace user references only when sending.
+- Sidebar unread ordering, notification controls, message loading, reaction
+  handling, and avatar rendering have been aligned with the latest messenger
+  state and realtime projections.
+
+### Fixed
+
+- Duplicate IAM project rows for the same UUID no longer produce repeated
+  options in the login project selector.
+- Debian packages now declare that they conflict with and replace the legacy
+  `electron-app` package, so upgrades can transfer ownership of application
+  files without a dpkg overwrite error.
+- Tall messages are marked read at the correct visible boundary, and activity
+  from inactive topics no longer changes the current unread state.
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.4.6`: Exordos Core `0.2.3` or newer
+  and Workspace backend `0.1.30` or newer.
+- Reaction chips continue to show the numeric count when reaction-user details
+  are unavailable.
+- The local messenger cache remains at schema version 7. No manual client or
+  server data migration is required.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.4.7`.
+- Existing Debian installations using the legacy `electron-app` package are
+  migrated automatically by the new package metadata.
+
 ## [0.4.6] — 2026-08-06
 
 ### Added
