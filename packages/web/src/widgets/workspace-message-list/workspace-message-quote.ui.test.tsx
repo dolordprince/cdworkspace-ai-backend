@@ -33,6 +33,7 @@ function message(uuid: string, authorUuid: string, content: string): MessengerMe
     starred: false,
     isOwn: false,
     reactions: {},
+    reactionUserUuidsByEmojiName: {},
     ownReactionUuidsByEmojiName: {},
     createdAt: "2026-07-28T10:00:00Z",
     updatedAt: "2026-07-28T10:00:00Z",
@@ -127,7 +128,7 @@ describe("WorkspaceMessageQuote", () => {
     expect(screen.queryByText("Old Bob")).not.toBeInTheDocument();
   });
 
-  it("opens the UUID of the clicked quote and shows one unavailable state", () => {
+  it("opens the quote by click or keyboard and shows one unavailable state", () => {
     const onOpenMessage = vi.fn();
     mocked.resolve.mockReturnValue({ status: "unavailable", message: null });
     render(
@@ -137,10 +138,30 @@ describe("WorkspaceMessageQuote", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Open in chat" }));
-    expect(onOpenMessage).toHaveBeenCalledWith(MESSAGE_B);
+    const quoteLink = screen.getByRole("link", { name: "Open in chat" });
+    fireEvent.click(quoteLink);
+    fireEvent.keyDown(quoteLink, { key: "Enter" });
+    expect(onOpenMessage).toHaveBeenNthCalledWith(1, MESSAGE_B);
+    expect(onOpenMessage).toHaveBeenNthCalledWith(2, MESSAGE_B);
     expect(screen.getByText("Message unavailable")).toBeInTheDocument();
     expect(screen.queryByText("Old Bob")).not.toBeInTheDocument();
+  });
+
+  it("opens the deepest quote whose non-interactive body was clicked", () => {
+    const onOpenMessage = vi.fn();
+    render(
+      <WorkspaceMessageQuote
+        reference={{ messageUuid: MESSAGE_B, fallbackAuthorLabel: "Bob" }}
+        mode="full-history"
+        onOpenMessage={onOpenMessage}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Second message"));
+    fireEvent.click(screen.getByText("First message"));
+
+    expect(onOpenMessage).toHaveBeenNthCalledWith(1, MESSAGE_B);
+    expect(onOpenMessage).toHaveBeenNthCalledWith(2, MESSAGE_A);
   });
 
   it("does not turn an inner rich-content link into an outer quote navigation", () => {

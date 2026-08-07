@@ -114,6 +114,42 @@
   }
 }
 
+@keyframes workspace-message-anchor-highlight {
+  0%,
+  18% {
+    background-color: color-mix(in srgb, var(--color-accent-soft) 72%, transparent);
+  }
+
+  100% {
+    background-color: transparent;
+  }
+}
+
+[data-workspace-message-anchor-highlight="true"] {
+  position: relative;
+  isolation: isolate;
+  border-radius: 12px;
+}
+
+[data-workspace-message-anchor-highlight="true"]::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: 12px;
+  content: "";
+  pointer-events: none;
+  animation: workspace-message-anchor-highlight 2.6s ease-out;
+}
+
+[data-workspace-message-anchor-highlight="true"][data-message-owner="peer"]::before {
+  inset-inline-start: -3.5rem;
+}
+
+[data-workspace-peer-avatar="true"] {
+  isolation: isolate;
+  box-shadow: 0 0 0 2px var(--color-bg);
+}
+
 .media-viewer-resource-placeholder {
   display: flex;
   min-width: 4rem;
@@ -157,6 +193,11 @@
     .workspace-message-file-placeholder__video-icon,
   .media-viewer-resource-placeholder[data-media-viewer-resource-state="loading"]
     .media-viewer-resource-placeholder__icon {
+    animation: none;
+  }
+
+  [data-workspace-message-anchor-highlight="true"]::before {
+    background-color: color-mix(in srgb, var(--color-accent-soft) 72%, transparent);
     animation: none;
   }
 }
@@ -757,6 +798,12 @@ article,
 /*
  * Shared hover/focus contract for icon-only action buttons.
  * Keeps icon behavior consistent across the UI.
+ *
+ * Important: `:has(> *:not(svg))` ignores text nodes. A button with
+ * `<svg/>Label` still matches and would get gray `text-icon-base` until hover
+ * flips to `text-icon-active`. Opt out with `data-icon-hover="custom"`, or put
+ * the label in an element (e.g. span). Also skip `[class*="gap-"]` — icon+text
+ * CTAs usually set a gap utility.
  */
 .composer-toolbar-btn {
   @apply rounded-lg text-icon-base transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft;
@@ -772,7 +819,7 @@ article,
 @media (hover: hover) {
   button:not(:disabled):not([data-icon-hover="custom"]):not(.composer-toolbar-btn):not(
       .composer-mode-tab-btn
-    ):has(> svg):not(:has(> *:not(svg))):hover {
+    ):not([class*="gap-"]):has(> svg):not(:has(> *:not(svg))):hover {
     @apply text-icon-active;
     background-color: color-mix(in srgb, var(--color-icon-hover) 35%, transparent);
   }
@@ -780,7 +827,7 @@ article,
 
 button:not(:disabled):not([data-icon-hover="custom"]):not(.composer-toolbar-btn):not(
     .composer-mode-tab-btn
-  ):has(> svg):not(:has(> *:not(svg))) {
+  ):not([class*="gap-"]):has(> svg):not(:has(> *:not(svg))) {
   @apply rounded-lg text-icon-base transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft;
 }
 

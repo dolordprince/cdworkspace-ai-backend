@@ -135,6 +135,19 @@ describe("RightPanelShell", () => {
     expect(useSettingsStore.getState().notificationSound).toBe("digital");
   });
 
+  it("switches the stream and topic ordering mode from the user menu", () => {
+    renderWithProviders(<RightPanelShell mode="user-menu" title="Profile" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /stream and topic order/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^unread first$/i }));
+
+    expect(useSettingsStore.getState().messengerSidebarSortMode).toBe("unread_first");
+    expect(screen.getByRole("button", { name: /^unread first$/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
   it("renders current Workspace session in user menu", () => {
     setWorkspaceUserMenuSession();
 
@@ -168,7 +181,11 @@ describe("RightPanelShell", () => {
     expect(screen.getByTestId("manage-external-provider-entry")).toHaveTextContent(
       "workspace.example.com",
     );
-    fireEvent.click(screen.getByTestId("connect-external-account-trigger"));
+    const connectTrigger = screen.getByTestId("connect-external-account-trigger");
+    expect(connectTrigger).toHaveClass("text-on-accent");
+    // Must opt out: global icon-only CSS treats svg+text as icon-only and forces gray label
+    expect(connectTrigger).toHaveAttribute("data-icon-hover", "custom");
+    fireEvent.click(connectTrigger);
     expect(screen.getByRole("dialog", { name: "" })).toHaveTextContent("Connect external account");
   });
 

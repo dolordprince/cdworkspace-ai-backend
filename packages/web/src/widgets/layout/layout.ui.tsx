@@ -1,6 +1,7 @@
 // Root app layout: shell, store orchestration, background syncs for the active instance.
 import React, { useCallback, useMemo, useState } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { useActivityStore } from "~/entities/activity/activity.model";
 import { selectMessengerSidebarActivityCounts } from "~/entities/messenger/messenger-sidebar.lib";
 import { useMessengerStore } from "~/entities/messenger/messenger.model";
 import {
@@ -34,6 +35,7 @@ import { useLayoutResetRightDrawerOnInstanceChange } from "./layout-reset-right-
 import { useLayoutRightPanelShell } from "./layout-right-panel-shell.hook";
 import { useLayoutShortcuts } from "./layout-shortcuts.hook";
 import { resolveLayoutTopBannerKind } from "./layout-top-banner.lib";
+import { useLayoutUnreadMentionsBootstrap } from "./layout-unread-mentions-bootstrap.hook";
 import { useLayoutWindowBranding } from "./layout-window-branding.hook";
 import { useLayoutWorkspaceMessengerBootstrap } from "./layout-workspace-messenger-bootstrap.hook";
 import { useLayoutWorkspaceNotifications } from "./layout-workspace-notifications.hook";
@@ -71,7 +73,8 @@ export const Layout: React.FC = () => {
   const mutedStreamIds = EMPTY_LEGACY_MUTED_STREAM_IDS;
   const unreadCountForCurrentInstance = workspaceActivityCounts.inboxCount ?? 0;
   const dmUnreadCountForCurrentInstance = 0;
-  const mentionsUnreadCount = workspaceActivityCounts.mentionsCount ?? 0;
+  const unreadMentionsOwnerKey = useActivityStore((state) => state.unreadMentionsOwnerKey);
+  const unreadMentionsCount = useActivityStore((state) => state.unreadMentionsCount);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [bootstrapRetryNonce, setBootstrapRetryNonce] = useState(0);
   const rightDrawerOpen = useRightDrawerStore((s) => s.open);
@@ -118,6 +121,14 @@ export const Layout: React.FC = () => {
     workspaceMessengerRoute.orgId === currentWorkspaceRuntimeContext?.organizationId &&
     workspaceMessengerRoute.projectId === currentWorkspaceRuntimeContext.projectId;
   const workspaceInstanceId = currentWorkspaceRuntimeContext?.instanceId ?? null;
+  const currentWorkspaceOwnerKey =
+    currentWorkspaceRuntimeContext == null
+      ? null
+      : workspaceRuntimeOwnerKey(currentWorkspaceRuntimeContext);
+  const mentionsUnreadCount =
+    unreadMentionsOwnerKey === currentWorkspaceOwnerKey ? (unreadMentionsCount ?? 0) : 0;
+
+  useLayoutUnreadMentionsBootstrap(currentWorkspaceRuntimeContext);
   useLayoutWorkspaceMessengerBootstrap({ enabled: true, retryNonce: bootstrapRetryNonce });
   useLayoutWorkspaceRealtime({
     enabled: workspaceMessengerActive,

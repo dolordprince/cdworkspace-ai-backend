@@ -4,10 +4,11 @@ import {
   computeWorkspaceScrollTopAfterPrepend,
   computeWorkspaceScrollTopFromRenderAnchor,
   findWorkspaceMessageNode,
+  highlightWorkspaceMessageAnchor,
   isWorkspaceScrollAtBottom,
   resolveVisibleWorkspaceMessageRenderAnchor,
-  WORKSPACE_MESSAGE_UUID_ATTRIBUTE,
-  WORKSPACE_MESSAGE_UUID_SELECTOR,
+  WORKSPACE_MESSAGE_READ_BOUNDARY_ATTRIBUTE,
+  WORKSPACE_MESSAGE_READ_BOUNDARY_SELECTOR,
   type WorkspaceScrollAnchor,
   type WorkspaceScrollSnapshot,
 } from "./workspace-message-list-scroll-anchor.lib";
@@ -15,7 +16,6 @@ import type React from "react";
 
 const SCROLL_AT_BOTTOM_THRESHOLD = 80;
 const LOAD_MORE_THRESHOLD = 100;
-const UNREAD_VISIBILITY_THRESHOLD = 0.5;
 
 interface PendingPrependScrollSnapshot extends WorkspaceScrollSnapshot {
   messageCount: number;
@@ -46,6 +46,7 @@ interface WorkspaceMessageListScrollOptions<TMessage> {
   hasNewerMessages?: boolean;
   onLoadOlder?: () => void;
   onLoadNewer?: () => void;
+  onUserScrollInput?: () => void;
   onUnreadMessagesVisible?: (messageKeys: string[]) => void;
   onUnreadMessagesAtBottom?: (messageKeys: string[]) => void;
 }
@@ -56,6 +57,7 @@ interface WorkspaceMessageListScrollResult {
   handleScroll: (event: React.UIEvent<HTMLDivElement>) => void;
   handleWheel: (event: React.WheelEvent<HTMLDivElement>) => void;
   handleTouchMove: () => void;
+  scrollToBottom: () => void;
   isUnreadDividerDismissed: boolean;
 }
 
@@ -74,17 +76,18 @@ function collectVisibleUnreadKeys(root: HTMLElement, unreadKeys: ReadonlySet<str
   const rootRect = root.getBoundingClientRect();
   const visibleKeys: string[] = [];
 
-  for (const node of root.querySelectorAll<HTMLElement>(WORKSPACE_MESSAGE_UUID_SELECTOR)) {
-    const messageKey = node.getAttribute(WORKSPACE_MESSAGE_UUID_ATTRIBUTE);
+  for (const boundary of root.querySelectorAll<HTMLElement>(
+    WORKSPACE_MESSAGE_READ_BOUNDARY_SELECTOR,
+  )) {
+    const messageKey = boundary.getAttribute(WORKSPACE_MESSAGE_READ_BOUNDARY_ATTRIBUTE);
 
     if (messageKey == null || !unreadKeys.has(messageKey)) {
       continue;
     }
 
-    const rect = node.getBoundingClientRect();
-    const visibleHeight = Math.min(rect.bottom, rootRect.bottom) - Math.max(rect.top, rootRect.top);
+    const rect = boundary.getBoundingClientRect();
 
-    if (rect.height <= 0 || visibleHeight / rect.height < UNREAD_VISIBILITY_THRESHOLD) {
+    if (rect.bottom <= rootRect.top || rect.top >= rootRect.bottom) {
       continue;
     }
 
@@ -110,6 +113,7 @@ export function useWorkspaceMessageListScroll<TMessage>({
   hasNewerMessages = false,
   onLoadOlder,
   onLoadNewer,
+  onUserScrollInput,
   onUnreadMessagesVisible,
   onUnreadMessagesAtBottom,
 }: WorkspaceMessageListScrollOptions<TMessage>): WorkspaceMessageListScrollResult {
@@ -129,6 +133,7 @@ export function useWorkspaceMessageListScroll<TMessage>({
   const observedUnreadNodesRef = useRef<Map<string, HTMLElement>>(new Map());
   const viewportUnreadKeysRef = useRef<Set<string>>(new Set());
   const intersectionObserverRef = useRef<IntersectionObserver | null>(null);
+  const clearAnchorHighlightRef = useRef<(() => void) | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [isUnreadDividerDismissed, setIsUnreadDividerDismissed] = useState(false);
   const isInitialPositionApplied = useCallback(
@@ -304,13 +309,13 @@ export function useWorkspaceMessageListScroll<TMessage>({
 
       for (const entry of entries) {
         const element = entry.target as HTMLElement;
-        const messageKey = element.getAttribute(WORKSPACE_MESSAGE_UUID_ATTRIBUTE);
+        const messageKey = element.getAttribute(WORKSPACE_MESSAGE_READ_BOUNDARY_ATTRIBUTE);
 
         if (messageKey == null || !unreadCandidateKeys.has(messageKey)) {
           continue;
         }
 
-        if (entry.isIntersecting && entry.intersectionRatio >= 0.5) {
+        if (entry.isIntersecting && entry.intersectionRatio > 0) {
           viewportUnreadKeysRef.current.add(messageKey);
           visibleThisFrame.push(messageKey);
         } else {
@@ -470,6 +475,8 @@ export function useWorkspaceMessageListScroll<TMessage>({
           target.scrollIntoView({ block: "center", behavior: "instant" });
           syncAtBottomFromElement(root);
         });
+        clearAnchorHighlightRef.current?.();
+        clearAnchorHighlightRef.current = highlightWorkspaceMessageAnchor(target);
         initialPositionAppliedKeyRef.current = initialPositionKey;
         return;
       }
@@ -502,6 +509,12 @@ export function useWorkspaceMessageListScroll<TMessage>({
     ],
   );
 
+  useEffect(() => {
+    return () => {
+      clearAnchorHighlightRef.current?.();
+      clearAnchorHighlightRef.current = null;
+    };
+  }, []);
   useLayoutEffect(() => {
     const root = scrollContainerRef.current;
 
@@ -655,14 +668,16 @@ export function useWorkspaceMessageListScroll<TMessage>({
       },
       {
         root,
-        threshold: [UNREAD_VISIBILITY_THRESHOLD],
+        threshold: [0],
       },
     );
     const previousObservedNodes = observedUnreadNodesRef.current;
     const nextObservedNodes = new Map<string, HTMLElement>();
 
-    for (const node of root.querySelectorAll<HTMLElement>(WORKSPACE_MESSAGE_UUID_SELECTOR)) {
-      const messageKey = node.getAttribute(WORKSPACE_MESSAGE_UUID_ATTRIBUTE);
+    for (const node of root.querySelectorAll<HTMLElement>(
+      WORKSPACE_MESSAGE_READ_BOUNDARY_SELECTOR,
+    )) {
+      const messageKey = node.getAttribute(WORKSPACE_MESSAGE_READ_BOUNDARY_ATTRIBUTE);
 
       if (messageKey == null || !unreadCandidateKeys.has(messageKey)) {
         continue;
@@ -741,6 +756,7 @@ export function useWorkspaceMessageListScroll<TMessage>({
       lastScrollTopRef.current = root.scrollTop;
 
       if (isTrustedUserScroll) {
+        onUserScrollInput?.();
         userScrollSeenRef.current = true;
         if (previousScrollTop != null && root.scrollTop > previousScrollTop) {
           dismissUnreadDividerIfPassed(root);
@@ -806,6 +822,7 @@ export function useWorkspaceMessageListScroll<TMessage>({
       isLoadingOlder,
       onLoadNewer,
       onLoadOlder,
+      onUserScrollInput,
       syncAtBottomFromElement,
       dismissUnreadDividerIfPassed,
     ],
@@ -813,6 +830,7 @@ export function useWorkspaceMessageListScroll<TMessage>({
 
   const handleWheel = useCallback(
     (event: React.WheelEvent<HTMLDivElement>) => {
+      onUserScrollInput?.();
       userScrollSeenRef.current = true;
 
       const root = scrollContainerRef.current;
@@ -836,17 +854,31 @@ export function useWorkspaceMessageListScroll<TMessage>({
       const atBottom = syncAtBottomFromElement(root);
       userScrolledAwayFromBottomRef.current = !atBottom;
     },
-    [dismissUnreadDividerIfPassed, syncAtBottomFromElement],
+    [dismissUnreadDividerIfPassed, onUserScrollInput, syncAtBottomFromElement],
   );
 
   const handleTouchMove = useCallback(() => {
+    onUserScrollInput?.();
     userScrollSeenRef.current = true;
 
     const root = scrollContainerRef.current;
     if (root != null) {
       lastScrollTopRef.current = root.scrollTop;
     }
-  }, []);
+  }, [onUserScrollInput]);
+
+  const handleScrollToBottom = useCallback(() => {
+    const root = scrollContainerRef.current;
+    if (root == null) {
+      return;
+    }
+
+    userScrollSeenRef.current = true;
+    userScrolledAwayFromBottomRef.current = false;
+    bottomUnreadDispatchKeyRef.current = null;
+    pinTailToBottom(root);
+    dispatchUnreadAtBottom();
+  }, [dispatchUnreadAtBottom, pinTailToBottom]);
 
   return {
     scrollContainerRef,
@@ -854,6 +886,7 @@ export function useWorkspaceMessageListScroll<TMessage>({
     handleScroll,
     handleWheel,
     handleTouchMove,
+    scrollToBottom: handleScrollToBottom,
     isUnreadDividerDismissed,
   };
 }

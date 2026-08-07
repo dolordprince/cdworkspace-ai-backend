@@ -138,7 +138,7 @@ export type MessengerMessageReactionActionResult =
   | {
       status: "skipped";
       ownerKey: string | null;
-      reason: "missing-context" | "stale-owner" | "empty-emoji";
+      reason: "missing-context" | "stale-owner" | "empty-emoji" | "pending-reaction";
     };
 
 interface CapturedReactionAction {
@@ -275,8 +275,27 @@ function isOwnReactionProjected(
   return message.pendingOwnReactionsByEmojiName?.[emojiName]?.operation === "add";
 }
 
+function hasPendingOwnReaction(
+  store: MessengerMessageReactionStoreApi,
+  messageUuid: MessengerUuid,
+  emojiName: string,
+): boolean {
+  return (
+    store.getState().messagesById[messageUuid]?.pendingOwnReactionsByEmojiName?.[emojiName] != null
+  );
+}
+
 function createReactionOptimisticRequestId(): string {
   return `reaction:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+}
+
+function rollbackOwnReactionOptimisticState(
+  store: MessengerMessageReactionStoreApi,
+  messageUuid: MessengerUuid,
+  emojiName: string,
+  requestId: string,
+): void {
+  store.getState().rollbackOptimisticOwnMessageReaction(messageUuid, emojiName, requestId);
 }
 
 function applyOwnRowsToStore(
@@ -558,6 +577,7 @@ export async function addMessengerMessageReaction({
       normalizedEmojiName,
       "add",
       optimisticRequestId,
+      runtimeContext.userUuid,
     );
 
   try {
@@ -568,8 +588,15 @@ export async function addMessengerMessageReaction({
         emoji_name: normalizedEmojiName,
       },
     );
-    if (action.isStale())
+    if (action.isStale()) {
+      rollbackOwnReactionOptimisticState(
+        store,
+        messageUuid,
+        normalizedEmojiName,
+        optimisticRequestId,
+      );
       return { status: "skipped", ownerKey: action.ownerKey, reason: "stale-owner" };
+    }
 
     const row = dtoToOwnReactionCacheWrite(dto);
     store.getState().setOwnMessageReaction(messageUuid, normalizedEmojiName, row.reactionUuid);
@@ -589,36 +616,60 @@ export async function addMessengerMessageReaction({
     };
   } catch (error) {
     if (!isDuplicateReactionConflict(error)) {
-      if (!action.isStale()) {
-        store
-          .getState()
-          .rollbackOptimisticOwnMessageReaction(
-            messageUuid,
-            normalizedEmojiName,
-            optimisticRequestId,
-          );
-      }
+      rollbackOwnReactionOptimisticState(
+        store,
+        messageUuid,
+        normalizedEmojiName,
+        optimisticRequestId,
+      );
       throw error;
     }
-    if (action.isStale())
-      return { status: "skipped", ownerKey: action.ownerKey, reason: "stale-owner" };
-
-    const rows = await resolveOwnRowsFromApiForMessage({
-      runtimeContext,
-      requestOptions,
-      ownerKey: action.ownerKey,
-      messageUuid,
-      action,
-      client,
-      cache: effectiveCache,
-      store,
-    });
-    if (rows == null) {
+    if (action.isStale()) {
+      rollbackOwnReactionOptimisticState(
+        store,
+        messageUuid,
+        normalizedEmojiName,
+        optimisticRequestId,
+      );
       return { status: "skipped", ownerKey: action.ownerKey, reason: "stale-owner" };
     }
-    store
-      .getState()
-      .rollbackOptimisticOwnMessageReaction(messageUuid, normalizedEmojiName, optimisticRequestId);
+
+    let rows: MessengerOwnMessageReactionCacheWrite[] | null;
+    try {
+      rows = await resolveOwnRowsFromApiForMessage({
+        runtimeContext,
+        requestOptions,
+        ownerKey: action.ownerKey,
+        messageUuid,
+        action,
+        client,
+        cache: effectiveCache,
+        store,
+      });
+    } catch (resolutionError) {
+      rollbackOwnReactionOptimisticState(
+        store,
+        messageUuid,
+        normalizedEmojiName,
+        optimisticRequestId,
+      );
+      throw resolutionError;
+    }
+    if (rows == null) {
+      rollbackOwnReactionOptimisticState(
+        store,
+        messageUuid,
+        normalizedEmojiName,
+        optimisticRequestId,
+      );
+      return { status: "skipped", ownerKey: action.ownerKey, reason: "stale-owner" };
+    }
+    rollbackOwnReactionOptimisticState(
+      store,
+      messageUuid,
+      normalizedEmojiName,
+      optimisticRequestId,
+    );
     applyOwnRowsToStore(store, messageUuid, rows);
     const ownRow = rows.find((row) => row.emojiName === normalizedEmojiName) ?? null;
     return {
@@ -656,17 +707,28 @@ export async function removeMessengerMessageReaction({
 
   const requestOptions = buildMessengerRequestOptions(runtimeContext, clientOptions, signal);
   const effectiveCache = { ...defaultReactionCache, ...cache };
-  const row = await resolveOwnReactionForMessageAndEmoji({
-    runtimeContext,
-    requestOptions,
-    ownerKey: action.ownerKey,
-    messageUuid,
-    emojiName: normalizedEmojiName,
-    action,
-    client,
-    cache: effectiveCache,
-    store,
-  });
+  const projectedReactionUuid = currentOwnReactionUuid(store, messageUuid, normalizedEmojiName);
+  const row =
+    projectedReactionUuid != null
+      ? {
+          messageUuid,
+          userUuid: runtimeContext.userUuid,
+          reactionUuid: projectedReactionUuid,
+          emojiName: normalizedEmojiName,
+          createdAt: "",
+          updatedAt: "",
+        }
+      : await resolveOwnReactionForMessageAndEmoji({
+          runtimeContext,
+          requestOptions,
+          ownerKey: action.ownerKey,
+          messageUuid,
+          emojiName: normalizedEmojiName,
+          action,
+          client,
+          cache: effectiveCache,
+          store,
+        });
   if (action.isStale())
     return { status: "skipped", ownerKey: action.ownerKey, reason: "stale-owner" };
 
@@ -692,6 +754,7 @@ export async function removeMessengerMessageReaction({
       normalizedEmojiName,
       "remove",
       optimisticRequestId,
+      runtimeContext.userUuid,
     );
 
   try {
@@ -699,8 +762,15 @@ export async function removeMessengerMessageReaction({
       requestOptions,
       row.reactionUuid,
     );
-    if (action.isStale())
+    if (action.isStale()) {
+      rollbackOwnReactionOptimisticState(
+        store,
+        messageUuid,
+        normalizedEmojiName,
+        optimisticRequestId,
+      );
       return { status: "skipped", ownerKey: action.ownerKey, reason: "stale-owner" };
+    }
 
     store
       .getState()
@@ -709,15 +779,12 @@ export async function removeMessengerMessageReaction({
       effectiveCache.deleteOwnMessageReaction(action.ownerKey, messageUuid, normalizedEmojiName),
     );
   } catch (error) {
-    if (!action.isStale()) {
-      store
-        .getState()
-        .rollbackOptimisticOwnMessageReaction(
-          messageUuid,
-          normalizedEmojiName,
-          optimisticRequestId,
-        );
-    }
+    rollbackOwnReactionOptimisticState(
+      store,
+      messageUuid,
+      normalizedEmojiName,
+      optimisticRequestId,
+    );
     throw error;
   }
   return {
@@ -747,6 +814,11 @@ export async function toggleMessengerMessageReaction({
     return { status: "skipped", ownerKey: action.ownerKey, reason: "empty-emoji" };
   }
 
+  if (hasPendingOwnReaction(store, messageUuid, normalizedEmojiName)) {
+    const action = captureReactionAction(runtimeContext, getRuntimeContext, signal);
+    return { status: "skipped", ownerKey: action.ownerKey, reason: "pending-reaction" };
+  }
+
   if (isOwnReactionProjected(store, messageUuid, normalizedEmojiName)) {
     return removeMessengerMessageReaction({
       runtimeContext,
@@ -761,7 +833,7 @@ export async function toggleMessengerMessageReaction({
     });
   }
 
-  const revalidateResult = await revalidateMessengerOwnMessageReactions({
+  const addResult = await addMessengerMessageReaction({
     runtimeContext,
     getRuntimeContext,
     clientOptions,
@@ -769,32 +841,14 @@ export async function toggleMessengerMessageReaction({
     cache,
     signal,
     store,
-    messageUuids: [messageUuid],
+    messageUuid,
+    emojiName: normalizedEmojiName,
   });
-  if (revalidateResult.status === "skipped") {
-    return {
-      status: "skipped",
-      ownerKey: revalidateResult.ownerKey,
-      reason:
-        revalidateResult.reason === "empty-message-list" ? "stale-owner" : revalidateResult.reason,
-    };
+  if (addResult.status !== "applied" || addResult.operation !== "already-added") {
+    return addResult;
   }
 
-  if (isOwnReactionProjected(store, messageUuid, normalizedEmojiName)) {
-    return removeMessengerMessageReaction({
-      runtimeContext,
-      getRuntimeContext,
-      clientOptions,
-      client,
-      cache,
-      signal,
-      store,
-      messageUuid,
-      emojiName: normalizedEmojiName,
-    });
-  }
-
-  return addMessengerMessageReaction({
+  return removeMessengerMessageReaction({
     runtimeContext,
     getRuntimeContext,
     clientOptions,

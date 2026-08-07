@@ -39,6 +39,7 @@ import type {
   WorkspaceMessengerCatalogCacheSnapshot,
   WorkspaceMessengerCatalogCacheWriteOptions,
   WorkspaceMessengerCatalogCacheWriteSnapshot,
+  WorkspaceMessengerCachedMessage,
   WorkspaceMessengerConversationMessagePage,
   WorkspaceMessengerCachedConversation,
   WorkspaceMessengerOwnMessageReactionCacheRow,
@@ -75,6 +76,25 @@ export interface MessengerConversationCacheWindow {
   messages: MessengerMessage[];
   nextPageMarker: string | null;
   hasMore: boolean;
+}
+
+function withoutRuntimeReactionState(message: MessengerMessage): MessengerMessage {
+  const snapshot = { ...message };
+  delete snapshot.pendingOwnReactionsByEmojiName;
+  delete snapshot.optimisticReactionUserUuidsByEmojiName;
+  return snapshot;
+}
+
+function normalizeCachedMessages(
+  messages: readonly WorkspaceMessengerCachedMessage[],
+): MessengerMessage[] {
+  return messages.map((cachedMessage) => {
+    const message = cachedMessage as unknown as MessengerMessage;
+    return withoutRuntimeReactionState({
+      ...message,
+      reactionUserUuidsByEmojiName: message.reactionUserUuidsByEmojiName ?? {},
+    });
+  });
 }
 
 const removedStreamCacheKeys = new Set<string>();
@@ -403,7 +423,7 @@ export async function readMessengerConversationWindowCache(
 ): Promise<MessengerConversationCacheWindow> {
   const cached = await readConversationMessageWindow(ownerKey, conversationId);
   return {
-    messages: cached.messages as unknown as MessengerMessage[],
+    messages: normalizeCachedMessages(cached.messages),
     nextPageMarker: cached.window?.nextPageMarker ?? null,
     hasMore: cached.window?.hasMore ?? false,
   };
@@ -414,7 +434,7 @@ export async function readMessengerMessageBodyCache(
   messageUuids: readonly MessengerUuid[],
 ): Promise<MessengerMessage[]> {
   const cached = await readCachedMessagesByUuids(ownerKey, messageUuids);
-  return cached as unknown as MessengerMessage[];
+  return normalizeCachedMessages(cached);
 }
 
 export async function writeMessengerMessageBodyCache(
@@ -423,7 +443,9 @@ export async function writeMessengerMessageBodyCache(
 ): Promise<void> {
   await upsertCachedMessages(
     ownerKey,
-    messages.filter((message) => keepCachedMessage(ownerKey, message)),
+    messages
+      .filter((message) => keepCachedMessage(ownerKey, message))
+      .map(withoutRuntimeReactionState),
   );
   await purgeRemovedStreamCaches(
     ownerKey,
@@ -452,7 +474,9 @@ export async function writeMessengerLiveMessageCache(
 ): Promise<void> {
   const parsed = parseMessengerConversationId(conversationId);
   if (parsed != null && isStreamCacheRemoved(ownerKey, parsed.streamUuid)) return;
-  const messages = page.messages.filter((message) => keepCachedMessage(ownerKey, message));
+  const messages = page.messages
+    .filter((message) => keepCachedMessage(ownerKey, message))
+    .map(withoutRuntimeReactionState);
   await writeConversationMessagePage(ownerKey, conversationId, { messages });
   await purgeRemovedStreamCaches(ownerKey, parsed == null ? [] : [parsed.streamUuid]);
   const message = messages.at(-1);
@@ -466,7 +490,7 @@ export async function patchMessengerCachedMessage(
   message: MessengerMessage,
 ): Promise<void> {
   if (isStreamCacheRemoved(ownerKey, message.streamUuid)) return;
-  await patchCachedMessage(ownerKey, message);
+  await patchCachedMessage(ownerKey, withoutRuntimeReactionState(message));
   if (isStreamCacheRemoved(ownerKey, message.streamUuid)) {
     await purgeRemovedStreamCaches(ownerKey, [message.streamUuid]);
   }
