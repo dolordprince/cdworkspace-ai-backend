@@ -6,6 +6,38 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.8] — 2026-08-12
+
+### Added
+
+- Message links, quotes, and referenced-message actions can navigate to the
+  target message, load the required message window, and visibly focus the
+  destination without losing the active conversation context.
+- Workspace attachments are uploaded before send and expose progress, retry,
+  cancellation, and removal controls in the composer.
+
+### Changed
+
+- The message composer has a redesigned layout with resize controls, richer
+  formatting actions, improved reply and edit notices, and consistent compact
+  attachment cards and file previews.
+- Message-window loading, cache reconciliation, and realtime projections keep
+  anchored navigation stable when messages are updated, deleted, or arrive
+  while a navigation request is in progress.
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.4.7`: Exordos Core `0.2.3` or newer and
+  Workspace backend `0.1.30` or newer.
+- Attachment uploads use the existing Workspace file and message APIs.
+- The local messenger cache remains at schema version 7. No manual client or
+  server data migration is required.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.4.8`.
+- No manual migration is required.
+
 ## [0.4.7] — 2026-08-07
 
 ### Added
