@@ -8,6 +8,7 @@ import type { WorkspaceMessageBodyQuoteSegment } from "~/shared/lib/workspace-me
 import { parseWorkspaceMessageBody } from "~/shared/lib/workspace-message-render/workspace-message-parse.lib";
 import { DEFAULT_WORKSPACE_MESSAGE_RENDER_OPTIONS } from "~/shared/lib/workspace-message-render/workspace-message-render-options.lib";
 import { renderWorkspaceMessageBodySegments } from "~/shared/lib/workspace-message-render/workspace-message-render.lib";
+import { WorkspaceMessageQuoteFrame } from "~/shared/ui/workspace-message-quote-frame.ui";
 import {
   DEFAULT_WORKSPACE_QUOTE_MAX_DEPTH,
   DEFAULT_WORKSPACE_QUOTE_RENDER_MODE,
@@ -30,8 +31,9 @@ export const WorkspaceMessageQuote = React.memo(function WorkspaceMessageQuote({
   visitedMessageUuids = new Set<string>(),
   resolveMention,
   onOpenMessage,
+  loadEnabled = true,
 }: WorkspaceMessageQuoteProps): React.ReactElement {
-  const resolved = useResolvedMessengerQuoteMessage(reference.messageUuid);
+  const resolved = useResolvedMessengerQuoteMessage(reference.messageUuid, loadEnabled);
   const author = useUsersStore((state) =>
     resolved.message == null ? undefined : state.usersById[resolved.message.authorUuid],
   );
@@ -86,9 +88,10 @@ export const WorkspaceMessageQuote = React.memo(function WorkspaceMessageQuote({
         visitedMessageUuids={nextVisitedMessageUuids}
         resolveMention={resolveMention}
         onOpenMessage={onOpenMessage}
+        loadEnabled={loadEnabled}
       />
     ),
-    [depth, maxDepth, mode, nextVisitedMessageUuids, onOpenMessage, resolveMention],
+    [depth, loadEnabled, maxDepth, mode, nextVisitedMessageUuids, onOpenMessage, resolveMention],
   );
   const openMessage = useCallback(() => {
     onOpenMessage?.(reference.messageUuid);
@@ -158,10 +161,11 @@ export const WorkspaceMessageQuote = React.memo(function WorkspaceMessageQuote({
   }
 
   return (
-    <div
-      className={`bg-bg/35 my-1 min-w-0 rounded-md border-l-2 border-accent px-2 py-1.5 ${
-        onOpenMessage == null ? "" : "cursor-pointer"
-      }`}
+    <WorkspaceMessageQuoteFrame
+      header={headerLabel}
+      headerMuted={resolved.status === "unavailable"}
+      headerProps={{ "data-workspace-quote-open": "true" }}
+      className={onOpenMessage == null ? "" : "cursor-pointer"}
       data-workspace-quote="true"
       data-workspace-quote-mode={mode}
       data-workspace-quote-message-uuid={reference.messageUuid}
@@ -173,15 +177,7 @@ export const WorkspaceMessageQuote = React.memo(function WorkspaceMessageQuote({
       onClick={onOpenMessage == null ? undefined : handleBlockClick}
       onKeyDown={onOpenMessage == null ? undefined : handleBlockKeyDown}
     >
-      <span
-        className={`mb-0.5 block max-w-full truncate rounded-sm text-left text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-soft ${
-          resolved.status === "unavailable" ? "text-text-muted" : "text-accent"
-        }`}
-        data-workspace-quote-open="true"
-      >
-        {headerLabel}
-      </span>
       {messageContent}
-    </div>
+    </WorkspaceMessageQuoteFrame>
   );
 });

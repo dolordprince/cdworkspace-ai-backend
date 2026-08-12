@@ -1,24 +1,37 @@
 import React, { useMemo } from "react";
 import { t } from "~/i18n/i18n";
-import { chatBottomNoticeBarClassName } from "~/shared/lib/chat-bottom-notice-bar.lib";
+import {
+  CHAT_BOTTOM_NOTICE_DISMISS_BUTTON_CLASS_NAME,
+  CHAT_BOTTOM_NOTICE_REPLY_CHROME_CLASS_NAME,
+  CHAT_BOTTOM_COMPOSER_CONTENT_INSET_X,
+  chatBottomNoticeBarClassName,
+} from "~/shared/lib/chat-bottom-notice-bar.lib";
 import { summarizeWorkspaceMessageMarkdown } from "~/shared/lib/workspace-message-render/workspace-message-summary.lib";
+import { AttachmentCard, AttachmentCardList } from "~/shared/ui/attachment-card.ui";
 import { Icon } from "~/shared/ui/icon";
+import { WorkspaceMessageQuoteFrame } from "~/shared/ui/workspace-message-quote-frame.ui";
 import {
   formatAttachmentSize,
   formatScheduledTimestamp,
   getAttachmentExtensionLabel,
 } from "./message-composer-body.lib";
 import { QUOTE_PREVIEW_MAX } from "./message-composer-constants.lib";
+import { MessageComposerControlledAttachmentCards } from "./message-composer-controlled-attachments.ui";
 import type { MessageComposerPrefaceProps } from "./message-composer.types";
 
 interface MessageComposerEditNoticeProps {
   onCancelEdit?: () => void;
+  joinedTop?: boolean;
 }
 
 export const MessageComposerEditNotice: React.FC<MessageComposerEditNoticeProps> = React.memo(
-  ({ onCancelEdit }) => (
+  ({ onCancelEdit, joinedTop = false }) => (
     <div
-      className={chatBottomNoticeBarClassName({ gap: "3", round: "top" })}
+      className={chatBottomNoticeBarClassName({
+        gap: "3",
+        joinedAbove: joinedTop,
+        joinedBelow: true,
+      })}
       role="status"
       aria-live="polite"
     >
@@ -34,12 +47,14 @@ export const MessageComposerEditNotice: React.FC<MessageComposerEditNoticeProps>
   ),
 );
 
-function MessageComposerClearReplyButton({ onClearReply }: { onClearReply?: () => void }) {
+function MessageComposerClearReplyButton({
+  onClearReply,
+}: Readonly<{ onClearReply?: () => void }>) {
   return (
     <button
       type="button"
       onClick={() => onClearReply?.()}
-      className="shrink-0 rounded p-1 text-text-muted hover:bg-bg-elevated hover:text-text-primary"
+      className={CHAT_BOTTOM_NOTICE_DISMISS_BUTTON_CLASS_NAME}
       aria-label={t("common.cancel")}
     >
       <Icon name="close" size={16} />
@@ -51,12 +66,16 @@ export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = Rea
   ({
     uploadProgress,
     uploadProgressPercent,
+    separateUploadProgress = false,
     files,
     filePreviewUrls,
     showFiles = true,
     isUploadInProgress,
     onCancelUpload,
     removeFile,
+    attachments = [],
+    onRemoveAttachment,
+    onRetryAttachment,
     scheduledMessages,
     onCancelScheduled,
     replyQuote,
@@ -65,6 +84,8 @@ export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = Rea
     isEditing = false,
     showReplyWhileEditing = false,
     hideEditNotice = false,
+    joinedTop = false,
+    roundTop = false,
     onCancelEdit,
   }) => {
     const replyQuotePreview = useMemo(() => {
@@ -82,99 +103,93 @@ export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = Rea
     const clearReplyOnTabsRow = replyLeadingContent != null;
     // Keep a visible dismiss when there is a quote, or when the parent wired onClearReply.
     const showClearReply = replyQuote != null || onClearReply != null;
+    const activeUploadFileName = uploadProgress?.activeFileName?.trim() ?? "";
+    const activeUploadIndex = useMemo(() => {
+      if (separateUploadProgress || !isUploadInProgress || files.length === 0) return -1;
+      const activeFileName = uploadProgress?.activeFileName?.trim();
+      if (activeFileName != null && activeFileName.length > 0) {
+        const matchingIndex = files.findIndex((file) => file.name === activeFileName);
+        if (matchingIndex >= 0) return matchingIndex;
+      }
+      return Math.min(Math.max(uploadProgress?.completed ?? 0, 0), files.length - 1);
+    }, [
+      files,
+      isUploadInProgress,
+      separateUploadProgress,
+      uploadProgress?.activeFileName,
+      uploadProgress?.completed,
+    ]);
+    const showDetachedUpload =
+      isUploadInProgress &&
+      activeUploadFileName.length > 0 &&
+      (separateUploadProgress || !showFiles || activeUploadIndex < 0);
+    const showDraftFiles = showFiles && files.length > 0;
+    const showControlledAttachments = showFiles && attachments.length > 0;
 
     return (
       <>
-        {isEditing && !hideEditNotice && <MessageComposerEditNotice onCancelEdit={onCancelEdit} />}
-
-        {!isEditing && uploadProgress != null && uploadProgress.total > 0 && (
-          <div className="px-4 pb-1 pt-2">
-            <div className="flex items-center justify-between gap-2 text-xs text-text-muted">
-              <span>
-                {t("composer.uploadingFilesProgress", {
-                  completed: uploadProgress.completed,
-                  total: uploadProgress.total,
-                })}
-              </span>
-              <span>{uploadProgressPercent}%</span>
-            </div>
-            {uploadProgress.activeFileName != null && uploadProgress.activeFileName.length > 0 && (
-              <p className="mt-0.5 truncate text-xs text-text-muted">
-                {uploadProgress.activeFileName}
-              </p>
-            )}
-            <div
-              className="mt-1 h-1.5 overflow-hidden rounded-full bg-bg-elevated"
-              role="progressbar"
-              aria-label={t("composer.uploadingFilesAriaLabel")}
-              aria-valuemin={0}
-              aria-valuemax={uploadProgress.total}
-              aria-valuenow={uploadProgress.completed}
-            >
-              <div
-                className="h-full bg-accent transition-[width] duration-200"
-                style={{ width: `${uploadProgressPercent}%` }}
-              />
-            </div>
-          </div>
+        {isEditing && !hideEditNotice && (
+          <MessageComposerEditNotice onCancelEdit={onCancelEdit} joinedTop={joinedTop} />
         )}
 
-        {!isEditing && showFiles && files.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 px-4 py-2">
-            {files.map((file, i) => {
-              const previewUrl = filePreviewUrls[i] ?? null;
-              const isImage = file.type.startsWith("image/");
-              const canCancelUpload = isUploadInProgress && onCancelUpload != null;
-              return (
-                <span
-                  key={`${file.name}-${i}`}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border-subtle bg-bg px-2 py-1 text-xs text-text-primary"
-                >
-                  {previewUrl != null ? (
-                    <img
-                      src={previewUrl}
-                      alt={file.name}
-                      className="h-8 w-8 rounded object-cover"
-                      loading="lazy"
+        {!isEditing && (showDetachedUpload || showDraftFiles || showControlledAttachments) && (
+          <AttachmentCardList ariaLabel={t("attachmentCard.list")} className="px-2 pt-2">
+            {showDetachedUpload ? (
+              <AttachmentCard
+                status="uploading"
+                fileName={activeUploadFileName}
+                progress={uploadProgressPercent}
+                onCancel={onCancelUpload}
+              />
+            ) : null}
+            {showDraftFiles &&
+              files.map((file, i) => {
+                const previewUrl = filePreviewUrls[i] ?? null;
+                const metadata = {
+                  formatLabel: getAttachmentExtensionLabel(file.name),
+                  sizeLabel: formatAttachmentSize(file.size),
+                };
+                if (i === activeUploadIndex) {
+                  return (
+                    <AttachmentCard
+                      key={`${file.name}-${i}`}
+                      status="uploading"
+                      fileName={file.name}
+                      progress={uploadProgressPercent}
+                      onCancel={onCancelUpload}
                     />
-                  ) : (
-                    <span className="flex h-8 w-8 items-center justify-center rounded bg-bg-elevated px-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">
-                      {getAttachmentExtensionLabel(file.name)}
-                    </span>
-                  )}
-                  <span className="min-w-0">
-                    <span className="block max-w-[120px] truncate" title={file.name}>
-                      {file.name}
-                    </span>
-                    {!isImage && (
-                      <span className="block text-[10px] text-text-muted">
-                        {formatAttachmentSize(file.size)}
-                      </span>
-                    )}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (canCancelUpload) {
-                        onCancelUpload();
-                        return;
-                      }
-                      removeFile(i);
-                    }}
-                    className="rounded p-0.5 text-text-muted hover:bg-bg-elevated hover:text-text-primary"
-                    aria-label={canCancelUpload ? t("composer.cancelUpload") : t("common.delete")}
-                    title={canCancelUpload ? t("composer.cancelUpload") : t("common.delete")}
-                  >
-                    <Icon
-                      name="close"
-                      size={12}
-                      className={canCancelUpload ? "text-notice-base" : undefined}
+                  );
+                }
+                if (previewUrl != null) {
+                  return (
+                    <AttachmentCard
+                      key={`${file.name}-${i}`}
+                      status="image"
+                      fileName={file.name}
+                      previewUrl={previewUrl}
+                      metadata={metadata}
+                      onRemove={() => removeFile(i)}
                     />
-                  </button>
-                </span>
-              );
-            })}
-          </div>
+                  );
+                }
+                return (
+                  <AttachmentCard
+                    key={`${file.name}-${i}`}
+                    status="file"
+                    fileName={file.name}
+                    metadata={metadata}
+                    onRemove={() => removeFile(i)}
+                  />
+                );
+              })}
+            {showControlledAttachments ? (
+              <MessageComposerControlledAttachmentCards
+                attachments={attachments}
+                onRemoveAttachment={onRemoveAttachment}
+                onRetryAttachment={onRetryAttachment}
+              />
+            ) : null}
+          </AttachmentCardList>
         )}
 
         {!isEditing && scheduledMessages.length > 0 && (
@@ -207,11 +222,19 @@ export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = Rea
         )}
 
         {showReplyChrome ? (
-          <div className="bg-bg/50 border-b border-border-subtle">
+          // Opaque chrome must own top radius: parent stays overflow-visible for popovers,
+          // so without rounded-t-xl this strip paints sharp corners over the shell curve.
+          <div
+            data-composer-reply-chrome="true"
+            className={`${CHAT_BOTTOM_NOTICE_REPLY_CHROME_CLASS_NAME} ${
+              roundTop ? "rounded-t-xl" : ""
+            }`}
+          >
             {replyLeadingContent != null ? (
+              // Tabs + quote stay separate blocks; drop the under-tabs line and tighten spacing.
               <div
-                className={`flex min-w-0 items-center gap-1.5 px-3 py-2 ${
-                  replyQuote != null ? "border-b border-border-subtle" : ""
+                className={`flex min-w-0 items-center gap-1.5 ${CHAT_BOTTOM_COMPOSER_CONTENT_INSET_X} ${
+                  replyQuote != null ? "pb-1 pt-2" : "py-2"
                 }`}
               >
                 {/* Constrain width so tabs scroll inside; dismiss stays a sibling. */}
@@ -223,14 +246,23 @@ export const MessageComposerPreface: React.FC<MessageComposerPrefaceProps> = Rea
             ) : null}
 
             {replyQuote != null ? (
-              <div className="flex items-start gap-2 px-4 py-2">
+              <div
+                className={`flex items-start gap-2 ${CHAT_BOTTOM_COMPOSER_CONTENT_INSET_X} pb-1 pt-2`}
+              >
                 <div className="min-w-0 flex-1">
-                  <p className="text-[11px] text-text-muted">
-                    {t("message.replyTo")}: {replyQuote.sender_full_name}
-                  </p>
-                  <p className="mt-0.5 line-clamp-2 text-sm text-text-primary">
-                    {replyQuotePreview}
-                  </p>
+                  {/* Accent bar + header; composer surface so fill matches the card (not message soft fill). */}
+                  <WorkspaceMessageQuoteFrame
+                    className="my-0"
+                    surface="composer"
+                    data-composer-reply-quote="true"
+                    header={`${t("message.replyTo")}: ${replyQuote.sender_full_name}`}
+                  >
+                    {replyQuotePreview.length > 0 ? (
+                      <p className="line-clamp-2 whitespace-pre-wrap break-words text-sm text-text-primary">
+                        {replyQuotePreview}
+                      </p>
+                    ) : null}
+                  </WorkspaceMessageQuoteFrame>
                 </div>
                 {!clearReplyOnTabsRow && showClearReply ? (
                   <MessageComposerClearReplyButton onClearReply={onClearReply} />

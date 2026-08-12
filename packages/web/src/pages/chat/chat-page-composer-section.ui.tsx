@@ -21,6 +21,11 @@ export const ChatPageComposerSection = React.memo(function ChatPageComposerSecti
   uploadProgress,
   onSend,
   optimisticClearOnSend,
+  attachments,
+  attachmentsBlockSend,
+  onAddAttachments,
+  onRemoveAttachment,
+  onRetryAttachment,
   onCreateCallLink,
   onCancelUpload,
   activeTopic,
@@ -46,6 +51,7 @@ export const ChatPageComposerSection = React.memo(function ChatPageComposerSecti
   aiMessagesContext,
   aiChatContext,
   readOnlyReason,
+  joinedTop = false,
 }: ChatPageComposerSectionProps) {
   // The old read-only mode remains for legacy scenarios.
   // The Workspace path passes capabilities instead: the UI is the same, but blocked actions get placeholders.
@@ -66,9 +72,15 @@ export const ChatPageComposerSection = React.memo(function ChatPageComposerSecti
       <MessageComposer
         onSend={onSend}
         optimisticClearOnSend={optimisticClearOnSend}
+        attachments={attachments}
+        attachmentsBlockSend={attachmentsBlockSend}
+        onAddAttachments={onAddAttachments}
+        onRemoveAttachment={onRemoveAttachment}
+        onRetryAttachment={onRetryAttachment}
         onCreateCallLink={undefined}
         onCancelUpload={onCancelUpload}
         disabled
+        joinedTop={joinedTop}
         uploadProgress={uploadProgress}
         placeholder={readOnlyReason}
         activeTopic={activeTopic ?? undefined}
@@ -126,6 +138,11 @@ export const ChatPageComposerSection = React.memo(function ChatPageComposerSecti
     <MessageComposer
       onSend={onSend}
       optimisticClearOnSend={optimisticClearOnSend}
+      attachments={attachments}
+      attachmentsBlockSend={attachmentsBlockSend}
+      onAddAttachments={onAddAttachments}
+      onRemoveAttachment={onRemoveAttachment}
+      onRetryAttachment={onRetryAttachment}
       onCreateCallLink={onCreateCallLink}
       onCancelUpload={onCancelUpload}
       disabled={isComposerDisabled({
@@ -134,6 +151,7 @@ export const ChatPageComposerSection = React.memo(function ChatPageComposerSecti
         activeDmUserIds,
         activeStream,
       })}
+      joinedTop={joinedTop}
       uploadProgress={uploadProgress}
       placeholder={placeholder}
       activeTopic={activeTopic ?? undefined}

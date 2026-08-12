@@ -59,6 +59,27 @@ export interface MessageComposerSendResult {
   shouldClearComposer?: boolean;
 }
 
+export type MessageComposerAttachmentStatus =
+  | "validating"
+  | "queued"
+  | "uploading"
+  | "ready"
+  | "error";
+
+export interface MessageComposerAttachmentView {
+  localId: string;
+  fileName: string;
+  sizeBytes: number;
+  contentType: string;
+  previewUrl: string | null;
+  status: MessageComposerAttachmentStatus;
+  loadedBytes: number;
+  totalBytes: number | null;
+  error: string | null;
+  retryable: boolean;
+  previewMarkdown?: string;
+}
+
 export type MessageComposerReplyClearReason = "manual" | "submit";
 
 // Capabilities keep the old composer layout while each backend controls action availability.
@@ -79,11 +100,19 @@ export interface MessageComposerProps {
   ) => void | MessageComposerSendResult | Promise<void | MessageComposerSendResult>;
   /** Clears the composer after a send has been accepted locally, before the request settles. */
   optimisticClearOnSend?: boolean;
+  /** Enables externally owned attachments for Workspace upload-before-send. */
+  attachments?: readonly MessageComposerAttachmentView[];
+  attachmentsBlockSend?: boolean;
+  onAddAttachments?: (files: readonly File[]) => void;
+  onRemoveAttachment?: (localId: string) => void;
+  onRetryAttachment?: (localId: string) => void;
   onSubmitEdit?: (messageId: number, content: string) => void | Promise<void>;
   onCancelEdit?: () => void;
   onCreateCallLink?: () => string | null;
   onCancelUpload?: () => void;
   disabled?: boolean;
+  /** Visually connects a notice rendered immediately before the composer. */
+  joinedTop?: boolean;
   uploadProgress?: ComposerUploadProgress | null;
   placeholder?: string;
   /** Topic comes from the sidebar selection, not chosen in the composer */
@@ -141,6 +170,7 @@ export interface FormattingToolbarProps {
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onValueChange: (value: string) => void;
   fileTrigger?: ReactNode;
+  emojiTrigger?: ReactNode;
   callLinkTrigger?: ReactNode;
   scheduleTrigger?: ReactNode;
   snippetsTrigger?: ReactNode;
@@ -160,12 +190,16 @@ export type MediaPickerTab = "emoji" | "sticker";
 export interface MessageComposerPrefaceProps {
   uploadProgress: ComposerUploadProgress | null | undefined;
   uploadProgressPercent: number;
+  separateUploadProgress?: boolean;
   files: File[];
   filePreviewUrls: (string | null)[];
   showFiles?: boolean;
   isUploadInProgress: boolean;
   onCancelUpload?: () => void;
   removeFile: (index: number) => void;
+  attachments?: readonly MessageComposerAttachmentView[];
+  onRemoveAttachment?: (localId: string) => void;
+  onRetryAttachment?: (localId: string) => void;
   scheduledMessages: ScheduledComposerMessage[];
   onCancelScheduled: (id: string) => void;
   replyQuote: ReplyQuote | null | undefined;
@@ -178,5 +212,11 @@ export interface MessageComposerPrefaceProps {
   isEditing?: boolean;
   showReplyWhileEditing?: boolean;
   hideEditNotice?: boolean;
+  joinedTop?: boolean;
+  /**
+   * When true, reply chrome is the top painted surface of a rounded composer shell.
+   * Parent keeps overflow-visible for popovers, so the chrome must carry top radius itself.
+   */
+  roundTop?: boolean;
   onCancelEdit?: () => void;
 }

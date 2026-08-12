@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { isLikelyImageAttachment, normalizeImageAttachmentFile } from "./message-composer-body.lib";
+import {
+  isLikelyImageAttachment,
+  normalizeImageAttachmentFile,
+  prepareAttachmentFiles,
+} from "./message-composer-body.lib";
 
 interface ComposerUploadProgressLike {
   completed: number;
@@ -43,6 +47,8 @@ function revokeAttachmentPreviewUrl(previewUrl: string | null): void {
 export function useMessageComposerUpload(options: {
   disabled: boolean;
   uploadProgress?: ComposerUploadProgressLike | null;
+  onAddFiles?: (files: readonly File[]) => void;
+  existingFileNames?: readonly string[];
 }): {
   files: File[];
   setFiles: React.Dispatch<React.SetStateAction<File[]>>;
@@ -60,7 +66,7 @@ export function useMessageComposerUpload(options: {
   uploadProgressPercent: number;
   isUploadInProgress: boolean;
 } {
-  const { disabled, uploadProgress } = options;
+  const { disabled, uploadProgress, onAddFiles, existingFileNames } = options;
 
   const [files, setFiles] = useState<File[]>([]);
   const [filePreviewUrls, setFilePreviewUrls] = useState<(string | null)[]>([]);
@@ -72,6 +78,29 @@ export function useMessageComposerUpload(options: {
     handled: false,
     pendingInputFiles: null,
   });
+  const addPreparedFiles = useCallback(
+    (selectedFiles: readonly File[], source: "picker" | "drop") => {
+      if (selectedFiles.length === 0) return;
+      if (onAddFiles != null) {
+        const existingFiles = (existingFileNames ?? []).map((name) => new File([], name));
+        onAddFiles(
+          prepareAttachmentFiles(
+            selectedFiles.map((file) => ({ file })),
+            { source, existingFiles },
+          ),
+        );
+        return;
+      }
+      setFiles((prev) => [
+        ...prev,
+        ...prepareAttachmentFiles(
+          selectedFiles.map((file) => ({ file })),
+          { source, existingFiles: prev },
+        ),
+      ]);
+    },
+    [existingFileNames, onAddFiles],
+  );
 
   useEffect(() => {
     const previewUrlByFile = filePreviewUrlByFileRef.current;
@@ -123,14 +152,10 @@ export function useMessageComposerUpload(options: {
       e.preventDefault();
       setIsDragOver(false);
       if (disabled) return;
-      const droppedFiles = Array.from(e.dataTransfer.files).map((file) =>
-        normalizeImageAttachmentFile(file),
-      );
-      if (droppedFiles.length > 0) {
-        setFiles((prev) => [...prev, ...droppedFiles]);
-      }
+      const droppedFiles = Array.from(e.dataTransfer.files);
+      addPreparedFiles(droppedFiles, "drop");
     },
-    [disabled],
+    [addPreparedFiles, disabled],
   );
 
   const beginFileSelectionSession = useCallback(() => {
@@ -169,7 +194,7 @@ export function useMessageComposerUpload(options: {
       ) {
         return false;
       }
-      setFiles((prev) => [...prev, ...selectedFiles]);
+      addPreparedFiles(selectedFiles, "picker");
       fileSelectionSessionRef.current = {
         sessionId,
         handled: true,
@@ -177,7 +202,7 @@ export function useMessageComposerUpload(options: {
       };
       return true;
     },
-    [],
+    [addPreparedFiles],
   );
 
   const onFileInputChange = useCallback(

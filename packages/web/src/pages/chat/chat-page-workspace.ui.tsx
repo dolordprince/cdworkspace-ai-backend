@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { NavigationType, useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import {
   deleteWorkspaceComposerDraftFromServer,
   syncWorkspaceComposerDraft,
@@ -19,7 +19,6 @@ import {
   selectWorkspaceMessagesForConversation,
   selectWorkspaceMessageById,
   selectWorkspaceMessageStatusForConversation,
-  selectWorkspaceMessageWindowStateForConversation,
   useWorkspaceMessageStore,
 } from "~/entities/message/message.model";
 import { selectWorkspaceChatHeaderView } from "~/entities/messenger/messenger-chat-header.lib";
@@ -37,9 +36,11 @@ import {
 } from "~/entities/messenger/messenger-message-actions.lib";
 import { toggleMessengerMessageReaction } from "~/entities/messenger/messenger-message-reactions-actions.lib";
 import {
+  applyMessengerMessageWindow,
+  fetchMessengerMessageWindow,
   loadMessengerConversationMessages,
-  loadMessengerMessageWindowAroundMessage,
   loadMessengerMessageWindowPage,
+  resolveMessengerMessageAnchor,
 } from "~/entities/messenger/messenger-messages-loader.lib";
 import { useMessengerOutboxStore } from "~/entities/messenger/messenger-outbox.model";
 import type { MessengerOutgoingMessage } from "~/entities/messenger/messenger-outbox.types";
@@ -69,7 +70,19 @@ import { useWorkspaceJitsiSettingsStore } from "~/features/jitsi-call/jitsi-call
 import { createJitsiCallKey, useJitsiCallStore } from "~/features/jitsi-call/jitsi-call.model";
 import { buildWorkspaceJitsiMeetingUrl } from "~/features/jitsi-call/workspace-jitsi-call.lib";
 import { useWorkspaceMediaViewer } from "~/features/media-viewer/workspace-media-viewer.hook";
+import {
+  WorkspaceComposerAttachments,
+  type WorkspaceComposerAttachmentTarget,
+  type WorkspaceComposerControlledProps,
+} from "~/features/workspace-composer-attachments/workspace-composer-attachments.ui";
 import { useWorkspaceForwardMessageStore } from "~/features/workspace-forward-message/workspace-forward-message.model";
+import { useWorkspaceMessageAnchorNavigation } from "~/features/workspace-message-anchor-navigation/workspace-message-anchor-navigation.hook";
+import type {
+  WorkspaceMessageAnchorFocusTarget,
+  WorkspaceMessageAnchorNavigationIntent,
+  WorkspaceMessageAnchorPreviewPresentation,
+  WorkspaceMessageAnchorRouteRequest,
+} from "~/features/workspace-message-anchor-navigation/workspace-message-anchor-navigation.types";
 import { useWorkspaceVisibleMessageRead } from "~/features/workspace-message-read/workspace-visible-message-read.hook";
 import { createWorkspaceReplyEditRestoreController } from "~/features/workspace-reply/workspace-reply-edit-restore.lib";
 import {
@@ -89,10 +102,10 @@ import type {
 } from "~/features/workspace-reply/workspace-reply.types";
 import type { WorkspaceReplyTabSelectSource } from "~/features/workspace-reply/workspace-reply.ui";
 import { t } from "~/i18n/i18n";
-import { uploadWorkspaceFile } from "~/shared/api/messenger-files.api";
 import { useOpenSearch } from "~/shared/contexts/open-search";
 import { useRightDrawer } from "~/shared/contexts/right-drawer";
 import { createLogger } from "~/shared/lib/logger";
+import { countUnicodeCodePoints } from "~/shared/lib/unicode-string.lib";
 import {
   createWorkspaceFileResourceCache,
   type WorkspaceFileResourceCache,
@@ -104,6 +117,7 @@ import type {
 import {
   parseWorkspaceMessengerMessageAnchor,
   workspaceMessengerMessageAnchor,
+  workspaceMessengerMessageRoute,
   workspaceMessengerStreamRoute,
   workspaceMessengerTopicRoute,
   type WorkspaceMessengerRouteMatch,
@@ -120,6 +134,7 @@ import type {
   MessageComposerSendResult,
   ReplyQuote,
 } from "~/widgets/message-composer/message-composer.types";
+import { WorkspaceMessageAnchorTransition } from "~/widgets/workspace-message-list/workspace-message-anchor-transition.ui";
 import type { WorkspaceMessageConversationReference } from "~/widgets/workspace-message-list/workspace-message-list.types";
 import { ChatPageComposerSection } from "./chat-page-composer-section.ui";
 import { ChatPageDeleteConfirmBar } from "./chat-page-delete-confirm-bar.ui";
@@ -128,11 +143,6 @@ import { ChatPageSelectionBar } from "./chat-page-selection-bar.ui";
 import { ChatPageStreamTopicPrompt } from "./chat-page-stream-topic-prompt.ui";
 import { ChatPageWorkspaceMessageListSection } from "./chat-page-workspace-message-list-section.ui";
 import { useWorkspaceTransientRenderKeys } from "./chat-page-workspace-transient-render-keys.hook";
-import {
-  appendComposerMarkdownLinks,
-  uploadWorkspaceComposerFiles,
-  type ComposerUploadProgressState,
-} from "./chat-upload.lib";
 import {
   deriveWorkspaceDownloadFileName,
   parseWorkspaceDownloadTotalBytes,
@@ -145,6 +155,8 @@ interface WorkspaceChatPageProps {
   route: WorkspaceMessengerRouteMatch | null;
   presentation?: "default" | "favorites";
 }
+
+const WORKSPACE_MESSAGE_MAX_LENGTH = 40_000;
 
 interface WorkspaceFilePreviewResource {
   blob: Blob;
@@ -175,7 +187,16 @@ interface WorkspaceTailWindowIntent {
   settled: boolean;
 }
 
+interface WorkspaceAnchorPaginationRequest {
+  controller: AbortController;
+  conversationId: MessengerConversationId;
+  direction: "before" | "after";
+  intentId: number;
+  token: symbol;
+}
+
 const EMPTY_MESSAGES: MessengerMessage[] = [];
+const EMPTY_MESSAGES_BY_ID: Record<MessengerUuid, MessengerMessage> = {};
 const EMPTY_OUTGOING_MESSAGES: MessengerOutgoingMessage[] = [];
 const EMPTY_OUTGOING_MESSAGE_LOCAL_IDS: readonly string[] = [];
 const EMPTY_USERS_BY_ID: UsersById = {};
@@ -193,16 +214,14 @@ function normalizeWorkspaceActionError(error: unknown, fallback: string): string
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
 }
 
-function workspaceConversationMessageRoute({
+function workspaceConversationRoute({
   organizationId,
   projectId,
   conversationId,
-  messageUuid,
 }: {
   organizationId: string;
   projectId: string;
   conversationId: MessengerConversationId;
-  messageUuid: MessengerUuid;
 }): string | null {
   const parsedConversationId = parseMessengerConversationId(conversationId);
   if (parsedConversationId == null) return null;
@@ -221,7 +240,20 @@ function workspaceConversationMessageRoute({
           streamUuid: parsedConversationId.streamUuid,
         });
 
-  return `${route}${workspaceMessengerMessageAnchor(messageUuid)}`;
+  return route;
+}
+
+function workspaceConversationMessageRoute({
+  messageUuid,
+  ...conversation
+}: {
+  organizationId: string;
+  projectId: string;
+  conversationId: MessengerConversationId;
+  messageUuid: MessengerUuid;
+}): string | null {
+  const route = workspaceConversationRoute(conversation);
+  return route == null ? null : `${route}${workspaceMessengerMessageAnchor(messageUuid)}`;
 }
 
 function resolveWorkspaceCurrentUserDisplayName(
@@ -245,22 +277,6 @@ function findDefaultTopic(
       return candidate.streamUuid === streamUuid && candidate.isDefault;
     }) ?? null
   );
-}
-
-function buildWorkspaceOutgoingPreviewMarkdown(
-  content: string,
-  files: readonly File[] | undefined,
-): string {
-  const trimmedContent = content.trim();
-  if (trimmedContent.length > 0) return content;
-  if (files == null || files.length === 0) return "";
-
-  // Before files are uploaded, there are no server workspace-file links yet.
-  // The local row shows file names so the user can see which send is queued or failed.
-  return files
-    .map((file) => file.name.trim())
-    .filter((name) => name.length > 0)
-    .join("\n");
 }
 
 function WorkspaceChatState({
@@ -362,6 +378,76 @@ function useCloseFavoritesRightDrawer(
   }, [isFavoritesConversation, setOpen]);
 }
 
+function resolveActiveMessageFocusTarget({
+  focusTarget,
+  navigationIntent,
+  selection,
+}: {
+  focusTarget: WorkspaceMessageAnchorFocusTarget | null;
+  navigationIntent: WorkspaceMessageAnchorNavigationIntent | null;
+  selection: ReturnType<typeof selectMessengerConversationFromWorkspaceRoute>;
+}): WorkspaceMessageAnchorFocusTarget | null {
+  if (focusTarget == null || navigationIntent == null || selection.status !== "conversation") {
+    return null;
+  }
+
+  const matchesCurrentIntent =
+    focusTarget.intentId === navigationIntent.id &&
+    focusTarget.messageUuid === navigationIntent.messageUuid &&
+    focusTarget.focusAttempt === navigationIntent.focusAttempt;
+  const rendersTargetConversation = navigationIntent.conversationId === selection.conversationId;
+
+  return matchesCurrentIntent && rendersTargetConversation ? focusTarget : null;
+}
+
+function buildWorkspaceMessageScrollKey({
+  conversationId,
+  focusTarget,
+  messageAnchorUuid,
+  locationKey,
+}: {
+  conversationId: MessengerConversationId;
+  focusTarget: WorkspaceMessageAnchorFocusTarget | null;
+  messageAnchorUuid: MessengerUuid | null;
+  locationKey: string;
+}): string {
+  if (focusTarget != null) {
+    return `${conversationId}:${focusTarget.intentId}:${focusTarget.messageUuid}:${focusTarget.focusAttempt}`;
+  }
+
+  return `${conversationId}::::${messageAnchorUuid == null ? "" : locationKey}`;
+}
+
+function isAnchorHandoffPending({
+  previewPresentation,
+  navigationIntent,
+  focusTarget,
+  selection,
+}: {
+  previewPresentation: WorkspaceMessageAnchorPreviewPresentation | null;
+  navigationIntent: WorkspaceMessageAnchorNavigationIntent | null;
+  focusTarget: WorkspaceMessageAnchorFocusTarget | null;
+  selection: ReturnType<typeof selectMessengerConversationFromWorkspaceRoute>;
+}): boolean {
+  if (
+    previewPresentation?.phase !== "awaiting-dom" ||
+    navigationIntent?.phase !== "awaiting-dom" ||
+    focusTarget == null ||
+    selection.status !== "conversation"
+  ) {
+    return false;
+  }
+
+  return (
+    focusTarget.intentId === previewPresentation.intentId &&
+    focusTarget.intentId === navigationIntent.id &&
+    focusTarget.messageUuid === previewPresentation.messageUuid &&
+    focusTarget.messageUuid === navigationIntent.messageUuid &&
+    focusTarget.focusAttempt === navigationIntent.focusAttempt &&
+    navigationIntent.conversationId === selection.conversationId
+  );
+}
+
 export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
   route,
   presentation = "default",
@@ -370,13 +456,11 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
   const [retryNonce, setRetryNonce] = useState(0);
   const [sendError, setSendError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [messageRouteUuid, setMessageRouteUuid] = useState<MessengerUuid | null>(null);
-  const [resolvedMessageConversationId, setResolvedMessageConversationId] =
-    useState<MessengerConversationId | null>(null);
-  const [focusedMessageUuid, setFocusedMessageUuid] = useState<MessengerUuid | null>(null);
-  const [messageRouteLoading, setMessageRouteLoading] = useState(false);
   const [windowPaginationDirection, setWindowPaginationDirection] = useState<
     "before" | "after" | "tail" | null
+  >(null);
+  const [windowPaginationErrorDirection, setWindowPaginationErrorDirection] = useState<
+    "before" | "after" | null
   >(null);
   const [composerEditSession, setComposerEditSession] = useState<ComposerEditSession | null>(null);
   const [composerEditMessageUuid, setComposerEditMessageUuid] = useState<string | null>(null);
@@ -393,19 +477,34 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
   } | null>(null);
   const [workspaceReplyTabFocusKeySuppressed, setWorkspaceReplyTabFocusKeySuppressed] =
     useState(false);
-  const [uploadProgress, setUploadProgress] = useState<ComposerUploadProgressState | null>(null);
   const [scrollToBottomAfterSendNonce, setScrollToBottomAfterSendNonce] = useState(0);
   const navigate = useNavigate();
+  const navigationType = useNavigationType();
   const location = useLocation();
+  useEffect(() => {
+    const previousScrollRestoration = window.history.scrollRestoration;
+    // The messenger owns nested scroll positioning for tail, unread, and anchor routes.
+    window.history.scrollRestoration = "manual";
+
+    return () => {
+      window.history.scrollRestoration = previousScrollRestoration;
+    };
+  }, []);
   const messageAnchorUuid = useMemo(() => {
     const parsed = parseWorkspaceMessengerMessageAnchor(location.hash);
     return isMessengerUuid(parsed) ? parsed : null;
   }, [location.hash]);
   const actionAbortControllersRef = useRef<Set<AbortController>>(new Set());
-  const uploadAbortControllerRef = useRef<AbortController | null>(null);
   const queuedTailMessageUuidRef = useRef<MessengerUuid | null>(null);
   const tailWindowIntentRef = useRef<WorkspaceTailWindowIntent | null>(null);
   const tailWindowRequestRef = useRef<WorkspaceTailWindowRequest | null>(null);
+  const cancelAnchorTailRef = useRef<() => void>(noop);
+  const anchorPaginationRequestRef = useRef<WorkspaceAnchorPaginationRequest | null>(null);
+  const cancelAnchorPaginationRef = useRef<() => void>(noop);
+  const pendingTailBaseRouteRef = useRef<{
+    baseRoute: string;
+    sourceLocationKey: string;
+  } | null>(null);
   const pendingWorkspaceJitsiHeaderCallRef = useRef(false);
   const workspaceComposerSendCleanupRef = useRef<WorkspaceComposerSendCleanup | null>(null);
   const workspaceComposerDraftShadowRef = useRef<{
@@ -426,18 +525,137 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
     () => selectMessengerConversationFromWorkspaceRoute(route),
     [route],
   );
+  const sessions = useWorkspaceAuthStore((state) => state.sessions);
+  const currentAccountId = useWorkspaceAuthStore((state) => state.currentAccountId);
+  const runtimeContext = useMemo(
+    () => selectCurrentWorkspaceRuntimeContext({ sessions, currentAccountId }),
+    [sessions, currentAccountId],
+  );
+  const ownerKey = useMemo(
+    () => (runtimeContext == null ? null : workspaceRuntimeOwnerKey(runtimeContext)),
+    [runtimeContext],
+  );
+  const anyWorkspaceMessageWindowLoading = useWorkspaceMessageStore(
+    (state) =>
+      state.ownerKey === ownerKey &&
+      Object.values(state.messagesLoadingByConversationId).some(Boolean),
+  );
+  const anchorRouteRequest = useMemo<WorkspaceMessageAnchorRouteRequest | null>(() => {
+    if (route == null) return null;
+    const scope = { organizationId: route.orgId, projectId: route.projectId };
+    if (routeSelection.status === "message") {
+      return {
+        messageUuid: routeSelection.messageUuid,
+        conversationId: null,
+        routeKey: location.key,
+        source: navigationType === NavigationType.Pop ? "browser-history" : "direct-route",
+        scope,
+      };
+    }
+    if (routeSelection.status === "conversation" && messageAnchorUuid != null) {
+      return {
+        messageUuid: messageAnchorUuid,
+        conversationId: routeSelection.conversationId,
+        routeKey: location.key,
+        source: navigationType === NavigationType.Pop ? "browser-history" : "hash",
+        scope,
+      };
+    }
+    return null;
+  }, [location.key, messageAnchorUuid, navigationType, route, routeSelection]);
+  const getCurrentWorkspaceRuntimeContext = useCallback(
+    () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
+    [],
+  );
+  const resolveKnownAnchorConversationId = useCallback(
+    (messageUuid: MessengerUuid): MessengerConversationId | null => {
+      const state = useWorkspaceMessageStore.getState();
+      if (state.ownerKey !== ownerKey) return null;
+      return selectWorkspaceMessageById(state, messageUuid)?.conversationId ?? null;
+    },
+    [ownerKey],
+  );
+  const isAnchorMessageInWindow = useCallback(
+    (targetConversationId: MessengerConversationId, messageUuid: MessengerUuid): boolean => {
+      const state = useWorkspaceMessageStore.getState();
+      return (
+        state.ownerKey === ownerKey &&
+        selectWorkspaceMessagesForConversation(state, targetConversationId).some(
+          (message) => message.uuid === messageUuid,
+        )
+      );
+    },
+    [ownerKey],
+  );
+  const isAnchorMessageWindowReady = useCallback(
+    (targetConversationId: MessengerConversationId, messageUuid: MessengerUuid): boolean => {
+      const state = useWorkspaceMessageStore.getState();
+      return (
+        state.ownerKey === ownerKey &&
+        (state.conversationWindowsById[targetConversationId]?.messageUuids.includes(messageUuid) ??
+          false)
+      );
+    },
+    [ownerKey],
+  );
+  const buildDirectAnchorRoute = useCallback(
+    (messageUuid: MessengerUuid): string =>
+      runtimeContext == null
+        ? location.pathname
+        : workspaceMessengerMessageRoute({
+            orgId: runtimeContext.organizationId,
+            projectId: runtimeContext.projectId,
+            messageUuid,
+          }),
+    [location.pathname, runtimeContext],
+  );
+  const buildConversationAnchorRoute = useCallback(
+    (targetConversationId: MessengerConversationId, messageUuid: MessengerUuid): string | null =>
+      runtimeContext == null
+        ? null
+        : workspaceConversationMessageRoute({
+            organizationId: runtimeContext.organizationId,
+            projectId: runtimeContext.projectId,
+            conversationId: targetConversationId,
+            messageUuid,
+          }),
+    [runtimeContext],
+  );
+  const cancelTailForAnchor = useCallback(() => {
+    cancelAnchorTailRef.current();
+    cancelAnchorPaginationRef.current();
+  }, []);
+  const {
+    intent: messageNavigationIntent,
+    focusTarget: messageNavigationFocusTarget,
+    navigationError,
+    previewPresentation,
+    startMessageNavigation,
+    retryMessageNavigation,
+    onDomFocusApplied,
+    onDomFocusMissing,
+    cancelForTail: cancelMessageNavigationForTail,
+  } = useWorkspaceMessageAnchorNavigation({
+    runtimeContext,
+    routeRequest: anchorRouteRequest,
+    routePath: `${location.pathname}${location.hash}`,
+    windowBusy: anyWorkspaceMessageWindowLoading || windowPaginationDirection != null,
+    getRuntimeContext: getCurrentWorkspaceRuntimeContext,
+    resolveKnownConversationId: resolveKnownAnchorConversationId,
+    isMessageInWindow: isAnchorMessageInWindow,
+    isMessageWindowReady: isAnchorMessageWindowReady,
+    navigate,
+    buildDirectRoute: buildDirectAnchorRoute,
+    buildConversationRoute: buildConversationAnchorRoute,
+    cancelTail: cancelTailForAnchor,
+    unavailableError: t("chat.messageNavigationUnavailable"),
+    domMissingError: t("chat.messageNavigationDomMissing"),
+  });
   const activeMessageConversationId =
-    routeSelection.status === "message" && messageRouteUuid === routeSelection.messageUuid
-      ? resolvedMessageConversationId
+    routeSelection.status === "message" &&
+    messageNavigationIntent?.messageUuid === routeSelection.messageUuid
+      ? messageNavigationIntent.conversationId
       : null;
-  const activeFocusedMessageUuid =
-    routeSelection.status === "message" && messageRouteUuid === routeSelection.messageUuid
-      ? focusedMessageUuid
-      : messageAnchorUuid != null && focusedMessageUuid === messageAnchorUuid
-        ? focusedMessageUuid
-        : null;
-  const hasCurrentMessageRouteState =
-    routeSelection.status === "message" && messageRouteUuid === routeSelection.messageUuid;
   const effectiveRoute = useMemo<WorkspaceMessengerRouteMatch | null>(() => {
     if (route?.kind !== "message" || activeMessageConversationId == null) {
       return route;
@@ -472,16 +690,11 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
     () => selectMessengerConversationFromWorkspaceRoute(effectiveRoute),
     [effectiveRoute],
   );
-  const sessions = useWorkspaceAuthStore((state) => state.sessions);
-  const currentAccountId = useWorkspaceAuthStore((state) => state.currentAccountId);
-  const runtimeContext = useMemo(
-    () => selectCurrentWorkspaceRuntimeContext({ sessions, currentAccountId }),
-    [sessions, currentAccountId],
-  );
-  const ownerKey = useMemo(
-    () => (runtimeContext == null ? null : workspaceRuntimeOwnerKey(runtimeContext)),
-    [runtimeContext],
-  );
+  const activeMessageFocusTarget = resolveActiveMessageFocusTarget({
+    focusTarget: messageNavigationFocusTarget,
+    navigationIntent: messageNavigationIntent,
+    selection,
+  });
   const workspaceMeetUrl = useWorkspaceJitsiSettingsStore((state) =>
     ownerKey == null ? null : (state.meetUrlsByOwnerKey[ownerKey] ?? null),
   );
@@ -638,7 +851,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
         : (stream?.lastMessageUuid ?? conversation?.lastMessageUuid ?? null);
   }
   const routeMessages = useWorkspaceMessageStore((state) =>
-    conversationId == null
+    conversationId == null || state.ownerKey !== ownerKey
       ? EMPTY_MESSAGES
       : selectWorkspaceMessagesForConversation(state, conversationId),
   );
@@ -666,33 +879,29 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
     return messages.length === 0 ? EMPTY_OUTGOING_MESSAGES : messages;
   }, [outgoingMessageLocalIds, outgoingMessagesByLocalId, ownerKey]);
   const messagesStatus = useWorkspaceMessageStore((state) =>
-    conversationId == null
+    conversationId == null || state.ownerKey !== ownerKey
       ? selectWorkspaceMessageStatusForConversation(state, "")
       : selectWorkspaceMessageStatusForConversation(state, conversationId),
   );
-  const messageWindowState = useWorkspaceMessageStore((state) =>
-    conversationId == null
+  const conversationWindow = useWorkspaceMessageStore((state) =>
+    conversationId == null || state.ownerKey !== ownerKey
       ? null
-      : selectWorkspaceMessageWindowStateForConversation(state, conversationId),
+      : (state.conversationWindowsById[conversationId] ?? null),
   );
   const realtimeReadyRuntimeGeneration = useMessengerStore(
     (state) => state.realtimeReadyRuntimeGeneration,
   );
   const realtimeReadyOwnerKey = useMessengerStore((state) => state.realtimeReadyOwnerKey);
-  const beforePageMarker = useWorkspaceMessageStore((state) =>
-    conversationId == null
-      ? null
-      : (state.beforePageMarkerByConversationId[conversationId] ?? null),
-  );
-  const afterPageMarker = useWorkspaceMessageStore((state) =>
-    conversationId == null ? null : (state.afterPageMarkerByConversationId[conversationId] ?? null),
-  );
+  const beforePageMarker = conversationWindow?.beforePageMarker ?? null;
+  const afterPageMarker = conversationWindow?.afterPageMarker ?? null;
   const usersById = useUsersStore((state) =>
     Object.keys(state.usersById).length > 0 ? state.usersById : EMPTY_USERS_BY_ID,
   );
   const topicsById = useMessengerStore((state) => state.topicsById);
   const topicIds = useMessengerStore((state) => state.topicIds);
-  const allWorkspaceMessagesById = useWorkspaceMessageStore((state) => state.messagesById);
+  const allWorkspaceMessagesById = useWorkspaceMessageStore((state) =>
+    state.ownerKey === ownerKey ? state.messagesById : EMPTY_MESSAGES_BY_ID,
+  );
   const streamsById = useMessengerStore((state) => state.streamsById);
   const isFavoritesConversation = shouldPresentWorkspaceFavorites({
     presentation,
@@ -781,6 +990,13 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
     ],
   );
   const retry = useCallback(() => setRetryNonce((value) => value + 1), []);
+  const retryMessagesLoad = useCallback(() => {
+    if (messageNavigationIntent?.phase === "failed") {
+      retryMessageNavigation();
+      return;
+    }
+    retry();
+  }, [messageNavigationIntent?.phase, retry, retryMessageNavigation]);
   const resolveAuthorLabel = useCallback(
     (authorUuid: string): string | null => {
       const user = usersById[authorUuid];
@@ -867,157 +1083,45 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
   }, [messageAnchorUuid, retryNonce, routeSelection.status, runtimeContext, selection]);
 
   useEffect(() => {
-    if (routeSelection.status !== "message") {
-      setMessageRouteUuid(null);
-      setResolvedMessageConversationId(null);
-      setFocusedMessageUuid(messageAnchorUuid);
-      setMessageRouteLoading(false);
-      setWindowPaginationDirection(null);
-      return;
-    }
+    if (selection.status !== "conversation" || runtimeContext == null || ownerKey == null) return;
 
-    setMessageRouteUuid(routeSelection.messageUuid);
-    setResolvedMessageConversationId(null);
-    setFocusedMessageUuid(null);
-    setMessageRouteLoading(false);
-    setWindowPaginationDirection(null);
-  }, [
-    route?.orgId,
-    route?.projectId,
-    route?.kind,
-    routeSelection.status,
-    messageAnchorUuid,
-    routeSelection.status === "message" ? routeSelection.messageUuid : null,
-    routeSelection.status === "conversation" ? routeSelection.conversationId : null,
-  ]);
+    const conversationId = selection.conversationId;
+    let previousWindow =
+      useWorkspaceMessageStore.getState().conversationWindowsById[conversationId] ?? null;
+    let reloadController: AbortController | null = null;
+    const unsubscribe = useWorkspaceMessageStore.subscribe((state) => {
+      const nextWindow =
+        state.ownerKey === ownerKey
+          ? (state.conversationWindowsById[conversationId] ?? null)
+          : null;
+      const windowWasReset =
+        previousWindow != null && nextWindow == null && state.ownerKey === ownerKey;
+      previousWindow = nextWindow;
+      if (!windowWasReset) return;
 
-  useEffect(() => {
-    if (routeSelection.status !== "message" || runtimeContext == null) return;
-
-    const messageUuid = routeSelection.messageUuid;
-    const messageStoreState = useWorkspaceMessageStore.getState();
-    const existingMessage = selectWorkspaceMessageById(messageStoreState, messageUuid);
-    let stagedConversationId: MessengerConversationId | undefined;
-    if (existingMessage != null) {
-      const existingConversationMessages = selectWorkspaceMessagesForConversation(
-        messageStoreState,
-        existingMessage.conversationId,
-      );
-      if (existingConversationMessages.some((message) => message.uuid === messageUuid)) {
-        setMessageRouteUuid(messageUuid);
-        setResolvedMessageConversationId(existingMessage.conversationId);
-        setFocusedMessageUuid(messageUuid);
-        if (
-          selectWorkspaceMessageWindowStateForConversation(
-            messageStoreState,
-            existingMessage.conversationId,
-          ) !== "staged"
-        ) {
-          return;
-        }
-        stagedConversationId = existingMessage.conversationId;
+      if (messageAnchorUuid != null || routeSelection.status === "message") {
+        retryMessageNavigation();
+        return;
       }
-    }
 
-    const controller = new AbortController();
-    setMessageRouteLoading(true);
-    setActionError(null);
-    void loadMessengerMessageWindowAroundMessage({
-      runtimeContext,
-      conversationId: stagedConversationId,
-      messageUuid,
-      onAnchorApplied: ({ conversationId, anchorUuid }) => {
-        if (controller.signal.aborted) return;
-        setMessageRouteUuid(messageUuid);
-        setResolvedMessageConversationId(conversationId);
-        setFocusedMessageUuid(anchorUuid);
-        setActionError(null);
-      },
-      getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
-      signal: controller.signal,
-    })
-      .then((result) => {
-        if (controller.signal.aborted) return;
-        if (result.status === "applied") {
-          setMessageRouteUuid(messageUuid);
-          setResolvedMessageConversationId(result.conversationId);
-          setFocusedMessageUuid(result.anchorUuid);
-          setActionError(null);
-          return;
-        }
-        if (result.status === "failed") {
-          setActionError(result.error);
-        }
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        setActionError(normalizeWorkspaceActionError(error, t("chat.messagesLoadError")));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setMessageRouteLoading(false);
-        }
+      reloadController?.abort();
+      reloadController = new AbortController();
+      void loadMessengerConversationMessages({
+        runtimeContext,
+        conversationId,
+        getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
+        signal: reloadController.signal,
       });
+    });
 
     return () => {
-      controller.abort();
-    };
-  }, [retryNonce, routeSelection, runtimeContext]);
-
-  useEffect(() => {
-    if (
-      routeSelection.status === "message" ||
-      messageAnchorUuid == null ||
-      selection.status !== "conversation" ||
-      runtimeContext == null
-    ) {
-      return;
-    }
-
-    const messageStoreState = useWorkspaceMessageStore.getState();
-    const existingMessages = selectWorkspaceMessagesForConversation(
-      messageStoreState,
-      selection.conversationId,
-    );
-    setFocusedMessageUuid(messageAnchorUuid);
-    setWindowPaginationDirection(null);
-    if (existingMessages.some((message) => message.uuid === messageAnchorUuid)) {
-      setActionError(null);
-      return;
-    }
-
-    const controller = new AbortController();
-    setActionError(null);
-    void loadMessengerMessageWindowAroundMessage({
-      runtimeContext,
-      conversationId: selection.conversationId,
-      messageUuid: messageAnchorUuid,
-      getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
-      signal: controller.signal,
-    })
-      .then((result) => {
-        if (controller.signal.aborted) return;
-        if (result.status === "applied") {
-          setFocusedMessageUuid(result.anchorUuid);
-          setActionError(null);
-          return;
-        }
-        if (result.status === "failed") {
-          setActionError(result.error);
-        }
-      })
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        setActionError(normalizeWorkspaceActionError(error, t("chat.messagesLoadError")));
-      });
-
-    return () => {
-      controller.abort();
+      unsubscribe();
+      reloadController?.abort();
     };
   }, [
-    location.key,
     messageAnchorUuid,
-    retryNonce,
+    ownerKey,
+    retryMessageNavigation,
     routeSelection.status,
     runtimeContext,
     selection,
@@ -1029,21 +1133,17 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
         controller.abort();
       }
       actionAbortControllersRef.current.clear();
-      uploadAbortControllerRef.current = null;
       pendingWorkspaceJitsiHeaderCallRef.current = false;
       workspaceFileResourceCache.clear();
     };
   }, [workspaceFileResourceCache]);
 
   useEffect(() => {
-    setUploadProgress(null);
-
     return () => {
       for (const controller of actionAbortControllersRef.current) {
         controller.abort();
       }
       actionAbortControllersRef.current.clear();
-      uploadAbortControllerRef.current = null;
       pendingWorkspaceJitsiHeaderCallRef.current = false;
       workspaceFileResourceCache.clear();
     };
@@ -1142,9 +1242,10 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
   const initialPositionReady =
     runtimeContext != null &&
     ownerKey != null &&
-    messageWindowState === "complete" &&
-    realtimeReadyOwnerKey === ownerKey &&
-    realtimeReadyRuntimeGeneration === runtimeContext.runtimeGeneration;
+    conversationWindow != null &&
+    (activeMessageFocusTarget != null ||
+      (realtimeReadyOwnerKey === ownerKey &&
+        realtimeReadyRuntimeGeneration === runtimeContext.runtimeGeneration));
   const messagesLoadError: WorkspaceChatMessagesLoadErrorKind | null =
     messagesStatus.error == null ? null : routeMessages.length === 0 ? "initial" : "refresh";
 
@@ -1161,9 +1262,6 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
         return await action(controller.signal);
       } finally {
         actionAbortControllersRef.current.delete(controller);
-        if (uploadAbortControllerRef.current === controller) {
-          uploadAbortControllerRef.current = null;
-        }
       }
     },
     [],
@@ -1210,109 +1308,66 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
         return Promise.resolve(false);
       }
 
-      const files = outgoing.files;
-      const hasFiles = files != null && files.length > 0;
-      if (hasFiles) {
-        useMessengerOutboxStore.getState().markOutgoingMessageUploading(localId);
-      } else {
-        useMessengerOutboxStore.getState().markOutgoingMessageSending(localId);
-      }
+      useMessengerOutboxStore.getState().markOutgoingMessageSending(localId);
 
-      return runWorkspaceAction(
-        async (signal) => {
-          try {
-            const uploadedLinks = hasFiles
-              ? await uploadWorkspaceComposerFiles(
-                  [...files],
-                  (file, uploadOptions) =>
-                    uploadWorkspaceFile(
-                      buildMessengerRequestOptions(
-                        runtimeContext,
-                        undefined,
-                        uploadOptions?.signal,
-                      ),
-                      {
-                        file,
-                        streamUuid: outgoing.streamUuid,
-                      },
-                    ),
-                  {
-                    onProgress: setUploadProgress,
-                    signal,
-                  },
-                )
-              : [];
-            const markdown = appendComposerMarkdownLinks(outgoing.sourceMarkdown, uploadedLinks);
-            if (markdown.trim().length === 0) {
-              useMessengerOutboxStore.getState().removeOutgoingMessage(localId);
-              return false;
-            }
-
-            // After successful file upload, retry must not upload them again:
-            // the local row already has final markdown with workspace-file links,
-            // and the next possible failure is only POST /messages.
-            useMessengerOutboxStore.getState().markOutgoingMessageSending(localId, {
-              markdown,
-              sourceMarkdown: markdown,
-              files: null,
-            });
-
-            const result = await sendMessengerMessage({
-              runtimeContext,
-              getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
-              signal,
-              streamUuid: outgoing.streamUuid,
-              topicUuid: outgoing.topicUuid,
-              markdown,
-              includeStreamConversation: outgoing.includeStreamConversation,
-              onBeforeMessageIndexed: (message) => {
-                registerDeliveredOutgoingMessage(
-                  outgoing.ownerKey,
-                  outgoing.conversationId,
-                  message.uuid,
-                  localId,
-                );
-              },
-            });
-
-            if (result.status === "applied" && result.message != null) {
-              useMessengerOutboxStore.getState().removeOutgoingMessage(localId);
-              return true;
-            }
-
-            useMessengerOutboxStore
-              .getState()
-              .markOutgoingMessageFailed(localId, t("message.sendFailed"));
+      return runWorkspaceAction(async (signal) => {
+        try {
+          const markdown = outgoing.markdown;
+          if (markdown.trim().length === 0) {
+            useMessengerOutboxStore.getState().removeOutgoingMessage(localId);
             return false;
-          } catch (error) {
-            useMessengerOutboxStore
-              .getState()
-              .markOutgoingMessageFailed(
-                localId,
-                normalizeWorkspaceActionError(error, t("message.sendFailed")),
-              );
-            return false;
-          } finally {
-            setUploadProgress(null);
           }
-        },
-        {
-          onController: (controller) => {
-            if (hasFiles) {
-              uploadAbortControllerRef.current = controller;
-            }
-          },
-        },
-      );
+
+          const result = await sendMessengerMessage({
+            runtimeContext,
+            getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
+            signal,
+            streamUuid: outgoing.streamUuid,
+            topicUuid: outgoing.topicUuid,
+            markdown,
+            includeStreamConversation: outgoing.includeStreamConversation,
+            onBeforeMessageIndexed: (message) => {
+              registerDeliveredOutgoingMessage(
+                outgoing.ownerKey,
+                outgoing.conversationId,
+                message.uuid,
+                localId,
+              );
+            },
+          });
+
+          if (result.status === "applied" && result.message != null) {
+            useMessengerOutboxStore.getState().removeOutgoingMessage(localId);
+            return true;
+          }
+
+          useMessengerOutboxStore
+            .getState()
+            .markOutgoingMessageFailed(localId, t("message.sendFailed"));
+          return false;
+        } catch (error) {
+          useMessengerOutboxStore
+            .getState()
+            .markOutgoingMessageFailed(
+              localId,
+              normalizeWorkspaceActionError(error, t("message.sendFailed")),
+            );
+          return false;
+        }
+      });
     },
     [ownerKey, registerDeliveredOutgoingMessage, runWorkspaceAction, runtimeContext],
   );
 
   const handleSend = useCallback(
-    (content: string, _subjectOverride?: string, files?: File[]) => {
-      // Composer remains old, but sending goes only through Workspace POST /messages/.
+    (content: string) => {
+      // The shared composer shell sends only through Workspace POST /messages/.
       setSendError(null);
-      setUploadProgress(null);
+      if (countUnicodeCodePoints(content) > WORKSPACE_MESSAGE_MAX_LENGTH) {
+        const error = t("composer.messageTooLong");
+        setSendError(error);
+        throw new Error(error);
+      }
       if (runtimeContext == null) {
         const error = t("workspaceMessenger.runtimeUnavailable");
         setSendError(error);
@@ -1331,8 +1386,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
       }
 
       const sendOwnerKey = workspaceRuntimeOwnerKey(runtimeContext);
-      const previewMarkdown = buildWorkspaceOutgoingPreviewMarkdown(content, files);
-      if (previewMarkdown.trim().length === 0) return;
+      if (content.trim().length === 0) return;
       const draftAtSend = selectWorkspaceComposerDraft(
         useWorkspaceComposerDraftStore.getState(),
         sendOwnerKey,
@@ -1348,11 +1402,10 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
         streamUuid: target.streamUuid,
         topicUuid: target.topicUuid,
         authorUuid: runtimeContext.userUuid,
-        markdown: previewMarkdown,
+        markdown: content,
         sourceMarkdown: content,
-        status: files != null && files.length > 0 ? "uploading" : "sending",
+        status: "sending",
         includeStreamConversation: target.includeStreamConversation,
-        files,
       });
 
       // Scroll right after the local row appears. A later server snapshot can
@@ -1558,15 +1611,9 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
     workspaceMeetUrl,
   ]);
 
-  const handleCancelUpload = useCallback(() => {
-    const controller = uploadAbortControllerRef.current;
-    if (controller == null || controller.signal.aborted) return;
-    controller.abort();
-  }, []);
-
   const handleRetryOutgoingMessage = useCallback(
     (localId: string) => {
-      deliverOutgoingMessage(localId);
+      deliverOutgoingMessage(localId).catch(() => undefined);
       setScrollToBottomAfterSendNonce((value) => value + 1);
     },
     [deliverOutgoingMessage],
@@ -2138,36 +2185,105 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
     conversationId,
   });
 
-  const handleLoadOlder = useCallback(() => {
-    if (runtimeContext == null || conversationId == null || messagesStatus.loading) {
-      return;
-    }
+  const hasAnchorRoute = routeSelection.status === "message" || messageAnchorUuid != null;
+  const focusedAnchorIntentId =
+    hasAnchorRoute &&
+    messageNavigationIntent?.phase === "focused" &&
+    messageNavigationIntent.conversationId === conversationId
+      ? messageNavigationIntent.id
+      : null;
+  const anchorPaginationScopeKey =
+    focusedAnchorIntentId == null ? null : `${tailRequestScopeKey}:${focusedAnchorIntentId}`;
 
-    if (routeSelection.status === "message" || messageAnchorUuid != null) {
-      if (beforePageMarker == null) return;
+  const cancelActiveAnchorPagination = useCallback(() => {
+    const request = anchorPaginationRequestRef.current;
+    setWindowPaginationErrorDirection(null);
+    if (request == null) return;
+    anchorPaginationRequestRef.current = null;
+    request.controller.abort();
+    setWindowPaginationDirection((direction) =>
+      direction === request.direction ? null : direction,
+    );
+  }, []);
+  useLayoutEffect(() => {
+    cancelAnchorPaginationRef.current = cancelActiveAnchorPagination;
+    return () => {
+      cancelActiveAnchorPagination();
+      cancelAnchorPaginationRef.current = noop;
+    };
+  }, [anchorPaginationScopeKey, cancelActiveAnchorPagination]);
 
-      setWindowPaginationDirection("before");
-      void runWorkspaceAction((signal) =>
-        loadMessengerMessageWindowPage({
-          runtimeContext,
-          conversationId,
-          direction: "before",
-          pageMarker: beforePageMarker,
-          getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
-          signal,
-        }),
+  const startAnchorPagination = useCallback(
+    (direction: "before" | "after", pageMarker: string, intentId: number): void => {
+      if (runtimeContext == null || conversationId == null) return;
+      cancelActiveAnchorPagination();
+      const token = Symbol("anchor-pagination-request");
+      const isCurrentRequest = (): boolean => {
+        const request = anchorPaginationRequestRef.current;
+        return (
+          request?.token === token &&
+          request.conversationId === conversationId &&
+          request.intentId === intentId
+        );
+      };
+      setWindowPaginationErrorDirection(null);
+      setWindowPaginationDirection(direction);
+      void runWorkspaceAction(
+        (signal) =>
+          loadMessengerMessageWindowPage({
+            runtimeContext,
+            conversationId,
+            direction,
+            pageMarker,
+            expectedRevision: conversationWindow?.revision ?? 0,
+            getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
+            signal,
+          }),
+        {
+          onController: (controller) => {
+            anchorPaginationRequestRef.current = {
+              controller,
+              conversationId,
+              direction,
+              intentId,
+              token,
+            };
+          },
+        },
       )
         .then((result) => {
-          if (result.status === "failed") {
-            setActionError(result.error);
+          if (!isCurrentRequest()) return;
+          if (result.status === "applied") {
+            setWindowPaginationErrorDirection(null);
+          } else if (result.status === "failed" || result.reason !== "stale-window") {
+            setWindowPaginationErrorDirection(direction);
           }
         })
-        .catch((error: unknown) => {
-          setActionError(normalizeWorkspaceActionError(error, t("chat.messagesLoadError")));
+        .catch(() => {
+          if (!isCurrentRequest()) return;
+          setWindowPaginationErrorDirection(direction);
         })
         .finally(() => {
+          if (!isCurrentRequest()) return;
+          anchorPaginationRequestRef.current = null;
           setWindowPaginationDirection(null);
         });
+    },
+    [
+      cancelActiveAnchorPagination,
+      conversationId,
+      conversationWindow?.revision,
+      runWorkspaceAction,
+      runtimeContext,
+    ],
+  );
+
+  const handleLoadOlder = useCallback(() => {
+    if (runtimeContext == null || conversationId == null || messagesStatus.loading) return;
+
+    if (hasAnchorRoute) {
+      if (focusedAnchorIntentId == null || beforePageMarker == null) return;
+      startAnchorPagination("before", beforePageMarker, focusedAnchorIntentId);
       return;
     }
 
@@ -2187,13 +2303,14 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
   }, [
     beforePageMarker,
     conversationId,
+    focusedAnchorIntentId,
+    hasAnchorRoute,
     messagesStatus.hasMore,
     messagesStatus.loading,
     messagesStatus.nextPageMarker,
-    messageAnchorUuid,
-    routeSelection.status,
     runWorkspaceAction,
     runtimeContext,
+    startAnchorPagination,
   ]);
 
   const handleEditLastMessage = useCallback(() => {
@@ -2218,43 +2335,30 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
       runtimeContext == null ||
       conversationId == null ||
       messagesStatus.loading ||
-      (routeSelection.status !== "message" && messageAnchorUuid == null) ||
+      !hasAnchorRoute ||
+      focusedAnchorIntentId == null ||
       afterPageMarker == null
     ) {
       return;
     }
-
-    setWindowPaginationDirection("after");
-    void runWorkspaceAction((signal) =>
-      loadMessengerMessageWindowPage({
-        runtimeContext,
-        conversationId,
-        direction: "after",
-        pageMarker: afterPageMarker,
-        getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
-        signal,
-      }),
-    )
-      .then((result) => {
-        if (result.status === "failed") {
-          setActionError(result.error);
-        }
-      })
-      .catch((error: unknown) => {
-        setActionError(normalizeWorkspaceActionError(error, t("chat.messagesLoadError")));
-      })
-      .finally(() => {
-        setWindowPaginationDirection(null);
-      });
+    startAnchorPagination("after", afterPageMarker, focusedAnchorIntentId);
   }, [
     afterPageMarker,
     conversationId,
-    messageAnchorUuid,
+    focusedAnchorIntentId,
+    hasAnchorRoute,
     messagesStatus.loading,
-    routeSelection.status,
-    runWorkspaceAction,
     runtimeContext,
+    startAnchorPagination,
   ]);
+
+  const handleRetryBoundaryLoad = useCallback(() => {
+    if (windowPaginationErrorDirection === "before") {
+      handleLoadOlder();
+    } else if (windowPaginationErrorDirection === "after") {
+      handleLoadNewer();
+    }
+  }, [handleLoadNewer, handleLoadOlder, windowPaginationErrorDirection]);
 
   const settleTailWindowIntent = useCallback((intent: WorkspaceTailWindowIntent): void => {
     if (intent.settled) return;
@@ -2279,14 +2383,49 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
       setWindowPaginationDirection("tail");
       setActionError(null);
       void runWorkspaceAction(
-        (signal) =>
-          loadMessengerMessageWindowAroundMessage({
+        async (signal) => {
+          const getRuntimeContext = () =>
+            useWorkspaceAuthStore.getState().getCurrentRuntimeContext();
+          const resolved = await resolveMessengerMessageAnchor({
             runtimeContext,
-            conversationId,
             messageUuid: requestedLastMessageUuid,
-            getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
+            getRuntimeContext,
             signal,
-          }),
+          });
+          if (resolved.status !== "resolved") return resolved;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const fetched = await fetchMessengerMessageWindow({
+              runtimeContext,
+              anchor: resolved,
+              targetConversationId: conversationId,
+              getRuntimeContext,
+              signal,
+            });
+            if (fetched.status !== "fetched") {
+              if (
+                fetched.status === "skipped" &&
+                fetched.reason === "stale-window" &&
+                attempt === 0
+              )
+                continue;
+              return fetched;
+            }
+            const applied = await applyMessengerMessageWindow({
+              runtimeContext,
+              window: fetched.window,
+              mode: "tail",
+              getRuntimeContext,
+              signal,
+              isRequestCurrent: () =>
+                tailWindowRequestRef.current?.requestToken === requestToken &&
+                tailWindowIntentRef.current === intent,
+            });
+            if (applied.status === "skipped" && applied.reason === "stale-window" && attempt === 0)
+              continue;
+            return applied;
+          }
+          return { status: "skipped", ownerKey, reason: "stale-window" as const };
+        },
         {
           onController: (controller) => {
             tailWindowRequestRef.current = {
@@ -2308,14 +2447,13 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
             return;
           }
           if (result.status === "applied") {
-            setFocusedMessageUuid(null);
             setActionError(null);
-          } else if (result.status === "failed") {
-            setActionError(result.error);
+          } else {
+            setActionError(t("chat.messagesLoadError"));
           }
           settleTailWindowIntent(intent);
         })
-        .catch((error: unknown) => {
+        .catch(() => {
           const activeRequest = tailWindowRequestRef.current;
           if (
             activeRequest?.requestToken !== requestToken ||
@@ -2323,7 +2461,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
           ) {
             return;
           }
-          setActionError(normalizeWorkspaceActionError(error, t("chat.messagesLoadError")));
+          setActionError(t("chat.messagesLoadError"));
           settleTailWindowIntent(intent);
         })
         .finally(() => {
@@ -2431,6 +2569,76 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
     [settleTailWindowIntent, tailRequestScopeKey],
   );
 
+  const cancelActiveTailWindowIntent = useCallback(() => {
+    const intent = tailWindowIntentRef.current;
+    if (intent?.scopeKey !== tailRequestScopeKey) return;
+
+    queuedTailMessageUuidRef.current = null;
+    const activeRequest = tailWindowRequestRef.current;
+    tailWindowRequestRef.current = null;
+    activeRequest?.controller.abort();
+    settleTailWindowIntent(intent);
+    setWindowPaginationDirection((direction) => (direction === "tail" ? null : direction));
+  }, [settleTailWindowIntent, tailRequestScopeKey]);
+
+  const handleTailNavigationRequested = useCallback(() => {
+    cancelMessageNavigationForTail();
+    cancelActiveAnchorPagination();
+    if (runtimeContext == null || conversationId == null) return;
+    const route = workspaceConversationRoute({
+      organizationId: runtimeContext.organizationId,
+      projectId: runtimeContext.projectId,
+      conversationId,
+    });
+    const pendingRoute = pendingTailBaseRouteRef.current;
+    if (
+      route == null ||
+      `${location.pathname}${location.hash}` === route ||
+      (pendingRoute?.baseRoute === route && pendingRoute.sourceLocationKey === location.key)
+    )
+      return;
+    const marker = { baseRoute: route, sourceLocationKey: location.key };
+    pendingTailBaseRouteRef.current = marker;
+    void Promise.resolve(navigate(route)).catch(() => {
+      if (pendingTailBaseRouteRef.current === marker) pendingTailBaseRouteRef.current = null;
+      setActionError(t("chat.messagesLoadError"));
+    });
+  }, [
+    cancelActiveAnchorPagination,
+    cancelMessageNavigationForTail,
+    conversationId,
+    location.hash,
+    location.key,
+    location.pathname,
+    navigate,
+    runtimeContext,
+  ]);
+  useEffect(() => {
+    const marker = pendingTailBaseRouteRef.current;
+    if (marker == null) return;
+    const currentBaseRoute =
+      runtimeContext == null || conversationId == null
+        ? null
+        : workspaceConversationRoute({
+            organizationId: runtimeContext.organizationId,
+            projectId: runtimeContext.projectId,
+            conversationId,
+          });
+    if (
+      currentBaseRoute !== marker.baseRoute ||
+      location.key !== marker.sourceLocationKey ||
+      `${location.pathname}${location.hash}` === marker.baseRoute
+    ) {
+      pendingTailBaseRouteRef.current = null;
+    }
+  }, [conversationId, location.hash, location.key, location.pathname, runtimeContext]);
+  useLayoutEffect(() => {
+    cancelAnchorTailRef.current = cancelActiveTailWindowIntent;
+    return () => {
+      cancelAnchorTailRef.current = noop;
+    };
+  }, [cancelActiveTailWindowIntent]);
+
   useEffect(() => {
     if (tailWindowIntentRef.current == null || lastMessageUuid == null) return;
 
@@ -2504,52 +2712,9 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
   );
   const handleOpenMessageInChat = useCallback(
     (messageUuid: MessengerUuid) => {
-      if (runtimeContext == null) return;
-
-      const existingMessage = selectWorkspaceMessageById(
-        useWorkspaceMessageStore.getState(),
-        messageUuid,
-      );
-      if (existingMessage != null) {
-        const targetRoute = workspaceConversationMessageRoute({
-          organizationId: runtimeContext.organizationId,
-          projectId: runtimeContext.projectId,
-          conversationId: existingMessage.conversationId,
-          messageUuid,
-        });
-        if (targetRoute != null) {
-          const currentRoute = `${location.pathname}${location.hash}`;
-          void navigate(targetRoute, { replace: currentRoute === targetRoute });
-          return;
-        }
-      }
-
-      void runWorkspaceAction((signal) =>
-        loadMessengerMessageWindowAroundMessage({
-          runtimeContext,
-          messageUuid,
-          getRuntimeContext: () => useWorkspaceAuthStore.getState().getCurrentRuntimeContext(),
-          signal,
-        }),
-      )
-        .then((result) => {
-          if (result.status !== "applied") return;
-
-          const targetRoute = workspaceConversationMessageRoute({
-            organizationId: runtimeContext.organizationId,
-            projectId: runtimeContext.projectId,
-            conversationId: result.conversationId,
-            messageUuid: result.anchorUuid,
-          });
-          if (targetRoute != null) {
-            void navigate(targetRoute);
-          }
-        })
-        .catch((error: unknown) => {
-          setActionError(normalizeWorkspaceActionError(error, t("chat.messagesLoadError")));
-        });
+      startMessageNavigation(messageUuid, "local-quote");
     },
-    [location.hash, location.pathname, navigate, runWorkspaceAction, runtimeContext],
+    [startMessageNavigation],
   );
   const handleOpenWorkspaceReference = useCallback(
     (reference: WorkspaceMessageConversationReference) => {
@@ -2621,31 +2786,37 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
   const activeWorkspaceReplyTab = workspaceReplySession.tabs.find(
     (tab) => tab.id === workspaceReplySession.activeTabId,
   );
-  const effectiveComposerEditSession =
-    composerEditSession?.preserveWorkspaceReplyContext === true && activeWorkspaceReplyTab != null
-      ? {
-          ...composerEditSession,
-          initialMarkdown: activeWorkspaceReplyTab.answer,
-          sessionKey: `reply:${activeWorkspaceReplyTab.id}`,
-        }
-      : composerEditSession;
+  const effectiveComposerEditSession = useMemo(
+    () =>
+      composerEditSession?.preserveWorkspaceReplyContext === true && activeWorkspaceReplyTab != null
+        ? {
+            ...composerEditSession,
+            initialMarkdown: activeWorkspaceReplyTab.answer,
+            sessionKey: `reply:${activeWorkspaceReplyTab.id}`,
+          }
+        : composerEditSession,
+    [activeWorkspaceReplyTab, composerEditSession],
+  );
   const workspaceComposerDraftSessionKey =
     workspaceComposerDraftScopeKey == null
       ? null
       : `${workspaceComposerDraftScopeKey}:${
           hydratedComposerDraftScopeKey === workspaceComposerDraftScopeKey ? "hydrated" : "initial"
         }:${activeWorkspaceReplyTab == null ? "text" : `reply:${activeWorkspaceReplyTab.id}`}`;
-  const activeWorkspaceReplyQuote: ReplyQuote | null =
-    activeWorkspaceReplyTab == null
-      ? null
-      : {
-          id: activeWorkspaceReplyTab.id,
-          content: activeWorkspaceReplyTab.selectedText ?? activeWorkspaceReplyTab.quotedContent,
-          sender_full_name: activeWorkspaceReplyTab.senderName,
-          sender_uuid: activeWorkspaceReplyTab.senderUuid,
-          quoteFormat: "workspace",
-          permalinkUrl: null,
-        };
+  const activeWorkspaceReplyQuote = useMemo<ReplyQuote | null>(
+    () =>
+      activeWorkspaceReplyTab == null
+        ? null
+        : {
+            id: activeWorkspaceReplyTab.id,
+            content: activeWorkspaceReplyTab.selectedText ?? activeWorkspaceReplyTab.quotedContent,
+            sender_full_name: activeWorkspaceReplyTab.senderName,
+            sender_uuid: activeWorkspaceReplyTab.senderUuid,
+            quoteFormat: "workspace",
+            permalinkUrl: null,
+          },
+    [activeWorkspaceReplyTab],
+  );
   const workspaceReplyOutgoingBody =
     workspaceReplySession.tabs.length === 0
       ? undefined
@@ -2670,106 +2841,134 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
     />
   );
 
+  const anchorHandoffPending = isAnchorHandoffPending({
+    previewPresentation,
+    navigationIntent: messageNavigationIntent,
+    focusTarget: activeMessageFocusTarget,
+    selection,
+  });
+  const anchorNavigationActive =
+    anchorRouteRequest != null ||
+    (messageNavigationIntent != null && messageNavigationIntent.phase !== "superseded");
+
   let body: React.ReactNode;
-  if (selection.status === "invalid-route") {
+  if (previewPresentation != null || selection.status === "conversation") {
     body = (
-      <WorkspaceChatState
-        title={t("workspaceMessenger.invalidRoute")}
-        detail={t("workspaceMessenger.invalidRouteHint")}
-      />
+      <div
+        className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+        data-message-anchor-layer-host="true"
+      >
+        {selection.status === "conversation" &&
+        (previewPresentation == null || anchorHandoffPending) ? (
+          <ChatPageWorkspaceMessageListSection
+            key={`canonical-list:${selection.conversationId}`}
+            messagesLoading={messagesStatus.loading}
+            hasInitialPayload={routeMessages.length > 0 || conversationWindow != null}
+            initialPositionReady={initialPositionReady}
+            messages={routeMessages}
+            outgoingMessages={outgoingMessages}
+            resolveServerMessageRenderKey={resolveServerMessageRenderKey}
+            currentUserUuid={currentUserUuid}
+            conversationId={selection.conversationId}
+            scrollToBottomKey={buildWorkspaceMessageScrollKey({
+              conversationId: selection.conversationId,
+              focusTarget: activeMessageFocusTarget,
+              messageAnchorUuid,
+              locationKey: location.key,
+            })}
+            onLoadOlder={handleLoadOlder}
+            isLoadingOlder={
+              messagesStatus.loading &&
+              routeMessages.length > 0 &&
+              windowPaginationDirection === "before"
+            }
+            isLoadingNewer={
+              messagesStatus.loading &&
+              routeMessages.length > 0 &&
+              windowPaginationDirection === "after"
+            }
+            onLoadNewer={handleLoadNewer}
+            hasOlderMessages={
+              routeSelection.status === "message" || messageAnchorUuid != null
+                ? beforePageMarker != null
+                : messagesStatus.hasMore
+            }
+            hasNewerMessages={
+              (routeSelection.status === "message" || messageAnchorUuid != null) &&
+              afterPageMarker != null
+            }
+            lastMessageUuid={lastMessageUuid}
+            onLoadLatestWindow={handleLoadLatestWindow}
+            onCancelLatestWindowLoad={handleCancelLatestWindowLoad}
+            onTailNavigationRequested={handleTailNavigationRequested}
+            firstUnreadUuid={firstUnreadMessage?.uuid}
+            unreadCount={unreadCount}
+            focusedMessageTarget={activeMessageFocusTarget}
+            anchorHandoffPending={anchorHandoffPending}
+            anchorNavigationActive={anchorNavigationActive}
+            onFocusedMessageApplied={onDomFocusApplied}
+            onFocusedMessageMissing={onDomFocusMissing}
+            selectionMode={selectionMode}
+            selectedMessageUuids={selectedMessageUuids}
+            onUnreadMessagesVisible={anchorHandoffPending ? undefined : scheduleReadBatch}
+            onUnreadMessagesAtBottom={anchorHandoffPending ? undefined : scheduleReadBatch}
+            onReplyMessage={handleReplyMessage}
+            onAddReplyMessage={
+              workspaceReplySession.tabs.length === 0 ? undefined : handleAddReplyMessage
+            }
+            onForwardMessage={handleForwardMessage}
+            onOpenMessageInChat={handleOpenMessageInChat}
+            onOpenMentionUser={openWorkspaceUserProfile == null ? undefined : handleOpenMentionUser}
+            onOpenWorkspaceReference={handleOpenWorkspaceReference}
+            onToggleMessageSelection={handleToggleMessageSelection}
+            onEditMessage={handleEditMessage}
+            onRequestDeleteMessage={handleRequestDeleteMessage}
+            onCopyMessageText={handleCopyMessageText}
+            onToggleMessageReaction={handleToggleMessageReaction}
+            onDownloadFile={handleDownloadFile}
+            onLoadWorkspaceFilePreview={handleLoadWorkspaceFilePreview}
+            onOpenWorkspaceMedia={handleOpenWorkspaceMedia}
+            onOpenUnsupportedFilePreview={handleOpenUnsupportedFilePreview}
+            onRetryOutgoingMessage={handleRetryOutgoingMessage}
+            onRemoveOutgoingMessage={handleRemoveOutgoingMessage}
+            jitsiServerBaseUrl={workspaceMeetUrl}
+            jitsiLocationName={jitsiLocationName}
+            onOpenJitsiCall={handleOpenWorkspaceJitsiCall}
+            messagesLoadError={messagesLoadError}
+            onRetryMessagesLoad={retryMessagesLoad}
+            boundaryLoadFailed={windowPaginationErrorDirection != null}
+            onRetryBoundaryLoad={handleRetryBoundaryLoad}
+            scrollToBottomAfterSendNonce={scrollToBottomAfterSendNonce}
+            resolveAuthorLabel={resolveAuthorLabel}
+            resolveTopicLabel={resolveMessageTopicLabel}
+            presentation={messageListPresentation}
+            resolveMention={resolveMention}
+          />
+        ) : null}
+        {previewPresentation != null ? (
+          <div
+            key={`preview:${previewPresentation.intentId}`}
+            className="absolute inset-0 z-base flex min-h-0 flex-col bg-bg"
+            data-message-anchor-preview-layer="true"
+          >
+            <WorkspaceMessageAnchorTransition
+              presentation={previewPresentation}
+              currentUserUuid={currentUserUuid}
+              usersById={usersById}
+              errorDetail={navigationError?.detail}
+              onRetry={retryMessageNavigation}
+              onTailNavigationRequested={
+                conversationId == null ? undefined : handleTailNavigationRequested
+              }
+              resolveAuthorLabel={resolveAuthorLabel}
+              resolveMention={resolveMention}
+            />
+          </div>
+        ) : null}
+      </div>
     );
-  } else if (routeSelection.status === "message" && selection.status !== "conversation") {
-    body =
-      messageRouteLoading || !hasCurrentMessageRouteState || actionError == null ? (
-        <WorkspaceChatBlockingLoader />
-      ) : (
-        <WorkspaceChatState title={t("chat.messagesLoadError")} detail={actionError ?? undefined} />
-      );
-  } else if (selection.status === "none") {
-    body = (
-      <WorkspaceChatState
-        title={t("workspaceMessenger.invalidRoute")}
-        detail={t("workspaceMessenger.invalidRouteHint")}
-      />
-    );
-  } else if (selection.status === "conversation") {
-    body = (
-      <ChatPageWorkspaceMessageListSection
-        messagesLoading={messagesStatus.loading}
-        hasInitialPayload={routeMessages.length > 0 || messageWindowState === "complete"}
-        initialPositionReady={initialPositionReady}
-        messages={routeMessages}
-        outgoingMessages={outgoingMessages}
-        resolveServerMessageRenderKey={resolveServerMessageRenderKey}
-        currentUserUuid={currentUserUuid}
-        conversationId={selection.conversationId}
-        scrollToBottomKey={`${selection.conversationId}:${activeFocusedMessageUuid ?? ""}:${
-          messageAnchorUuid == null ? "" : location.key
-        }`}
-        onLoadOlder={handleLoadOlder}
-        isLoadingOlder={
-          messagesStatus.loading &&
-          routeMessages.length > 0 &&
-          windowPaginationDirection === "before"
-        }
-        isLoadingNewer={
-          messagesStatus.loading &&
-          routeMessages.length > 0 &&
-          windowPaginationDirection === "after"
-        }
-        onLoadNewer={handleLoadNewer}
-        hasOlderMessages={
-          routeSelection.status === "message" || messageAnchorUuid != null
-            ? beforePageMarker != null
-            : messagesStatus.hasMore
-        }
-        hasNewerMessages={
-          (routeSelection.status === "message" || messageAnchorUuid != null) &&
-          afterPageMarker != null
-        }
-        lastMessageUuid={lastMessageUuid}
-        onLoadLatestWindow={handleLoadLatestWindow}
-        onCancelLatestWindowLoad={handleCancelLatestWindowLoad}
-        firstUnreadUuid={firstUnreadMessage?.uuid}
-        unreadCount={unreadCount}
-        focusedMessageUuid={activeFocusedMessageUuid}
-        selectionMode={selectionMode}
-        selectedMessageUuids={selectedMessageUuids}
-        onUnreadMessagesVisible={scheduleReadBatch}
-        onUnreadMessagesAtBottom={scheduleReadBatch}
-        onReplyMessage={handleReplyMessage}
-        onAddReplyMessage={
-          workspaceReplySession.tabs.length === 0 ? undefined : handleAddReplyMessage
-        }
-        onForwardMessage={handleForwardMessage}
-        onOpenMessageInChat={handleOpenMessageInChat}
-        onOpenMentionUser={openWorkspaceUserProfile == null ? undefined : handleOpenMentionUser}
-        onOpenWorkspaceReference={handleOpenWorkspaceReference}
-        onToggleMessageSelection={handleToggleMessageSelection}
-        onEditMessage={handleEditMessage}
-        onRequestDeleteMessage={handleRequestDeleteMessage}
-        onCopyMessageText={handleCopyMessageText}
-        onToggleMessageReaction={handleToggleMessageReaction}
-        onDownloadFile={handleDownloadFile}
-        onLoadWorkspaceFilePreview={handleLoadWorkspaceFilePreview}
-        onOpenWorkspaceMedia={handleOpenWorkspaceMedia}
-        onOpenUnsupportedFilePreview={handleOpenUnsupportedFilePreview}
-        onRetryOutgoingMessage={handleRetryOutgoingMessage}
-        onRemoveOutgoingMessage={handleRemoveOutgoingMessage}
-        jitsiServerBaseUrl={workspaceMeetUrl}
-        jitsiLocationName={jitsiLocationName}
-        onOpenJitsiCall={handleOpenWorkspaceJitsiCall}
-        messagesLoadError={messagesLoadError}
-        onRetryMessagesLoad={retry}
-        boundaryLoadFailed={false}
-        onDismissBoundaryLoadFailed={noop}
-        scrollToBottomAfterSendNonce={scrollToBottomAfterSendNonce}
-        resolveAuthorLabel={resolveAuthorLabel}
-        resolveTopicLabel={resolveMessageTopicLabel}
-        presentation={messageListPresentation}
-        resolveMention={resolveMention}
-      />
-    );
+  } else if (selection.status !== "invalid-route" && routeSelection.status === "message") {
+    body = <WorkspaceChatBlockingLoader />;
   } else {
     body = (
       <WorkspaceChatState
@@ -2778,6 +2977,101 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
       />
     );
   }
+
+  const resolvedComposerTarget = resolveSendTarget();
+  const workspaceAttachmentTarget: WorkspaceComposerAttachmentTarget | null =
+    runtimeContext != null &&
+    ownerKey != null &&
+    conversationId != null &&
+    resolvedComposerTarget.status === "ready"
+      ? {
+          conversationId,
+          streamUuid: resolvedComposerTarget.streamUuid,
+          topicUuid: resolvedComposerTarget.topicUuid,
+          includeStreamConversation: resolvedComposerTarget.includeStreamConversation,
+        }
+      : null;
+  const hasInlineComposerNotice = Boolean(actionError) || Boolean(sendError);
+  const hasDeleteComposerNotice = pendingDeleteMessageUuid != null;
+  const hasSelectionComposerNotice = selectedMessageUuids.size > 0;
+  const showStreamTopicPrompt = selection.status === "conversation" && selection.kind === "stream";
+  const composerJoinedTop =
+    !showStreamTopicPrompt &&
+    (hasSelectionComposerNotice || hasInlineComposerNotice || hasDeleteComposerNotice);
+  const renderWorkspaceAttachmentComposer = useCallback(
+    (controlledProps: WorkspaceComposerControlledProps) => (
+      <ChatPageComposerSection
+        {...controlledProps}
+        isDmView={false}
+        activeDmUserIds={null}
+        activeStream={stream?.name ?? conversation?.title}
+        showTopicPrompt={false}
+        streamSlug={undefined}
+        onExpandStreamTopics={noop}
+        uploadProgress={null}
+        optimisticClearOnSend
+        onCreateCallLink={undefined}
+        onCancelUpload={noop}
+        activeTopic={
+          selection.status === "conversation" && selection.kind === "topic" ? topicTitle : null
+        }
+        replyQuote={activeWorkspaceReplyQuote}
+        onClearReply={handleClearReply}
+        workspaceReplySession={workspaceReplySession}
+        onSelectWorkspaceReplyTab={handleSelectWorkspaceReplyTab}
+        onRemoveWorkspaceReplyTab={handleRemoveWorkspaceReplyTab}
+        onReorderWorkspaceReplyTab={handleReorderWorkspaceReplyTab}
+        outgoingBodyOverride={workspaceReplyOutgoingBody}
+        allowEmptyActiveValueSend={workspaceReplyHasAnswer ? true : undefined}
+        focusKey={
+          workspaceReplyTabFocusKeySuppressed ? null : (activeWorkspaceReplyTab?.id ?? null)
+        }
+        draftSessionKey={workspaceComposerDraftSessionKey}
+        draftInitialValue={activeWorkspaceReplyTab?.answer ?? workspaceComposerText}
+        onComposerValueChange={handleWorkspaceComposerValueChange}
+        onEditLastMessage={handleEditLastMessage}
+        editSession={effectiveComposerEditSession}
+        onSubmitEdit={handleSubmitEdit}
+        onCancelEdit={handleCancelEdit}
+        composerCapabilities={workspaceComposerCapabilities}
+        resolveMention={resolveMention}
+        onLoadWorkspaceFilePreview={handleLoadWorkspaceFilePreview}
+        aiMessagesContext={[]}
+        aiChatContext={undefined}
+        readOnlyReason={composerReadOnlyReason}
+        joinedTop={composerJoinedTop}
+      />
+    ),
+    [
+      activeWorkspaceReplyQuote,
+      activeWorkspaceReplyTab?.answer,
+      activeWorkspaceReplyTab?.id,
+      composerReadOnlyReason,
+      composerJoinedTop,
+      conversation?.title,
+      effectiveComposerEditSession,
+      handleCancelEdit,
+      handleClearReply,
+      handleEditLastMessage,
+      handleLoadWorkspaceFilePreview,
+      handleRemoveWorkspaceReplyTab,
+      handleReorderWorkspaceReplyTab,
+      handleSelectWorkspaceReplyTab,
+      handleSubmitEdit,
+      handleWorkspaceComposerValueChange,
+      resolveMention,
+      selection,
+      stream?.name,
+      topicTitle,
+      workspaceComposerCapabilities,
+      workspaceComposerDraftSessionKey,
+      workspaceComposerText,
+      workspaceReplyHasAnswer,
+      workspaceReplyOutgoingBody,
+      workspaceReplySession,
+      workspaceReplyTabFocusKeySuppressed,
+    ],
+  );
 
   return (
     <div
@@ -2794,6 +3088,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
           onForward={handleForwardSelectedMessages}
           onDelete={noop}
           onCancel={handleCancelMessageSelection}
+          joinedBelow={hasInlineComposerNotice || hasDeleteComposerNotice || !showStreamTopicPrompt}
         />
         <ChatPageInlineAlerts
           routeResolveError={null}
@@ -2802,18 +3097,30 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
           onDismissRouteResolveError={noop}
           onDismissActionError={() => setActionError(null)}
           onDismissSendError={() => setSendError(null)}
+          joinedAbove={hasSelectionComposerNotice}
+          joinedBelow={hasDeleteComposerNotice || !showStreamTopicPrompt}
         />
         {pendingDeleteMessageUuid != null ? (
           <ChatPageDeleteConfirmBar
             mode="single"
             onConfirm={handleConfirmDeleteMessage}
             onCancel={handleCancelDeleteMessage}
+            joinedAbove={hasSelectionComposerNotice || hasInlineComposerNotice}
+            joinedBelow={!showStreamTopicPrompt}
           />
         ) : null}
-        {selection.status === "conversation" && selection.kind === "stream" ? (
+        {showStreamTopicPrompt ? (
           <ChatPageStreamTopicPrompt
             topics={streamPromptTopics}
             onSelectTopic={handleSelectStreamPromptTopic}
+          />
+        ) : workspaceAttachmentTarget != null && runtimeContext != null && ownerKey != null ? (
+          <WorkspaceComposerAttachments
+            runtimeContext={runtimeContext}
+            ownerKey={ownerKey}
+            target={workspaceAttachmentTarget}
+            onSendFinalMarkdown={handleSend}
+            renderComposer={renderWorkspaceAttachmentComposer}
           />
         ) : (
           <ChatPageComposerSection
@@ -2823,26 +3130,14 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
             showTopicPrompt={false}
             streamSlug={undefined}
             onExpandStreamTopics={noop}
-            uploadProgress={uploadProgress}
+            uploadProgress={null}
             onSend={handleSend}
             optimisticClearOnSend
             onCreateCallLink={undefined}
-            onCancelUpload={handleCancelUpload}
-            activeTopic={
-              selection.status === "conversation" && selection.kind === "topic" ? topicTitle : null
-            }
+            onCancelUpload={noop}
+            activeTopic={null}
             replyQuote={activeWorkspaceReplyQuote}
             onClearReply={handleClearReply}
-            workspaceReplySession={workspaceReplySession}
-            onSelectWorkspaceReplyTab={handleSelectWorkspaceReplyTab}
-            onRemoveWorkspaceReplyTab={handleRemoveWorkspaceReplyTab}
-            onReorderWorkspaceReplyTab={handleReorderWorkspaceReplyTab}
-            outgoingBodyOverride={workspaceReplyOutgoingBody}
-            allowEmptyActiveValueSend={workspaceReplyHasAnswer ? true : undefined}
-            focusKey={
-              workspaceReplyTabFocusKeySuppressed ? null : (activeWorkspaceReplyTab?.id ?? null)
-            }
-            draftSessionKey={workspaceComposerDraftSessionKey}
             draftInitialValue={activeWorkspaceReplyTab?.answer ?? workspaceComposerText}
             onComposerValueChange={handleWorkspaceComposerValueChange}
             onEditLastMessage={handleEditLastMessage}
@@ -2855,6 +3150,7 @@ export const WorkspaceChatPage: React.FC<WorkspaceChatPageProps> = ({
             aiMessagesContext={[]}
             aiChatContext={undefined}
             readOnlyReason={composerReadOnlyReason}
+            joinedTop={composerJoinedTop}
           />
         )}
       </section>
