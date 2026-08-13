@@ -6,7 +6,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.4.10] — 2026-08-13
+## [0.4.10] — 2026-08-14
 
 ### Added
 
@@ -26,6 +26,11 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   the edit is submitted.
 - The legacy web force-update page and build-selection controls were removed in
   favor of the desktop updater flow.
+- Electron packaging disables electron-builder's implicit CI publication, and
+  Linux packaging preserves multi-target argument parsing, so the dedicated
+  release job remains the only artifact publisher.
+- Linux release collection now accepts the AppImage embedded blockmap instead of
+  requiring a sidecar file that electron-builder does not produce.
 
 ### Requirements and compatibility
 
