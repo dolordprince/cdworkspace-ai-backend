@@ -96,6 +96,7 @@ const captured = vi.hoisted(() => ({
   uploadWorkspaceFileWithProgress: vi.fn(),
   deleteWorkspaceFile: vi.fn(),
   sendMessengerMessage: vi.fn(),
+  editMessengerMessage: vi.fn(),
   markMessengerMessagesReadUpTo: vi.fn(),
   streamBindingsForRoute: vi.fn(),
   syncWorkspaceComposerDraft: vi.fn().mockResolvedValue(undefined),
@@ -336,6 +337,7 @@ vi.mock("~/entities/messenger/messenger-message-actions.lib", async (importOrigi
   return {
     ...actual,
     sendMessengerMessage: captured.sendMessengerMessage,
+    editMessengerMessage: captured.editMessengerMessage,
     markMessengerMessagesReadUpTo: captured.markMessengerMessagesReadUpTo,
   };
 });
@@ -741,6 +743,7 @@ function WorkspaceLocationProbe() {
 
 describe("ChatPage Workspace route", () => {
   beforeEach(async () => {
+    delete (window as unknown as { electronAPI?: ElectronAPI }).electronAPI;
     resetWorkspaceComposerDraftStoreForTests();
     const session = createSession();
     useWorkspaceAuthStore.setState({
@@ -830,6 +833,12 @@ describe("ChatPage Workspace route", () => {
       ownerKey: "owner-key",
       message: createMessage(),
     });
+    captured.editMessengerMessage.mockReset();
+    captured.editMessengerMessage.mockResolvedValue({
+      status: "applied",
+      ownerKey: "owner-key",
+      message: createMessage(),
+    });
     captured.markMessengerMessagesReadUpTo.mockReset();
     captured.markMessengerMessagesReadUpTo.mockResolvedValue({
       status: "applied",
@@ -849,7 +858,7 @@ describe("ChatPage Workspace route", () => {
     );
     useWorkspaceForwardMessageStore.getState().reset();
     captured.streamBindingsForRoute.mockClear();
-    useDownloadStore.getState().clearDownloads();
+    useDownloadStore.setState({ entries: [], duplicateRequestTick: 0 });
   });
 
   afterEach(async () => {
@@ -865,7 +874,7 @@ describe("ChatPage Workspace route", () => {
     resetWorkspaceComposerDraftStoreForTests();
     await useWorkspaceComposerDraftStore.getState().clear();
     useJitsiCallStore.getState().clear();
-    useDownloadStore.getState().clearDownloads();
+    useDownloadStore.setState({ entries: [], duplicateRequestTick: 0 });
     useMediaViewerStore.getState().close();
     try {
       const db = await openWorkspaceMessengerCacheDb();
@@ -4660,6 +4669,150 @@ describe("ChatPage Workspace route", () => {
     });
   });
 
+  it("restores message files outside the edit textbox and rebuilds Markdown on save", async () => {
+    const imageUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
+    const fileUuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbc";
+    const imageMarkdown = `![screen.png](urn:image:${imageUuid}?name=screen.png&content_type=image%2Fpng&size=8)`;
+    const fileMarkdown = `[report.pdf](urn:file:${fileUuid}?name=report.pdf&content_type=application%2Fpdf&size=12)`;
+    replaceTestConversationWindow(`topic:${STREAM_UUID}:${TOPIC_UUID}`, [
+      {
+        ...createMessage(),
+        isOwn: true,
+        payload: { kind: "markdown", content: `Message text\n${imageMarkdown}\n${fileMarkdown}` },
+      },
+    ]);
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+
+    act(() => captured.messageListProps?.onEditMessage?.(MESSAGE_UUID));
+    await waitFor(() => {
+      expect(captured.composerProps?.editSession?.initialMarkdown).toBe("Message text");
+      expect(captured.composerProps?.attachments).toEqual([
+        expect.objectContaining({
+          localId: expect.stringContaining(`existing:${imageUuid}`),
+          fileName: "screen.png",
+          workspaceFile: expect.objectContaining({ fileUuid: imageUuid, mediaKind: "image" }),
+        }),
+        expect.objectContaining({
+          localId: expect.stringContaining(`existing:${fileUuid}`),
+          fileName: "report.pdf",
+          workspaceFile: expect.objectContaining({ fileUuid, kind: "attachment" }),
+        }),
+      ]);
+    });
+
+    const restoredImageId = captured.composerProps?.attachments?.[0]?.localId;
+    if (restoredImageId == null) throw new Error("Restored image attachment is missing");
+    act(() => captured.composerProps?.onRemoveAttachment?.(restoredImageId));
+    await waitFor(() => {
+      expect(captured.composerProps?.attachments).toEqual([
+        expect.objectContaining({ fileName: "report.pdf" }),
+      ]);
+    });
+
+    await act(async () => {
+      await captured.composerProps?.onSubmitEdit(1, "Edited text");
+    });
+    expect(captured.editMessengerMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageUuid: MESSAGE_UUID,
+        markdown: `Edited text\n${fileMarkdown}`,
+      }),
+    );
+  });
+
+  it("adds a newly uploaded file while editing and submits it with the remaining message files", async () => {
+    const existingUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac";
+    const uploadedUuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbd";
+    const existingMarkdown = `[old.pdf](urn:file:${existingUuid}?name=old.pdf&size=12)`;
+    replaceTestConversationWindow(`topic:${STREAM_UUID}:${TOPIC_UUID}`, [
+      {
+        ...createMessage(),
+        isOwn: true,
+        payload: { kind: "markdown", content: `Text\n${existingMarkdown}` },
+      },
+    ]);
+    captured.uploadWorkspaceFileWithProgress.mockResolvedValueOnce({
+      uuid: uploadedUuid,
+      name: "new.pdf",
+      content_type: "application/pdf",
+      size_bytes: 3,
+    });
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+    act(() => captured.messageListProps?.onEditMessage?.(MESSAGE_UUID));
+    await waitFor(() => expect(captured.composerProps?.editSession).not.toBeNull());
+
+    const newFile = new File(["new"], "new.pdf", { type: "application/pdf" });
+    act(() => captured.composerProps?.onAddAttachments?.([newFile]));
+    await waitFor(() => {
+      expect(captured.composerProps?.attachments).toEqual([
+        expect.objectContaining({ fileName: "old.pdf" }),
+        expect.objectContaining({ fileName: "new.pdf", status: "ready" }),
+      ]);
+    });
+
+    await act(async () => {
+      await captured.composerProps?.onSubmitEdit(1, "Edited");
+    });
+    expect(captured.editMessengerMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        markdown: [
+          "Edited",
+          existingMarkdown,
+          `[new.pdf](urn:file:${uploadedUuid}?name=new.pdf&content_type=application%2Fpdf&size=3)`,
+        ].join("\n"),
+      }),
+    );
+    expect(captured.composerProps?.attachments).toEqual([]);
+  });
+
+  it("clears an active edit session when navigating to another conversation", async () => {
+    const fileUuid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaad";
+    const fileMarkdown = `[old.pdf](urn:file:${fileUuid}?name=old.pdf&size=12)`;
+    replaceTestConversationWindow(`topic:${STREAM_UUID}:${TOPIC_UUID}`, [
+      {
+        ...createMessage(),
+        isOwn: true,
+        payload: { kind: "markdown", content: `Text\n${fileMarkdown}` },
+      },
+    ]);
+
+    renderWorkspaceChatPageWithShellContexts(
+      `/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`,
+    );
+    await screen.findByTestId("workspace-message-list-section");
+    act(() => captured.messageListProps?.onEditMessage?.(MESSAGE_UUID));
+    await waitFor(() => {
+      expect(captured.composerProps?.editSession).not.toBeNull();
+      expect(captured.composerProps?.attachments).toEqual([
+        expect.objectContaining({ fileName: "old.pdf" }),
+      ]);
+    });
+
+    await act(async () => {
+      await navigateTo?.(`/org/org-a/project/project-a/stream/${STREAM_UUID}`);
+    });
+
+    await waitFor(() => {
+      expect(captured.messageListProps?.conversationId).toBe(`stream:${STREAM_UUID}`);
+    });
+    await act(async () => {
+      await navigateTo?.(`/org/org-a/project/project-a/stream/${STREAM_UUID}/topic/${TOPIC_UUID}`);
+    });
+    await waitFor(() => {
+      expect(captured.messageListProps?.conversationId).toBe(`topic:${STREAM_UUID}:${TOPIC_UUID}`);
+      expect(captured.composerProps?.editSession).toBeNull();
+      expect(captured.composerProps?.attachments).toEqual([]);
+    });
+  });
+
   it("restores the existing composer draft after cancelling restored reply editing", async () => {
     const ownerKey = workspaceRuntimeOwnerKey(createSession());
     const conversationId = `topic:${STREAM_UUID}:${TOPIC_UUID}`;
@@ -5153,7 +5306,7 @@ describe("ChatPage Workspace route", () => {
 
     await waitFor(() => {
       expect(useDownloadStore.getState().entries[0]).toMatchObject({
-        path: "workspace-file:33333333-3333-4333-8333-333333333333",
+        fileUuid: "33333333-3333-4333-8333-333333333333",
         fileName: "hint.txt",
         status: "downloaded",
         receivedBytes: 17,
@@ -5211,7 +5364,7 @@ describe("ChatPage Workspace route", () => {
 
     await waitFor(() => {
       expect(useDownloadStore.getState().entries[0]).toMatchObject({
-        path: "workspace-file:44444444-4444-4444-8444-444444444444",
+        fileUuid: "44444444-4444-4444-8444-444444444444",
         fileName: "screen.png",
         status: "downloaded",
         receivedBytes: 17,
@@ -5344,7 +5497,7 @@ describe("ChatPage Workspace route", () => {
 
     await waitFor(() =>
       expect(useDownloadStore.getState().entries[0]).toMatchObject({
-        fileName: "screen.png",
+        fileName: "server-screen.png",
         status: "downloaded",
       }),
     );
