@@ -6,6 +6,46 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.10] — 2026-08-14
+
+### Added
+
+- The Electron application now provides a native Workspace download manager
+  with progress tracking, cancellation, retry, file opening, and reveal-in-folder
+  actions from the top-bar download center.
+- Desktop builds can check GitHub Releases for application updates, download an
+  available update, and install it from the application version settings.
+
+### Changed
+
+- Workspace file downloads use an authenticated Electron-managed transfer path
+  with validated filenames, bounded redirects, collision-safe destinations, and
+  synchronized renderer state.
+- Editing a message now restores its existing Workspace attachments as removable
+  composer items and preserves only the attachment references that remain when
+  the edit is submitted.
+- The legacy web force-update page and build-selection controls were removed in
+  favor of the desktop updater flow.
+- Electron packaging disables electron-builder's implicit CI publication, and
+  Linux packaging preserves multi-target argument parsing, so the dedicated
+  release job remains the only artifact publisher.
+- Linux release collection now accepts the AppImage embedded blockmap instead of
+  requiring a sidecar file that electron-builder does not produce.
+
+### Requirements and compatibility
+
+- Requirements are unchanged from `0.4.9`: Exordos Core `0.2.3` or newer and
+  Workspace backend `0.1.30` or newer.
+- The local messenger cache remains at schema version 7. No manual client or
+  server data migration is required.
+- Automatic desktop updates are available only in release packages built with
+  the GitHub Releases update feed enabled.
+
+### Migration notes
+
+- Update `workspace_ui` to `0.4.10`.
+- No manual migration is required.
+
 ## [0.4.9] — 2026-08-13
 
 ### Fixed

@@ -112,7 +112,7 @@ jobs:
             cmd: package:electron:linux -- --linux rpm deb AppImage
             release_cmd: package:electron:linux:with-updates -- --linux rpm deb AppImage
             update_metadata: latest-linux.yml
-            update_blockmap: "*.AppImage.blockmap"
+            update_blockmap: ""
           - os: windows-latest
             cmd: package:electron:win
             release_cmd: package:electron:win:with-updates
@@ -179,8 +179,11 @@ jobs:
             cp "${metadata_files[@]}" upload/
 
             test -f "upload/${{ matrix.update_metadata }}"
-            blockmaps=(upload/${{ matrix.update_blockmap }})
-            test "${#blockmaps[@]}" -gt 0
+            update_blockmap="${{ matrix.update_blockmap }}"
+            if [[ -n "${update_blockmap}" ]]; then
+              blockmaps=(upload/${update_blockmap})
+              test "${#blockmaps[@]}" -gt 0
+            fi
           fi
 
           ls -la upload/
