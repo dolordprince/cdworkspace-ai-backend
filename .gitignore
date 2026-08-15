@@ -73,3 +73,8 @@ packages/electron/release/
 *.snap
 *.msi
 *.nsis
+backend/.env
+*.env
+backend/.venv/
+__pycache__/
+*.pyc
