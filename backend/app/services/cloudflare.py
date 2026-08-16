@@ -64,7 +64,7 @@ class CloudflarePagesService:
     async def verify(self) -> dict[str, Any]:
         self._require_credentials()
 
-        url = self._api_url("")
+        url = self._api_url("/tokens/verify")
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
@@ -74,16 +74,23 @@ class CloudflarePagesService:
 
         if response.status_code >= 400:
             raise CloudflareDeploymentError(
-                "Cloudflare credential verification failed "
+                "Cloudflare API token verification failed "
                 f"with HTTP {response.status_code}: "
-                f"{response.text[:2000]}"
+                f"{response.text[:3000]}"
             )
 
         data = response.json()
 
         if data.get("success") is not True:
             raise CloudflareDeploymentError(
-                f"Cloudflare rejected credentials: {data}"
+                f"Cloudflare rejected API token: {data}"
+            )
+
+        result = data.get("result") or {}
+
+        if result.get("status") != "active":
+            raise CloudflareDeploymentError(
+                f"Cloudflare API token is not active: {result}"
             )
 
         return data
