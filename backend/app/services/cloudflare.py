@@ -64,7 +64,7 @@ class CloudflarePagesService:
     async def verify(self) -> dict[str, Any]:
         self._require_credentials()
 
-        url = self._api_url("/tokens/verify")
+        url = "https://api.cloudflare.com/client/v4/user/tokens/verify"
 
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
