@@ -8,24 +8,37 @@ from app.providers.openai_compatible import ProviderError
 from app.providers.registry import get_provider
 
 
-@dataclass
+@dataclass(frozen=True)
 class AgentResult:
     provider: str
+    model: str
     content: str
 
 
 class WorkspaceAgent:
+    PRIMARY_PROVIDER = "groq"
+    FALLBACK_PROVIDER = "cerebras"
+
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-        if not self.settings.groq_api_key.strip():
-            raise RuntimeError(
-                "Groq is not configured. Set GROQ_API_KEY."
-            )
+    async def _run_provider(
+        self,
+        provider_name: str,
+        prompt: str,
+        history: list[dict[str, str]] | None,
+    ) -> AgentResult:
+        provider = get_provider(provider_name, self.settings)
 
-        self.provider = get_provider(
-            "groq",
-            self.settings,
+        content = await provider.complete(
+            prompt=prompt,
+            history=history,
+        )
+
+        return AgentResult(
+            provider=provider.name,
+            model=provider.model,
+            content=content,
         )
 
     async def run(
@@ -34,27 +47,43 @@ class WorkspaceAgent:
         provider: str | None = None,
         history: list[dict[str, str]] | None = None,
     ) -> AgentResult:
-
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt must be a non-empty string")
 
-        if provider and provider.strip().lower() != "groq":
+        requested = provider.strip().lower() if provider else None
+
+        if requested and requested not in {"groq", "cerebras"}:
             raise ValueError(
-                "Only the groq provider is configured."
+                "Unsupported provider. Use 'groq' or 'cerebras'."
+            )
+
+        if requested:
+            return await self._run_provider(
+                requested,
+                prompt,
+                history,
             )
 
         try:
-            content = await self.provider.complete(
-                prompt=prompt,
-                history=history,
+            return await self._run_provider(
+                self.PRIMARY_PROVIDER,
+                prompt,
+                history,
             )
-        except ProviderError:
-            raise
-
-        return AgentResult(
-            provider="groq",
-            content=content,
-        )
+        except ProviderError as primary_error:
+            try:
+                return await self._run_provider(
+                    self.FALLBACK_PROVIDER,
+                    prompt,
+                    history,
+                )
+            except Exception as fallback_error:
+                raise ProviderError(
+                    "Groq failed and Cerebras fallback failed. "
+                    f"Groq: {primary_error}; "
+                    f"Cerebras: {fallback_error}",
+                    provider="groq,cerebras",
+                ) from fallback_error
 
 
 async def run_agent(
@@ -63,7 +92,6 @@ async def run_agent(
     history: list[dict[str, str]] | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-
     agent = WorkspaceAgent(settings=settings)
 
     result = await agent.run(
@@ -74,5 +102,6 @@ async def run_agent(
 
     return {
         "provider": result.provider,
+        "model": result.model,
         "content": result.content,
     }

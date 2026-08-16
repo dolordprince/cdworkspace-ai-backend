@@ -3,15 +3,18 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agent import router as agent_router
 from app.api.health import router as health_router
+from app.api.provider import router as provider_router
 from app.mcp.server import router as mcp_router
 
 
 app = FastAPI(
     title="Workspace AI",
     version="1.0.0",
-    description="Production Workspace AI backend powered by Groq.",
+    description=(
+        "Production Workspace AI backend powered by Groq "
+        "with Cerebras failover."
+    ),
 )
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,7 +24,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 app.include_router(health_router)
 app.include_router(agent_router)
+app.include_router(provider_router)
 app.include_router(mcp_router)
