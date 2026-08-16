@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agent import router as agent_router
 from app.api.health import router as health_router
+from app.api.cloudflare import router as cloudflare_router
 from app.api.provider import router as provider_router
 from app.mcp.server import router as mcp_router
 
@@ -27,4 +28,5 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(agent_router)
 app.include_router(provider_router)
+app.include_router(cloudflare_router)
 app.include_router(mcp_router)
