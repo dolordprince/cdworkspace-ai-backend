@@ -1,0 +1,8 @@
+dist/
+build/
+*.map
+node_modules/
+design/
+.venv/
+__pycache__/
+*.pyc
