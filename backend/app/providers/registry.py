@@ -6,11 +6,13 @@ from app.config import Settings
 from app.providers.openai_compatible import OpenAICompatibleProvider
 
 
-SUPPORTED_PROVIDERS = {
-    "openrouter",
-    "groq",
-    "cerebras",
-}
+SUPPORTED_PROVIDERS = frozenset(
+    {
+        "openrouter",
+        "groq",
+        "cerebras",
+    }
+)
 
 
 def build_providers(
@@ -60,8 +62,7 @@ def get_provider(
             "Use 'openrouter', 'groq', or 'cerebras'."
         )
 
-    providers = build_providers(settings)
-    provider = providers.get(provider_name)
+    provider = build_providers(settings).get(provider_name)
 
     if provider is None:
         raise RuntimeError(
@@ -72,7 +73,9 @@ def get_provider(
     return provider
 
 
-def provider_status(settings: Settings) -> list[dict[str, Any]]:
+def provider_status(
+    settings: Settings,
+) -> list[dict[str, Any]]:
     return [
         {
             "provider": "openrouter",

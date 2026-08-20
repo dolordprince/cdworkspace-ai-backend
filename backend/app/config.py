@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     environment: str = "production"
 
     openrouter_api_key: str = ""
-    openrouter_model: str = "anthropic/claude-sonnet-4.5"
+    openrouter_model: str = "z-ai/glm-5.2:free"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     groq_api_key: str = ""
