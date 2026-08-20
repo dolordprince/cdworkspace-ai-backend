@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: traveler-dev-backend
+    runtime: docker
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+
+    envVars:
+      - key: PORT
+        value: "10000"
+
+  - type: web
+    name: traveler-dev
+    runtime: node
+    rootDir: .
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter @vibe/local-web run build
+    startCommand: npx serve packages/local-web/dist -s -l $PORT
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: VITE_WORKSPACE_API_URL
+        value: https://cdworkspace-ai-backend.onrender.com
+
+      - key: NEXT_PUBLIC_WORKSPACE_API_URL
+        value: https://cdworkspace-ai-backend.onrender.com

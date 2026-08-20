@@ -1,0 +1,35 @@
+{
+  "name": "traveler_dev",
+  "displayName": "traveler_dev",
+  "project": "traveler_dev",
+  "backend": {
+    "baseUrl": "https://cdworkspace-ai-backend.onrender.com",
+    "transport": "https"
+  },
+  "ai": {
+    "primary": {
+      "provider": "groq",
+      "model": "openai/gpt-oss-120b"
+    },
+    "secondary": {
+      "provider": "cerebras",
+      "model": "zai-glm-4.7"
+    }
+  },
+  "capabilities": {
+    "mcp": true,
+    "github": true,
+    "androidDeveloperDocs": true,
+    "workspaceBuild": true,
+    "workspaceTest": true
+  },
+  "workspace": {
+    "name": "traveler_dev",
+    "project": "traveler_dev",
+    "baseUrl": "https://cdworkspace-ai-backend.onrender.com"
+  },
+  "api": {
+    "baseUrl": "https://cdworkspace-ai-backend.onrender.com"
+  },
+  "baseUrl": "https://cdworkspace-ai-backend.onrender.com"
+}
